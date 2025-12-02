@@ -35,8 +35,28 @@ limitations under the License.
 #include "image_generation.pb.h"
 #include "models.pb.h"
 #include "service_impl_factory.h"
-#include "xllm_metrics.h"
+
 namespace xllm {
+namespace {
+void request_in_metric(void* context) { COUNTER_INC(server_request_in_total); }
+
+void request_out_metric(void* context) {
+  auto ctrl = reinterpret_cast<brpc::Controller*>(context);
+  if (ctrl == nullptr) {
+    LOG(ERROR) << "ctrl is nullptr";
+    return;
+  }
+
+  if (!ctrl->Failed()) {
+    COUNTER_INC(server_request_total_ok);
+  } else {
+    COUNTER_INC(server_request_total_fail);
+    if (ctrl->ErrorCode() == brpc::ELIMIT) {
+      COUNTER_INC(server_request_total_limit);
+    }
+  }
+}
+}  // namespace
 
 APIService::APIService(Master* master,
                        const std::vector<std::string>& model_names,
