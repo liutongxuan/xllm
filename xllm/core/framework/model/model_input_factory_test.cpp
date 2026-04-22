@@ -133,6 +133,35 @@ TEST(ModelInputFactoryTest, CreateForRecIncludesRecPartitionWhenPresent) {
   EXPECT_TRUE(input.has_rec());
 }
 
+TEST(ModelInputFactoryTest, CausalLmCreatesLlmInputDirectly) {
+  FakeCausalLM model;
+  ModelInputParams params;
+  const ModelInput input = model.create_model_input(params);
+  EXPECT_TRUE(input.has_llm());
+  EXPECT_FALSE(input.has_vlm());
+  EXPECT_FALSE(input.has_dit());
+}
+
+TEST(ModelInputFactoryTest, CausalVlmCreatesVlmInputDirectly) {
+  FakeCausalVLM model;
+  ModelInputParams params;
+  params.deep_stacks.push_back(torch::zeros({1, 1}));
+  const ModelInput input = model.create_model_input(params);
+  EXPECT_TRUE(input.has_llm());
+  EXPECT_TRUE(input.has_vlm());
+  EXPECT_FALSE(input.has_dit());
+}
+
+TEST(ModelInputFactoryTest, DitModelCreatesDitInputDirectly) {
+  FakeDiTModel model;
+  ModelInputParams params;
+  params.dit_forward_input.prompts.push_back("dit prompt");
+  const ModelInput input = model.create_model_input(params);
+  EXPECT_FALSE(input.has_llm());
+  EXPECT_FALSE(input.has_vlm());
+  EXPECT_TRUE(input.has_dit());
+}
+
 }  // namespace
 }  // namespace model_input
 }  // namespace xllm
