@@ -115,10 +115,10 @@ TEST(ModelInputFactoryTest, CreateForLlmIncludesOnlyLlmByDefault) {
   ModelInputParams params;
 
   const ModelInput input = ModelInputFactory::create_for_llm(model, params);
-  EXPECT_TRUE(input.has_llm());
-  EXPECT_FALSE(input.has_vlm());
-  EXPECT_FALSE(input.has_dit());
-  EXPECT_FALSE(input.has_rec());
+  EXPECT_TRUE(has_llm(input));
+  EXPECT_FALSE(has_vlm(input));
+  EXPECT_FALSE(has_dit(input));
+  EXPECT_FALSE(has_rec(input));
 }
 
 TEST(ModelInputFactoryTest, CreateForLlmIgnoresRecPartitionWhenPresent) {
@@ -128,8 +128,8 @@ TEST(ModelInputFactoryTest, CreateForLlmIgnoresRecPartitionWhenPresent) {
   onerec.bs = 2;
 
   const ModelInput input = ModelInputFactory::create_for_llm(model, params);
-  EXPECT_TRUE(input.has_llm());
-  EXPECT_FALSE(input.has_rec());
+  EXPECT_TRUE(has_llm(input));
+  EXPECT_FALSE(has_rec(input));
 }
 
 TEST(ModelInputFactoryTest, CreateForVlmIncludesVlmPartition) {
@@ -138,9 +138,9 @@ TEST(ModelInputFactoryTest, CreateForVlmIncludesVlmPartition) {
   params.deep_stacks.push_back(torch::zeros({1, 1}));
 
   const ModelInput input = ModelInputFactory::create_for_vlm(model, params);
-  EXPECT_TRUE(input.has_llm());
-  EXPECT_TRUE(input.has_vlm());
-  EXPECT_FALSE(input.has_dit());
+  EXPECT_TRUE(has_llm(input));
+  EXPECT_TRUE(has_vlm(input));
+  EXPECT_FALSE(has_dit(input));
 }
 
 TEST(ModelInputFactoryTest, CreateForDitIncludesDitPartition) {
@@ -149,10 +149,10 @@ TEST(ModelInputFactoryTest, CreateForDitIncludesDitPartition) {
   params.dit_forward_input.prompts.push_back("dit prompt");
 
   const ModelInput input = ModelInputFactory::create_for_dit(model, params);
-  EXPECT_FALSE(input.has_llm());
-  EXPECT_FALSE(input.has_vlm());
-  EXPECT_TRUE(input.has_dit());
-  EXPECT_FALSE(input.has_rec());
+  EXPECT_FALSE(has_llm(input));
+  EXPECT_FALSE(has_vlm(input));
+  EXPECT_TRUE(has_dit(input));
+  EXPECT_FALSE(has_rec(input));
 }
 
 TEST(ModelInputFactoryTest, CreateForRecIncludesRecPartitionWhenPresent) {
@@ -162,8 +162,8 @@ TEST(ModelInputFactoryTest, CreateForRecIncludesRecPartitionWhenPresent) {
   onerec.bs = 2;
 
   const ModelInput input = ModelInputFactory::create_for_rec(model, params);
-  EXPECT_TRUE(input.has_llm());
-  EXPECT_TRUE(input.has_rec());
+  EXPECT_TRUE(has_llm(input));
+  EXPECT_TRUE(has_rec(input));
 }
 
 TEST(ModelInputFactoryTest, CreateForRecKeepsRecPartitionEmptyWhenMissing) {
@@ -171,17 +171,17 @@ TEST(ModelInputFactoryTest, CreateForRecKeepsRecPartitionEmptyWhenMissing) {
   ModelInputParams params;
 
   const ModelInput input = ModelInputFactory::create_for_rec(model, params);
-  EXPECT_TRUE(input.has_llm());
-  EXPECT_FALSE(input.has_rec());
+  EXPECT_TRUE(has_llm(input));
+  EXPECT_FALSE(has_rec(input));
 }
 
 TEST(ModelInputFactoryTest, CausalLmCreatesLlmInputDirectly) {
   FakeCausalLM model;
   ModelInputParams params;
   const ModelInput input = model.create_model_input(params);
-  EXPECT_TRUE(input.has_llm());
-  EXPECT_FALSE(input.has_vlm());
-  EXPECT_FALSE(input.has_dit());
+  EXPECT_TRUE(has_llm(input));
+  EXPECT_FALSE(has_vlm(input));
+  EXPECT_FALSE(has_dit(input));
 }
 
 TEST(ModelInputFactoryTest, RecCausalLmCreatesRecInputDirectlyWhenPresent) {
@@ -191,8 +191,8 @@ TEST(ModelInputFactoryTest, RecCausalLmCreatesRecInputDirectlyWhenPresent) {
   onerec.bs = 2;
 
   const ModelInput input = model.create_model_input(params);
-  EXPECT_TRUE(input.has_llm());
-  EXPECT_TRUE(input.has_rec());
+  EXPECT_TRUE(has_llm(input));
+  EXPECT_TRUE(has_rec(input));
 }
 
 TEST(ModelInputFactoryTest, CausalVlmCreatesVlmInputDirectly) {
@@ -200,9 +200,9 @@ TEST(ModelInputFactoryTest, CausalVlmCreatesVlmInputDirectly) {
   ModelInputParams params;
   params.deep_stacks.push_back(torch::zeros({1, 1}));
   const ModelInput input = model.create_model_input(params);
-  EXPECT_TRUE(input.has_llm());
-  EXPECT_TRUE(input.has_vlm());
-  EXPECT_FALSE(input.has_dit());
+  EXPECT_TRUE(has_llm(input));
+  EXPECT_TRUE(has_vlm(input));
+  EXPECT_FALSE(has_dit(input));
 }
 
 TEST(ModelInputFactoryTest, DitModelCreatesDitInputDirectly) {
@@ -210,9 +210,9 @@ TEST(ModelInputFactoryTest, DitModelCreatesDitInputDirectly) {
   ModelInputParams params;
   params.dit_forward_input.prompts.push_back("dit prompt");
   const ModelInput input = model.create_model_input(params);
-  EXPECT_FALSE(input.has_llm());
-  EXPECT_FALSE(input.has_vlm());
-  EXPECT_TRUE(input.has_dit());
+  EXPECT_FALSE(has_llm(input));
+  EXPECT_FALSE(has_vlm(input));
+  EXPECT_TRUE(has_dit(input));
 }
 
 }  // namespace

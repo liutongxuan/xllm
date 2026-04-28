@@ -27,7 +27,7 @@ class RecCausalLM : public CausalLM {
       const ModelInputParams& parameters) const override {
     model_input::ModelInput input;
     model_input::ModelInputParamBundle bundle =
-        model_input::ModelInputParamBundle::from_legacy(parameters);
+        model_input::make_model_input_param_bundle_from_legacy(parameters);
     input.llm = bundle.llm;
     input.rec = bundle.rec;
     return input;

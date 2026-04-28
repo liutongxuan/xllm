@@ -23,14 +23,15 @@ namespace xllm {
 namespace model_input {
 
 ModelInput ModelInputFactory::create_all(const xllm::ModelInputParams& params) {
-  return ModelInput::from_legacy(params);
+  return make_model_input_from_legacy(params);
 }
 
 ModelInput ModelInputFactory::create_for_llm(
     const CausalLM& model,
     const xllm::ModelInputParams& params) {
   (void)model;
-  ModelInputParamBundle bundle = ModelInputParamBundle::from_legacy(params);
+  ModelInputParamBundle bundle =
+      make_model_input_param_bundle_from_legacy(params);
   ModelInput input;
   input.llm = bundle.llm;
   return input;
@@ -40,7 +41,8 @@ ModelInput ModelInputFactory::create_for_vlm(
     const CausalVLM& model,
     const xllm::ModelInputParams& params) {
   (void)model;
-  ModelInputParamBundle bundle = ModelInputParamBundle::from_legacy(params);
+  ModelInputParamBundle bundle =
+      make_model_input_param_bundle_from_legacy(params);
   ModelInput input;
   input.llm = bundle.llm;
   input.vlm = bundle.vlm;
@@ -51,7 +53,8 @@ ModelInput ModelInputFactory::create_for_dit(
     const DiTModel& model,
     const xllm::ModelInputParams& params) {
   (void)model;
-  ModelInputParamBundle bundle = ModelInputParamBundle::from_legacy(params);
+  ModelInputParamBundle bundle =
+      make_model_input_param_bundle_from_legacy(params);
   ModelInput input;
   input.dit = bundle.dit;
   return input;
@@ -61,7 +64,8 @@ ModelInput ModelInputFactory::create_for_rec(
     const CausalLM& model,
     const xllm::ModelInputParams& params) {
   (void)model;
-  ModelInputParamBundle bundle = ModelInputParamBundle::from_legacy(params);
+  ModelInputParamBundle bundle =
+      make_model_input_param_bundle_from_legacy(params);
   ModelInput input;
   input.llm = bundle.llm;
   input.rec = bundle.rec;
@@ -70,7 +74,7 @@ ModelInput ModelInputFactory::create_for_rec(
 
 void ModelInputFactory::apply_to_legacy(const ModelInput& input,
                                         xllm::ModelInputParams* params) {
-  input.apply_to_legacy(params);
+  apply_model_input_to_legacy(input, params);
 }
 
 }  // namespace model_input

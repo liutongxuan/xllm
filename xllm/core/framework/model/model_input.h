@@ -15,7 +15,7 @@ limitations under the License.
 
 #pragma once
 
-#include <memory>
+#include <optional>
 
 #include "model_input_param_groups.h"
 #include "model_input_params.h"
@@ -24,19 +24,20 @@ namespace xllm {
 namespace model_input {
 
 struct ModelInput {
-  std::shared_ptr<LLMModelInputParams> llm;
-  std::shared_ptr<VLMModelInputParams> vlm;
-  std::shared_ptr<DitModelInputParams> dit;
-  std::shared_ptr<RecModelInputParams> rec;
-
-  static ModelInput from_legacy(const xllm::ModelInputParams& params);
-  void apply_to_legacy(xllm::ModelInputParams* params) const;
-
-  bool has_llm() const { return llm != nullptr; }
-  bool has_vlm() const { return vlm != nullptr; }
-  bool has_dit() const { return dit != nullptr; }
-  bool has_rec() const { return rec != nullptr; }
+  std::optional<LLMModelInputParams> llm;
+  std::optional<VLMModelInputParams> vlm;
+  std::optional<DitModelInputParams> dit;
+  std::optional<RecModelInputParams> rec;
 };
+
+ModelInput make_model_input_from_legacy(const xllm::ModelInputParams& params);
+void apply_model_input_to_legacy(const ModelInput& src,
+                                 xllm::ModelInputParams* dst);
+
+bool has_llm(const ModelInput& input);
+bool has_vlm(const ModelInput& input);
+bool has_dit(const ModelInput& input);
+bool has_rec(const ModelInput& input);
 
 }  // namespace model_input
 }  // namespace xllm

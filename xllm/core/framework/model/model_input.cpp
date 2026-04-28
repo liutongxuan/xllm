@@ -18,10 +18,10 @@ limitations under the License.
 namespace xllm {
 namespace model_input {
 
-ModelInput ModelInput::from_legacy(const xllm::ModelInputParams& params) {
+ModelInput make_model_input_from_legacy(const xllm::ModelInputParams& params) {
   ModelInput model_input;
   const ModelInputParamBundle bundle =
-      ModelInputParamBundle::from_legacy(params);
+      make_model_input_param_bundle_from_legacy(params);
   model_input.llm = bundle.llm;
   model_input.vlm = bundle.vlm;
   model_input.dit = bundle.dit;
@@ -29,14 +29,23 @@ ModelInput ModelInput::from_legacy(const xllm::ModelInputParams& params) {
   return model_input;
 }
 
-void ModelInput::apply_to_legacy(xllm::ModelInputParams* params) const {
+void apply_model_input_to_legacy(const ModelInput& src,
+                                 xllm::ModelInputParams* params) {
   ModelInputParamBundle bundle;
-  bundle.llm = llm;
-  bundle.vlm = vlm;
-  bundle.dit = dit;
-  bundle.rec = rec;
-  bundle.apply_to_legacy(params);
+  bundle.llm = src.llm;
+  bundle.vlm = src.vlm;
+  bundle.dit = src.dit;
+  bundle.rec = src.rec;
+  apply_model_input_param_bundle_to_legacy(bundle, params);
 }
+
+bool has_llm(const ModelInput& input) { return input.llm.has_value(); }
+
+bool has_vlm(const ModelInput& input) { return input.vlm.has_value(); }
+
+bool has_dit(const ModelInput& input) { return input.dit.has_value(); }
+
+bool has_rec(const ModelInput& input) { return input.rec.has_value(); }
 
 }  // namespace model_input
 }  // namespace xllm
