@@ -419,8 +419,7 @@ ModelOutput MluGraphExecutorImpl::run_eager(const torch::Tensor& tokens,
         << "MLU graph fallback to eager because dp_is_decode is invalid";
   }
   COUNTER_INC(num_model_execution_total_eager);
-  ModelOutput result =
-      forward_with_typed_input(model_, tokens, positions, kv_caches, params);
+  ModelOutput result = model_->forward(tokens, positions, kv_caches, params);
   return make_graph_output(result.hidden_states,
                            result.aux_hidden_states,
                            options_.enable_graph_aux_hidden_states());

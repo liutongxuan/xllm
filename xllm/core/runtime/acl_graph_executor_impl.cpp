@@ -1000,8 +1000,7 @@ ModelOutput AclGraphExecutorImpl::run(const torch::Tensor& tokens,
     VLOG(kGraphExecutorLogVerboseLevel)
         << "AclGraphExecutorImpl::run() in eager mode";
     COUNTER_INC(num_model_execution_total_eager);
-    return forward_with_typed_input(
-        model_, tokens, positions, kv_caches, params);
+    return model_->forward(tokens, positions, kv_caches, params);
   }
 
   // Only use acl graph in decode phase for performance optimization
@@ -1026,8 +1025,7 @@ ModelOutput AclGraphExecutorImpl::run(const torch::Tensor& tokens,
         << "). This message is logged only once. "
         << "Monitor counter 'num_model_execution_total_eager' for frequency.";
     COUNTER_INC(num_model_execution_total_eager);
-    return forward_with_typed_input(
-        model_, tokens, positions, kv_caches, params);
+    return model_->forward(tokens, positions, kv_caches, params);
   }
 
   // Check if captured graph exists for this bucket num_tokens
@@ -1087,7 +1085,7 @@ ModelOutput AclGraphExecutorImpl::run(const torch::Tensor& tokens,
   LOG(ERROR) << "Failed to capture ACL graph for bucket num_tokens: "
              << bucket_num_tokens;
   COUNTER_INC(num_model_execution_total_eager);
-  return forward_with_typed_input(model_, tokens, positions, kv_caches, params);
+  return model_->forward(tokens, positions, kv_caches, params);
 }
 
 ModelOutput AclGraphExecutorImpl::run(const torch::Tensor& tokens,

@@ -1280,8 +1280,7 @@ ModelOutput CudaGraphExecutorImpl::run(const torch::Tensor& tokens,
           << " exceeds max_tokens_for_graph_mode ("
           << max_tokens_for_graph_mode_ << "), falling back to eager mode";
       COUNTER_INC(num_model_execution_total_eager);
-      return forward_with_typed_input(
-          model_, tokens, positions, kv_caches, params);
+      return model_->forward(tokens, positions, kv_caches, params);
     }
 
     // Check if piecewise graph exists for this bucket
@@ -1353,8 +1352,7 @@ ModelOutput CudaGraphExecutorImpl::run(const torch::Tensor& tokens,
   // Prefill without piecewise graph: use eager mode
   if (is_prefill) {
     COUNTER_INC(num_model_execution_total_eager);
-    return forward_with_typed_input(
-        model_, tokens, positions, kv_caches, params);
+    return model_->forward(tokens, positions, kv_caches, params);
   }
 
   // Decode phase with full graph
@@ -1368,8 +1366,7 @@ ModelOutput CudaGraphExecutorImpl::run(const torch::Tensor& tokens,
       LOG(WARNING) << "Not suitable for CUDA graph operations, falling back to "
                       "eager mode.";
       COUNTER_INC(num_model_execution_total_eager);
-      return forward_with_typed_input(
-          model_, tokens, positions, kv_caches, params);
+      return model_->forward(tokens, positions, kv_caches, params);
     }
 
     // Check if captured graph exists for this bucket num_tokens
@@ -1440,7 +1437,7 @@ ModelOutput CudaGraphExecutorImpl::run(const torch::Tensor& tokens,
   LOG(ERROR) << "Failed to capture CUDA graph for bucket num_tokens: "
              << bucket_num_tokens;
   COUNTER_INC(num_model_execution_total_eager);
-  return forward_with_typed_input(model_, tokens, positions, kv_caches, params);
+  return model_->forward(tokens, positions, kv_caches, params);
 }
 
 ModelOutput CudaGraphExecutorImpl::run(const torch::Tensor& tokens,
