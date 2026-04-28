@@ -30,6 +30,7 @@ limitations under the License.
 #include "common/metrics.h"
 #include "common/types.h"
 #include "core/common/global_flags.h"
+#include "framework/model/model_input.h"
 #include "framework/model/model_input_params.h"
 #include "util/rec_model_utils.h"
 #if defined(USE_CUDA)
@@ -167,10 +168,12 @@ std::optional<ForwardOutput> RecWorkerImpl::RecWorkPipeline::step(
 
   // temporarily use [0], will be adapted in next pr
   // call model executor forward to get hidden states
+  auto typed_input =
+      model_input::make_model_input_from_legacy(input.input_params);
   auto model_output = runtime_.executor->forward(input.token_ids,
                                                  input.positions,
                                                  runtime_.worker.kv_caches_,
-                                                 input.input_params);
+                                                 std::move(typed_input));
   if (!model_output.hidden_states.defined()) {
     return std::nullopt;
   }
@@ -412,10 +415,13 @@ std::optional<ForwardOutput> RecWorkerImpl::OneRecWorkPipeline::step(
       decoder_params.mutable_onerec_params().is_encoder_forward = false;
       decoder_params.mutable_onerec_params().has_encoder_output =
           rec_params.has_encoder_output;
-      auto model_output = runtime_.executor->forward(input.token_ids,
-                                                     input.positions,
-                                                     runtime_.worker.kv_caches_,
-                                                     decoder_params);
+      auto typed_decoder_input =
+          model_input::make_model_input_from_legacy(std::move(decoder_params));
+      auto model_output =
+          runtime_.executor->forward(input.token_ids,
+                                     input.positions,
+                                     runtime_.worker.kv_caches_,
+                                     std::move(typed_decoder_input));
       hidden_states = model_output.hidden_states;
     } else {
       const bool has_sparse_embedding =
@@ -441,21 +447,26 @@ std::optional<ForwardOutput> RecWorkerImpl::OneRecWorkPipeline::step(
         encoder_tokens = rec_params.encoder_token_ids;
       }
 
+      auto typed_encoder_input =
+          model_input::make_model_input_from_legacy(std::move(encoder_params));
       auto encoder_output =
           runtime_.executor->forward(encoder_tokens,
                                      rec_params.encoder_positions,
                                      runtime_.worker.kv_caches_,
-                                     encoder_params);
+                                     std::move(typed_encoder_input));
 
       ModelInputParams decoder_params = input_params;
       auto& decoder_onerec_params = decoder_params.mutable_onerec_params();
       decoder_onerec_params.is_encoder_forward = false;
       decoder_onerec_params.has_encoder_output =
           encoder_output.hidden_states.defined();
-      auto model_output = runtime_.executor->forward(input.token_ids,
-                                                     input.positions,
-                                                     runtime_.worker.kv_caches_,
-                                                     decoder_params);
+      auto typed_decoder_input =
+          model_input::make_model_input_from_legacy(std::move(decoder_params));
+      auto model_output =
+          runtime_.executor->forward(input.token_ids,
+                                     input.positions,
+                                     runtime_.worker.kv_caches_,
+                                     std::move(typed_decoder_input));
       hidden_states = model_output.hidden_states;
     }
   } else {
@@ -467,10 +478,13 @@ std::optional<ForwardOutput> RecWorkerImpl::OneRecWorkPipeline::step(
     decoder_params.mutable_onerec_params().is_encoder_forward = false;
     decoder_params.mutable_onerec_params().has_encoder_output =
         rec_params.has_encoder_output;
-    auto model_output = runtime_.executor->forward(input.token_ids,
-                                                   input.positions,
-                                                   runtime_.worker.kv_caches_,
-                                                   decoder_params);
+    auto typed_decoder_input =
+        model_input::make_model_input_from_legacy(std::move(decoder_params));
+    auto model_output =
+        runtime_.executor->forward(input.token_ids,
+                                   input.positions,
+                                   runtime_.worker.kv_caches_,
+                                   std::move(typed_decoder_input));
     hidden_states = model_output.hidden_states;
   }
 
@@ -828,10 +842,13 @@ std::optional<ForwardOutput> RecWorkerImpl::LlmRecMultiRoundPipeline::step(
                                           next_round_async_result);
 #endif
 
-    auto model_output = runtime_.executor->forward(mutable_input.token_ids,
-                                                   mutable_input.positions,
-                                                   runtime_.worker.kv_caches_,
-                                                   mutable_input.input_params);
+    auto typed_round_input =
+        model_input::make_model_input_from_legacy(mutable_input.input_params);
+    auto model_output =
+        runtime_.executor->forward(mutable_input.token_ids,
+                                   mutable_input.positions,
+                                   runtime_.worker.kv_caches_,
+                                   std::move(typed_round_input));
     if (!model_output.hidden_states.defined()) {
       return std::nullopt;
     }
