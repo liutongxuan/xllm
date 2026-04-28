@@ -297,6 +297,10 @@ class CudaGraphExecutorImpl : public ExecutorImpl {
                   const torch::Tensor& positions,
                   std::vector<KVCache>& kv_caches,
                   const model_input::ModelInput& input) override;
+  ModelOutput run(const torch::Tensor& tokens,
+                  const torch::Tensor& positions,
+                  std::vector<KVCache>& kv_caches,
+                  model_input::ModelInput&& input) override;
 
   // Return current graph executor memory usage in bytes (including persistent
   // parameters). Exposed for tests and diagnostics.

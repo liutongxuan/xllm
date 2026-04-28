@@ -15,6 +15,8 @@ limitations under the License.
 
 #include "model_input_factory.h"
 
+#include <utility>
+
 #include "causal_lm.h"
 #include "causal_vlm.h"
 #include "dit_model.h"
@@ -75,6 +77,11 @@ ModelInput ModelInputFactory::create_for_rec(
 void ModelInputFactory::apply_to_legacy(const ModelInput& input,
                                         xllm::ModelInputParams* params) {
   apply_model_input_to_legacy(input, params);
+}
+
+void ModelInputFactory::apply_to_legacy(ModelInput&& input,
+                                        xllm::ModelInputParams* params) {
+  apply_model_input_to_legacy(std::move(input), params);
 }
 
 }  // namespace model_input

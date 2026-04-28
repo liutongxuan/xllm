@@ -67,6 +67,15 @@ class CausalLM : public torch::nn::Module {
     return forward(tokens, positions, kv_caches, params);
   }
 
+  virtual ModelOutput forward(const torch::Tensor& tokens,
+                              const torch::Tensor& positions,
+                              std::vector<KVCache>& kv_caches,
+                              model_input::ModelInput&& input) {
+    ModelInputParams params;
+    model_input::apply_model_input_to_legacy(std::move(input), &params);
+    return forward(tokens, positions, kv_caches, params);
+  }
+
   // hidden_states: [num_tokens, hidden_size]
   // seleted_idxes: [num_tokens]
   // returns: [num_seqs, hidden_size]

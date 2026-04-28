@@ -66,6 +66,16 @@ ModelOutput VlmExecutorImpl::run(const torch::Tensor& tokens,
       tokens, positions, kv_caches, std::move(params));
 }
 
+ModelOutput VlmExecutorImpl::run(const torch::Tensor& tokens,
+                                 const torch::Tensor& positions,
+                                 std::vector<KVCache>& kv_caches,
+                                 model_input::ModelInput&& input) {
+  ModelInputParams params;
+  model_input::apply_model_input_to_legacy(std::move(input), &params);
+  return run_with_legacy_params(
+      tokens, positions, kv_caches, std::move(params));
+}
+
 ModelOutput VlmExecutorImpl::run_with_legacy_params(
     const torch::Tensor& tokens,
     const torch::Tensor& positions,

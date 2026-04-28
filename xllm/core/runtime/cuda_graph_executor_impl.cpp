@@ -1461,6 +1461,15 @@ ModelOutput CudaGraphExecutorImpl::run(const torch::Tensor& tokens,
   return run(tokens, positions, kv_caches, params);
 }
 
+ModelOutput CudaGraphExecutorImpl::run(const torch::Tensor& tokens,
+                                       const torch::Tensor& positions,
+                                       std::vector<KVCache>& kv_caches,
+                                       model_input::ModelInput&& input) {
+  ModelInputParams params;
+  model_input::apply_model_input_to_legacy(std::move(input), &params);
+  return run(tokens, positions, kv_caches, params);
+}
+
 // bucket will be [1, 2, 4, 8, 16, 32, 48, 64, ..., max_seqs_per_batch]
 uint32_t CudaGraphExecutorImpl::get_bucket_num_tokens(uint32_t num_tokens,
                                                       bool is_prefill) const {

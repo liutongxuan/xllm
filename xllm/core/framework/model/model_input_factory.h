@@ -42,6 +42,8 @@ class ModelInputFactory {
 
   static void apply_to_legacy(const ModelInput& input,
                               xllm::ModelInputParams* params);
+  static void apply_to_legacy(ModelInput&& input,
+                              xllm::ModelInputParams* params);
 };
 
 }  // namespace model_input

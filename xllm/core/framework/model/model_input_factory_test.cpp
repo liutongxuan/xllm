@@ -19,6 +19,7 @@ limitations under the License.
 
 #include <memory>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "causal_lm.h"
@@ -267,6 +268,20 @@ TEST(ModelInputFactoryTest, MakeModelInputFromLegacyMoveKeepsPartitions) {
   EXPECT_TRUE(has_llm(input));
   EXPECT_TRUE(has_vlm(input));
   EXPECT_TRUE(has_rec(input));
+}
+
+TEST(ModelInputFactoryTest, ApplyToLegacyMoveKeepsPartitions) {
+  ModelInputParams params;
+  params.deep_stacks.push_back(torch::zeros({1, 1}));
+  auto& onerec = params.mutable_onerec_params();
+  onerec.bs = 2;
+
+  ModelInput input = make_model_input_from_legacy(std::move(params));
+  ModelInputParams restored;
+  ModelInputFactory::apply_to_legacy(std::move(input), &restored);
+
+  EXPECT_TRUE(restored.deep_stacks.size() == 1);
+  EXPECT_FALSE(std::holds_alternative<std::monostate>(restored.rec_params));
 }
 
 }  // namespace

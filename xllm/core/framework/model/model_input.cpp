@@ -52,6 +52,16 @@ void apply_model_input_to_legacy(const ModelInput& src,
   apply_model_input_param_bundle_to_legacy(bundle, params);
 }
 
+void apply_model_input_to_legacy(ModelInput&& src,
+                                 xllm::ModelInputParams* params) {
+  ModelInputParamBundle bundle;
+  bundle.llm = std::move(src.llm);
+  bundle.vlm = std::move(src.vlm);
+  bundle.dit = std::move(src.dit);
+  bundle.rec = std::move(src.rec);
+  apply_model_input_param_bundle_to_legacy(std::move(bundle), params);
+}
+
 bool has_llm(const ModelInput& input) { return input.llm.has_value(); }
 
 bool has_vlm(const ModelInput& input) { return input.vlm.has_value(); }

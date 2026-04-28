@@ -17,6 +17,8 @@ limitations under the License.
 
 #include <glog/logging.h>
 
+#include <utility>
+
 #include "common/metrics.h"
 
 namespace xllm {
@@ -36,8 +38,8 @@ ModelOutput BaseExecutorImpl::run(const torch::Tensor& tokens,
                                   const torch::Tensor& positions,
                                   std::vector<KVCache>& kv_caches,
                                   const ModelInputParams& params) {
-  const model_input::ModelInput input = model_->create_model_input(params);
-  return run(tokens, positions, kv_caches, input);
+  model_input::ModelInput input = model_->create_model_input(params);
+  return run(tokens, positions, kv_caches, std::move(input));
 }
 
 ModelOutput BaseExecutorImpl::run(const torch::Tensor& tokens,
@@ -46,6 +48,14 @@ ModelOutput BaseExecutorImpl::run(const torch::Tensor& tokens,
                                   const model_input::ModelInput& input) {
   COUNTER_INC(num_model_execution_total_eager);
   return model_->forward(tokens, positions, kv_caches, input);
+}
+
+ModelOutput BaseExecutorImpl::run(const torch::Tensor& tokens,
+                                  const torch::Tensor& positions,
+                                  std::vector<KVCache>& kv_caches,
+                                  model_input::ModelInput&& input) {
+  COUNTER_INC(num_model_execution_total_eager);
+  return model_->forward(tokens, positions, kv_caches, std::move(input));
 }
 
 }  // namespace xllm

@@ -19,6 +19,7 @@ limitations under the License.
 
 #include <cstdint>
 #include <memory>
+#include <utility>
 
 #include "common/macros.h"
 #include "framework/batch/batch.h"
@@ -51,6 +52,15 @@ class ExecutorImpl {
                           const model_input::ModelInput& input) {
     ModelInputParams params;
     model_input::apply_model_input_to_legacy(input, &params);
+    return run(tokens, positions, kv_caches, params);
+  }
+
+  virtual ModelOutput run(const torch::Tensor& tokens,
+                          const torch::Tensor& positions,
+                          std::vector<KVCache>& kv_caches,
+                          model_input::ModelInput&& input) {
+    ModelInputParams params;
+    model_input::apply_model_input_to_legacy(std::move(input), &params);
     return run(tokens, positions, kv_caches, params);
   }
 };

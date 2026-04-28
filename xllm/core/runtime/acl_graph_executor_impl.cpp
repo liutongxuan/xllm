@@ -1108,6 +1108,15 @@ ModelOutput AclGraphExecutorImpl::run(const torch::Tensor& tokens,
   return run(tokens, positions, kv_caches, params);
 }
 
+ModelOutput AclGraphExecutorImpl::run(const torch::Tensor& tokens,
+                                      const torch::Tensor& positions,
+                                      std::vector<KVCache>& kv_caches,
+                                      model_input::ModelInput&& input) {
+  ModelInputParams params;
+  model_input::apply_model_input_to_legacy(std::move(input), &params);
+  return run(tokens, positions, kv_caches, params);
+}
+
 void AclGraph::print_graph_tensors() const {
   VLOG(kGraphExecutorLogVerboseLevel)
       << "graph persistent_tokens_: " << persistent_param_.persistent_tokens();

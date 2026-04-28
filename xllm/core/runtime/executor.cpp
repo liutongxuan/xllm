@@ -15,6 +15,8 @@ limitations under the License.
 
 #include "executor.h"
 
+#include <utility>
+
 #include "common/global_flags.h"
 #include "executor_impl_factory.h"
 #include "platform/device.h"
@@ -48,6 +50,13 @@ ModelOutput Executor::forward(const torch::Tensor& tokens,
                               std::vector<KVCache>& kv_caches,
                               const model_input::ModelInput& input) {
   return impl_->run(tokens, positions, kv_caches, input);
+}
+
+ModelOutput Executor::forward(const torch::Tensor& tokens,
+                              const torch::Tensor& positions,
+                              std::vector<KVCache>& kv_caches,
+                              model_input::ModelInput&& input) {
+  return impl_->run(tokens, positions, kv_caches, std::move(input));
 }
 
 }  // namespace xllm

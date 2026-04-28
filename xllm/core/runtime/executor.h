@@ -51,6 +51,10 @@ class Executor final {
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
                       const model_input::ModelInput& input);
+  ModelOutput forward(const torch::Tensor& tokens,
+                      const torch::Tensor& positions,
+                      std::vector<KVCache>& kv_caches,
+                      model_input::ModelInput&& input);
 
  private:
   std::unique_ptr<ExecutorImpl> impl_;
