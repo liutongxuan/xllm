@@ -119,15 +119,6 @@ class MluGraphExecutorImpl : public ExecutorImpl {
                   std::vector<KVCache>& kv_caches,
                   const ModelInputParams& params) override;
 
-  ModelOutput run(const torch::Tensor& tokens,
-                  const torch::Tensor& positions,
-                  std::vector<KVCache>& kv_caches,
-                  const model_input::ModelInput& input) override;
-  ModelOutput run(const torch::Tensor& tokens,
-                  const torch::Tensor& positions,
-                  std::vector<KVCache>& kv_caches,
-                  model_input::ModelInput&& input) override;
-
  private:
   ModelOutput run_eager(const torch::Tensor& tokens,
                         const torch::Tensor& positions,
