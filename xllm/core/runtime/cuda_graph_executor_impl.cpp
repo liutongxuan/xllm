@@ -96,15 +96,6 @@ size_t get_allocator_reserved_bytes(c10::DeviceIndex device_index) {
   return static_cast<size_t>(device_stats.reserved_bytes[stat_index].current);
 }
 
-ModelOutput forward_with_typed_input(CausalLM* model,
-                                     const torch::Tensor& tokens,
-                                     const torch::Tensor& positions,
-                                     std::vector<KVCache>& kv_caches,
-                                     const ModelInputParams& params) {
-  const model_input::ModelInput input = model->create_model_input(params);
-  return model->forward(tokens, positions, kv_caches, input);
-}
-
 }  // namespace
 
 // CudaGraphPersistentParam implementation

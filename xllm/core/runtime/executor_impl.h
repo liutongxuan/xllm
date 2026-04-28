@@ -65,4 +65,22 @@ class ExecutorImpl {
   }
 };
 
+inline ModelOutput forward_with_typed_input(CausalLM* model,
+                                            const torch::Tensor& tokens,
+                                            const torch::Tensor& positions,
+                                            std::vector<KVCache>& kv_caches,
+                                            const ModelInputParams& params) {
+  const model_input::ModelInput input = model->create_model_input(params);
+  return model->forward(tokens, positions, kv_caches, input);
+}
+
+inline ModelOutput forward_with_typed_input(CausalLM* model,
+                                            const torch::Tensor& tokens,
+                                            const torch::Tensor& positions,
+                                            std::vector<KVCache>& kv_caches,
+                                            ModelInputParams&& params) {
+  model_input::ModelInput input = model->create_model_input(std::move(params));
+  return model->forward(tokens, positions, kv_caches, std::move(input));
+}
+
 }  // namespace xllm

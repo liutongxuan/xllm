@@ -189,16 +189,6 @@ RunMode get_run_mode(const xllm::runtime::Options& options,
   return RunMode::kGraph;
 }
 
-xllm::ModelOutput forward_with_typed_input(
-    xllm::CausalLM* model,
-    const torch::Tensor& tokens,
-    const torch::Tensor& positions,
-    std::vector<xllm::KVCache>& kv_caches,
-    const xllm::ModelInputParams& params) {
-  const xllm::model_input::ModelInput input = model->create_model_input(params);
-  return model->forward(tokens, positions, kv_caches, input);
-}
-
 }  // namespace
 
 namespace xllm::mlu {

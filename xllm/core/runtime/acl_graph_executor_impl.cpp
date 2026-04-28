@@ -69,15 +69,6 @@ int64_t get_decode_graph_capacity(const runtime::Options& options) {
   }
   return options.max_seqs_per_batch() * options.num_decoding_tokens();
 }
-
-ModelOutput forward_with_typed_input(CausalLM* model,
-                                     const torch::Tensor& tokens,
-                                     const torch::Tensor& positions,
-                                     std::vector<KVCache>& kv_caches,
-                                     const ModelInputParams& params) {
-  const model_input::ModelInput input = model->create_model_input(params);
-  return model->forward(tokens, positions, kv_caches, input);
-}
 }  // namespace
 
 // GraphPersistentParam implementation
