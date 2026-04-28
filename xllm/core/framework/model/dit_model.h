@@ -43,6 +43,16 @@ class DiTModel : public torch::nn::Module {
     input.dit = bundle.dit;
     return input;
   }
+
+  virtual model_input::ModelInput create_model_input(
+      ModelInputParams&& parameters) const {
+    model_input::ModelInput input;
+    model_input::ModelInputParamBundle bundle =
+        model_input::make_model_input_param_bundle_from_legacy(
+            std::move(parameters));
+    input.dit = bundle.dit;
+    return input;
+  }
 };
 
 template <typename Model>

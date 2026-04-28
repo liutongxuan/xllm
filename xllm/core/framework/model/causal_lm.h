@@ -104,6 +104,16 @@ class CausalLM : public torch::nn::Module {
     return input;
   }
 
+  virtual model_input::ModelInput create_model_input(
+      ModelInputParams&& parameters) const {
+    model_input::ModelInput input;
+    model_input::ModelInputParamBundle bundle =
+        model_input::make_model_input_param_bundle_from_legacy(
+            std::move(parameters));
+    input.llm = bundle.llm;
+    return input;
+  }
+
   // MTP-specific interface.
 #if defined(USE_NPU)
   virtual layer::NpuLmHead get_npu_lm_head() {

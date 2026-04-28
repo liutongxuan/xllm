@@ -46,6 +46,17 @@ class CausalVLM : public CausalLM {
     input.vlm = bundle.vlm;
     return input;
   }
+
+  model_input::ModelInput create_model_input(
+      ModelInputParams&& parameters) const override {
+    model_input::ModelInput input;
+    model_input::ModelInputParamBundle bundle =
+        model_input::make_model_input_param_bundle_from_legacy(
+            std::move(parameters));
+    input.llm = bundle.llm;
+    input.vlm = bundle.vlm;
+    return input;
+  }
 };
 
 template <typename Model>

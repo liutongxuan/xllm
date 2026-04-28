@@ -185,6 +185,15 @@ TEST(ModelInputFactoryTest, CausalLmCreatesLlmInputDirectly) {
   EXPECT_FALSE(has_dit(input));
 }
 
+TEST(ModelInputFactoryTest, CausalLmCreatesLlmInputDirectlyFromMovedParams) {
+  FakeCausalLM model;
+  ModelInputParams params;
+  const ModelInput input = model.create_model_input(std::move(params));
+  EXPECT_TRUE(has_llm(input));
+  EXPECT_FALSE(has_vlm(input));
+  EXPECT_FALSE(has_dit(input));
+}
+
 TEST(ModelInputFactoryTest, RecCausalLmCreatesRecInputDirectlyWhenPresent) {
   FakeRecCausalLM model;
   ModelInputParams params;
@@ -192,6 +201,18 @@ TEST(ModelInputFactoryTest, RecCausalLmCreatesRecInputDirectlyWhenPresent) {
   onerec.bs = 2;
 
   const ModelInput input = model.create_model_input(params);
+  EXPECT_TRUE(has_llm(input));
+  EXPECT_TRUE(has_rec(input));
+}
+
+TEST(ModelInputFactoryTest,
+     RecCausalLmCreatesRecInputDirectlyFromMovedParamsWhenPresent) {
+  FakeRecCausalLM model;
+  ModelInputParams params;
+  auto& onerec = params.mutable_onerec_params();
+  onerec.bs = 2;
+
+  const ModelInput input = model.create_model_input(std::move(params));
   EXPECT_TRUE(has_llm(input));
   EXPECT_TRUE(has_rec(input));
 }
@@ -206,11 +227,31 @@ TEST(ModelInputFactoryTest, CausalVlmCreatesVlmInputDirectly) {
   EXPECT_FALSE(has_dit(input));
 }
 
+TEST(ModelInputFactoryTest, CausalVlmCreatesVlmInputDirectlyFromMovedParams) {
+  FakeCausalVLM model;
+  ModelInputParams params;
+  params.deep_stacks.push_back(torch::zeros({1, 1}));
+  const ModelInput input = model.create_model_input(std::move(params));
+  EXPECT_TRUE(has_llm(input));
+  EXPECT_TRUE(has_vlm(input));
+  EXPECT_FALSE(has_dit(input));
+}
+
 TEST(ModelInputFactoryTest, DitModelCreatesDitInputDirectly) {
   FakeDiTModel model;
   ModelInputParams params;
   params.dit_forward_input.prompts.push_back("dit prompt");
   const ModelInput input = model.create_model_input(params);
+  EXPECT_FALSE(has_llm(input));
+  EXPECT_FALSE(has_vlm(input));
+  EXPECT_TRUE(has_dit(input));
+}
+
+TEST(ModelInputFactoryTest, DitModelCreatesDitInputDirectlyFromMovedParams) {
+  FakeDiTModel model;
+  ModelInputParams params;
+  params.dit_forward_input.prompts.push_back("dit prompt");
+  const ModelInput input = model.create_model_input(std::move(params));
   EXPECT_FALSE(has_llm(input));
   EXPECT_FALSE(has_vlm(input));
   EXPECT_TRUE(has_dit(input));

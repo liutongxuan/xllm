@@ -94,7 +94,7 @@ ModelOutput VlmExecutorImpl::run_with_legacy_params(
   }
 
   const model_input::ModelInput processed_input =
-      model_input::make_model_input_from_legacy(std::move(params));
+      model_->create_model_input(std::move(params));
   return model_->forward(tokens, positions, kv_caches, processed_input);
 }
 
