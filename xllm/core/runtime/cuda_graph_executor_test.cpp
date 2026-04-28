@@ -27,6 +27,7 @@ limitations under the License.
 #include "core/framework/batch/batch_forward_type.h"
 #include "core/framework/model/causal_lm.h"
 #include "core/framework/model/model_args.h"
+#include "core/framework/model/model_input.h"
 #include "core/framework/model/model_input_params.h"
 #include "core/layers/cuda/attention.h"
 #include "core/layers/cuda/flashinfer_workspace.h"
@@ -59,6 +60,24 @@ std::vector<KVCache> MakeSingleKvCaches(torch::Tensor k_cache,
   std::vector<KVCache> kv_caches;
   kv_caches.emplace_back(KVCacheTensors{k_cache, v_cache});
   return kv_caches;
+}
+
+torch::Tensor expect_typed_run_matches_legacy_run(
+    runtime::cuda::CudaGraphExecutorImpl* executor,
+    const torch::Tensor& tokens,
+    const torch::Tensor& positions,
+    std::vector<KVCache>& kv_caches,
+    const ModelInputParams& params) {
+  const torch::Tensor legacy_output =
+      executor->run(tokens, positions, kv_caches, params).hidden_states;
+  const model_input::ModelInput typed_input =
+      model_input::make_model_input_from_legacy(params);
+  const torch::Tensor typed_output =
+      executor->run(tokens, positions, kv_caches, typed_input).hidden_states;
+  EXPECT_TRUE(torch::allclose(
+      typed_output, legacy_output, /*rtol=*/1e-3, /*atol=*/1e-3))
+      << "Typed run output should match legacy run output";
+  return typed_output;
 }
 
 class CudaGraphExecutorTestEnvironment : public ::testing::Environment {
@@ -361,6 +380,77 @@ TEST(CudaGraphExecutorTest, BatchDecodeCaptureAndReplay) {
   torch::cuda::synchronize();
   EXPECT_TRUE(torch::allclose(out2, eager_out, /*rtol=*/1e-3, /*atol=*/1e-3))
       << "graph replay output should match eager output";
+
+  FLAGS_enable_graph_vmm_pool = old_enable_graph_vmm_pool;
+}
+
+TEST(CudaGraphExecutorTest, BatchDecodeTypedRunMatchesLegacyRun) {
+  if (!torch::cuda::is_available()) {
+    GTEST_SKIP() << "CUDA is not available at runtime.";
+  }
+
+  const bool old_enable_graph_vmm_pool = FLAGS_enable_graph_vmm_pool;
+  FLAGS_enable_graph_vmm_pool = false;
+
+  const torch::Device device = InitXllmCudaDeviceForTest(/*device_index=*/0);
+  xllm::layer::flashinfer::FlashinferWorkspace::get_instance().initialize(
+      device);
+
+  ModelArgs args;
+  args.model_type("fake_attn");
+  args.dtype("bfloat16");
+  args.hidden_size(256);
+  args.max_position_embeddings(16);
+  args.vocab_size(2048);
+  args.n_layers(1);
+  args.n_heads(2);
+  args.head_dim(128);
+  args.n_kv_heads(1);
+
+  runtime::Options options;
+  options.block_size(1);
+  options.max_seqs_per_batch(1);
+
+  auto model = std::make_unique<FakeAttnCausalLM>(args, device);
+  auto graph_exec = std::make_unique<runtime::cuda::CudaGraphExecutorImpl>(
+      model.get(), args, device, options);
+
+  const auto tokens = torch::tensor(
+      {1}, torch::TensorOptions().dtype(torch::kInt32).device(device));
+  const auto positions = torch::tensor(
+      {0}, torch::TensorOptions().dtype(torch::kInt32).device(device));
+  const ModelInputParams params = MakeDecodeParams(device);
+
+  auto kv_for_eager = MakeKvCaches(device,
+                                   /*num_pages=*/4,
+                                   /*page_size=*/1,
+                                   /*num_kv_heads=*/1,
+                                   /*head_dim=*/128);
+  auto kv_for_legacy = MakeKvCaches(device,
+                                    /*num_pages=*/4,
+                                    /*page_size=*/1,
+                                    /*num_kv_heads=*/1,
+                                    /*head_dim=*/128);
+  auto kv_for_typed = MakeKvCaches(device,
+                                   /*num_pages=*/4,
+                                   /*page_size=*/1,
+                                   /*num_kv_heads=*/1,
+                                   /*head_dim=*/128);
+
+  const auto eager_out =
+      model->forward(tokens, positions, kv_for_eager, params).hidden_states;
+  const auto legacy_out =
+      graph_exec->run(tokens, positions, kv_for_legacy, params).hidden_states;
+  const auto typed_out = expect_typed_run_matches_legacy_run(
+      graph_exec.get(), tokens, positions, kv_for_typed, params);
+
+  torch::cuda::synchronize();
+  EXPECT_TRUE(
+      torch::allclose(legacy_out, eager_out, /*rtol=*/1e-3, /*atol=*/1e-3));
+  EXPECT_TRUE(
+      torch::allclose(typed_out, eager_out, /*rtol=*/1e-3, /*atol=*/1e-3));
+  EXPECT_TRUE(
+      torch::allclose(typed_out, legacy_out, /*rtol=*/1e-3, /*atol=*/1e-3));
 
   FLAGS_enable_graph_vmm_pool = old_enable_graph_vmm_pool;
 }

@@ -20,6 +20,7 @@ limitations under the License.
 #include "framework/batch/batch.h"
 #include "framework/kv_cache/kv_cache.h"
 #include "framework/model/causal_lm.h"
+#include "framework/model/model_input.h"
 #include "framework/model/model_input_params.h"
 #include "framework/model/model_output.h"
 #include "runtime/executor_impl.h"
@@ -45,6 +46,11 @@ class Executor final {
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
                       const ModelInputParams& params);
+
+  ModelOutput forward(const torch::Tensor& tokens,
+                      const torch::Tensor& positions,
+                      std::vector<KVCache>& kv_caches,
+                      const model_input::ModelInput& input);
 
  private:
   std::unique_ptr<ExecutorImpl> impl_;

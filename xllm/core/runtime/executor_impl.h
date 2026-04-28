@@ -24,6 +24,7 @@ limitations under the License.
 #include "framework/batch/batch.h"
 #include "framework/kv_cache/kv_cache.h"
 #include "framework/model/causal_lm.h"
+#include "framework/model/model_input.h"
 #include "framework/model/model_input_params.h"
 #include "framework/model/model_output.h"
 #include "options.h"
@@ -43,6 +44,15 @@ class ExecutorImpl {
                           const torch::Tensor& positions,
                           std::vector<KVCache>& kv_caches,
                           const ModelInputParams& params) = 0;
+
+  virtual ModelOutput run(const torch::Tensor& tokens,
+                          const torch::Tensor& positions,
+                          std::vector<KVCache>& kv_caches,
+                          const model_input::ModelInput& input) {
+    ModelInputParams params;
+    model_input::apply_model_input_to_legacy(input, &params);
+    return run(tokens, positions, kv_caches, params);
+  }
 };
 
 }  // namespace xllm

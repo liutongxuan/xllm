@@ -69,6 +69,15 @@ int64_t get_decode_graph_capacity(const runtime::Options& options) {
   }
   return options.max_seqs_per_batch() * options.num_decoding_tokens();
 }
+
+ModelOutput forward_with_typed_input(CausalLM* model,
+                                     const torch::Tensor& tokens,
+                                     const torch::Tensor& positions,
+                                     std::vector<KVCache>& kv_caches,
+                                     const ModelInputParams& params) {
+  const model_input::ModelInput input = model->create_model_input(params);
+  return model->forward(tokens, positions, kv_caches, input);
+}
 }  // namespace
 
 // GraphPersistentParam implementation
@@ -1000,7 +1009,8 @@ ModelOutput AclGraphExecutorImpl::run(const torch::Tensor& tokens,
     VLOG(kGraphExecutorLogVerboseLevel)
         << "AclGraphExecutorImpl::run() in eager mode";
     COUNTER_INC(num_model_execution_total_eager);
-    return model_->forward(tokens, positions, kv_caches, params);
+    return forward_with_typed_input(
+        model_, tokens, positions, kv_caches, params);
   }
 
   // Only use acl graph in decode phase for performance optimization
@@ -1025,7 +1035,8 @@ ModelOutput AclGraphExecutorImpl::run(const torch::Tensor& tokens,
         << "). This message is logged only once. "
         << "Monitor counter 'num_model_execution_total_eager' for frequency.";
     COUNTER_INC(num_model_execution_total_eager);
-    return model_->forward(tokens, positions, kv_caches, params);
+    return forward_with_typed_input(
+        model_, tokens, positions, kv_caches, params);
   }
 
   // Check if captured graph exists for this bucket num_tokens
@@ -1085,7 +1096,16 @@ ModelOutput AclGraphExecutorImpl::run(const torch::Tensor& tokens,
   LOG(ERROR) << "Failed to capture ACL graph for bucket num_tokens: "
              << bucket_num_tokens;
   COUNTER_INC(num_model_execution_total_eager);
-  return model_->forward(tokens, positions, kv_caches, params);
+  return forward_with_typed_input(model_, tokens, positions, kv_caches, params);
+}
+
+ModelOutput AclGraphExecutorImpl::run(const torch::Tensor& tokens,
+                                      const torch::Tensor& positions,
+                                      std::vector<KVCache>& kv_caches,
+                                      const model_input::ModelInput& input) {
+  ModelInputParams params;
+  model_input::apply_model_input_to_legacy(input, &params);
+  return run(tokens, positions, kv_caches, params);
 }
 
 void AclGraph::print_graph_tensors() const {

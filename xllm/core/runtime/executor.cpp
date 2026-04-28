@@ -43,4 +43,11 @@ ModelOutput Executor::forward(const torch::Tensor& tokens,
   return impl_->run(tokens, positions, kv_caches, params);
 }
 
+ModelOutput Executor::forward(const torch::Tensor& tokens,
+                              const torch::Tensor& positions,
+                              std::vector<KVCache>& kv_caches,
+                              const model_input::ModelInput& input) {
+  return impl_->run(tokens, positions, kv_caches, input);
+}
+
 }  // namespace xllm

@@ -96,6 +96,15 @@ size_t get_allocator_reserved_bytes(c10::DeviceIndex device_index) {
   return static_cast<size_t>(device_stats.reserved_bytes[stat_index].current);
 }
 
+ModelOutput forward_with_typed_input(CausalLM* model,
+                                     const torch::Tensor& tokens,
+                                     const torch::Tensor& positions,
+                                     std::vector<KVCache>& kv_caches,
+                                     const ModelInputParams& params) {
+  const model_input::ModelInput input = model->create_model_input(params);
+  return model->forward(tokens, positions, kv_caches, input);
+}
+
 }  // namespace
 
 // CudaGraphPersistentParam implementation
@@ -1280,7 +1289,8 @@ ModelOutput CudaGraphExecutorImpl::run(const torch::Tensor& tokens,
           << " exceeds max_tokens_for_graph_mode ("
           << max_tokens_for_graph_mode_ << "), falling back to eager mode";
       COUNTER_INC(num_model_execution_total_eager);
-      return model_->forward(tokens, positions, kv_caches, params);
+      return forward_with_typed_input(
+          model_, tokens, positions, kv_caches, params);
     }
 
     // Check if piecewise graph exists for this bucket
@@ -1352,7 +1362,8 @@ ModelOutput CudaGraphExecutorImpl::run(const torch::Tensor& tokens,
   // Prefill without piecewise graph: use eager mode
   if (is_prefill) {
     COUNTER_INC(num_model_execution_total_eager);
-    return model_->forward(tokens, positions, kv_caches, params);
+    return forward_with_typed_input(
+        model_, tokens, positions, kv_caches, params);
   }
 
   // Decode phase with full graph
@@ -1366,7 +1377,8 @@ ModelOutput CudaGraphExecutorImpl::run(const torch::Tensor& tokens,
       LOG(WARNING) << "Not suitable for CUDA graph operations, falling back to "
                       "eager mode.";
       COUNTER_INC(num_model_execution_total_eager);
-      return model_->forward(tokens, positions, kv_caches, params);
+      return forward_with_typed_input(
+          model_, tokens, positions, kv_caches, params);
     }
 
     // Check if captured graph exists for this bucket num_tokens
@@ -1437,7 +1449,16 @@ ModelOutput CudaGraphExecutorImpl::run(const torch::Tensor& tokens,
   LOG(ERROR) << "Failed to capture CUDA graph for bucket num_tokens: "
              << bucket_num_tokens;
   COUNTER_INC(num_model_execution_total_eager);
-  return model_->forward(tokens, positions, kv_caches, params);
+  return forward_with_typed_input(model_, tokens, positions, kv_caches, params);
+}
+
+ModelOutput CudaGraphExecutorImpl::run(const torch::Tensor& tokens,
+                                       const torch::Tensor& positions,
+                                       std::vector<KVCache>& kv_caches,
+                                       const model_input::ModelInput& input) {
+  ModelInputParams params;
+  model_input::apply_model_input_to_legacy(input, &params);
+  return run(tokens, positions, kv_caches, params);
 }
 
 // bucket will be [1, 2, 4, 8, 16, 32, 48, 64, ..., max_seqs_per_batch]

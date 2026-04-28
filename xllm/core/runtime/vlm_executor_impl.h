@@ -47,10 +47,19 @@ class VlmExecutorImpl : public ExecutorImpl {
                   const torch::Tensor& positions,
                   std::vector<KVCache>& kv_caches,
                   const ModelInputParams& params) override;
+  ModelOutput run(const torch::Tensor& tokens,
+                  const torch::Tensor& positions,
+                  std::vector<KVCache>& kv_caches,
+                  const model_input::ModelInput& input) override;
 
   virtual MMDict encode(const ModelInputParams& params);
 
  private:
+  ModelOutput run_with_legacy_params(const torch::Tensor& tokens,
+                                     const torch::Tensor& positions,
+                                     std::vector<KVCache>& kv_caches,
+                                     ModelInputParams params);
+
   // not own
   CausalVLM* model_;
   ModelArgs args_;

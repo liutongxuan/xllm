@@ -28,6 +28,7 @@ limitations under the License.
 #include "core/framework/block/block_manager_impl.h"
 #include "core/framework/kv_cache/kv_cache.h"
 #include "core/framework/model/model_args.h"
+#include "core/framework/model/model_input.h"
 #include "core/framework/model/model_output.h"
 #include "core/framework/model_loader.h"
 #include "core/framework/request/sequence.h"
@@ -85,6 +86,27 @@ const KVCache& first_full_attention_cache(
   }
   LOG(FATAL) << "No full-attention KV cache found";
   std::abort();
+}
+
+torch::Tensor expect_typed_run_matches_legacy_run(
+    npu::AclGraphExecutorImpl* graph_executor,
+    const torch::Tensor& tokens,
+    const torch::Tensor& positions,
+    std::vector<KVCache>& kv_caches,
+    const ModelInputParams& params) {
+  const torch::Tensor legacy_output =
+      graph_executor->run({tokens}, {positions}, kv_caches, {params})
+          .hidden_states;
+  const model_input::ModelInput typed_input =
+      model_input::make_model_input_from_legacy(params);
+  const torch::Tensor typed_output =
+      graph_executor->run({tokens}, {positions}, kv_caches, typed_input)
+          .hidden_states;
+
+  EXPECT_TRUE(torch::allclose(
+      legacy_output, typed_output, /*rtol=*/1e-5, /*atol=*/1e-6))
+      << "Legacy run and typed run outputs mismatch";
+  return legacy_output;
 }
 }  // namespace
 
@@ -601,6 +623,24 @@ TEST_F(AclGraphExecutorTest, AclGraphExecutorVsBaseExecutorImpl) {
   EXPECT_EQ(npu_output.sizes(), graph_output.sizes())
       << "Output shape mismatch: NPU=" << npu_output.sizes()
       << ", Graph=" << graph_output.sizes();
+}
+
+TEST_F(AclGraphExecutorTest, TypedRunMatchesLegacyRun) {
+  auto batch = CreateTestBatch();
+  ASSERT_FALSE(batch->empty());
+
+  auto forward_input = batch->prepare_forward_input(
+      options_.num_decoding_tokens(), 0, model_args_);
+  forward_input = forward_input.to(*device_, torch::kFloat32);
+
+  auto graph_executor = std::make_unique<::xllm::npu::AclGraphExecutorImpl>(
+      model_.get(), model_args_, *device_, options_);
+
+  expect_typed_run_matches_legacy_run(graph_executor.get(),
+                                      forward_input.token_ids,
+                                      forward_input.positions,
+                                      kv_caches_,
+                                      forward_input.input_params);
 }
 
 // Test multiple runs to verify consistency across different execution modes

@@ -17,6 +17,8 @@ limitations under the License.
 
 #include <glog/logging.h>
 
+#include <utility>
+
 #include "common/global_flags.h"
 #include "common/metrics.h"
 #include "framework/request/mm_data_visitor.h"
@@ -51,6 +53,24 @@ ModelOutput VlmExecutorImpl::run(const torch::Tensor& tokens,
                                  const torch::Tensor& positions,
                                  std::vector<KVCache>& kv_caches,
                                  const ModelInputParams& params) {
+  return run_with_legacy_params(tokens, positions, kv_caches, params);
+}
+
+ModelOutput VlmExecutorImpl::run(const torch::Tensor& tokens,
+                                 const torch::Tensor& positions,
+                                 std::vector<KVCache>& kv_caches,
+                                 const model_input::ModelInput& input) {
+  ModelInputParams params;
+  model_input::apply_model_input_to_legacy(input, &params);
+  return run_with_legacy_params(
+      tokens, positions, kv_caches, std::move(params));
+}
+
+ModelOutput VlmExecutorImpl::run_with_legacy_params(
+    const torch::Tensor& tokens,
+    const torch::Tensor& positions,
+    std::vector<KVCache>& kv_caches,
+    ModelInputParams params) {
   torch::NoGradGuard no_grad;
   auto& mm_data = params.mm_data;
   EncoderInputGatherVisitor input_gather;
@@ -73,7 +93,9 @@ ModelOutput VlmExecutorImpl::run(const torch::Tensor& tokens,
     return llm_executor_->run(tokens, positions, kv_caches, params);
   }
 
-  return model_->forward(tokens, positions, kv_caches, params);
+  const model_input::ModelInput processed_input =
+      model_input::make_model_input_from_legacy(std::move(params));
+  return model_->forward(tokens, positions, kv_caches, processed_input);
 }
 
 }  // namespace xllm

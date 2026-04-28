@@ -36,8 +36,16 @@ ModelOutput BaseExecutorImpl::run(const torch::Tensor& tokens,
                                   const torch::Tensor& positions,
                                   std::vector<KVCache>& kv_caches,
                                   const ModelInputParams& params) {
+  const model_input::ModelInput input = model_->create_model_input(params);
+  return run(tokens, positions, kv_caches, input);
+}
+
+ModelOutput BaseExecutorImpl::run(const torch::Tensor& tokens,
+                                  const torch::Tensor& positions,
+                                  std::vector<KVCache>& kv_caches,
+                                  const model_input::ModelInput& input) {
   COUNTER_INC(num_model_execution_total_eager);
-  return model_->forward(tokens, positions, kv_caches, params);
+  return model_->forward(tokens, positions, kv_caches, input);
 }
 
 }  // namespace xllm

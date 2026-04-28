@@ -189,6 +189,16 @@ RunMode get_run_mode(const xllm::runtime::Options& options,
   return RunMode::kGraph;
 }
 
+xllm::ModelOutput forward_with_typed_input(
+    xllm::CausalLM* model,
+    const torch::Tensor& tokens,
+    const torch::Tensor& positions,
+    std::vector<xllm::KVCache>& kv_caches,
+    const xllm::ModelInputParams& params) {
+  const xllm::model_input::ModelInput input = model->create_model_input(params);
+  return model->forward(tokens, positions, kv_caches, input);
+}
+
 }  // namespace
 
 namespace xllm::mlu {
@@ -419,7 +429,8 @@ ModelOutput MluGraphExecutorImpl::run_eager(const torch::Tensor& tokens,
         << "MLU graph fallback to eager because dp_is_decode is invalid";
   }
   COUNTER_INC(num_model_execution_total_eager);
-  ModelOutput result = model_->forward(tokens, positions, kv_caches, params);
+  ModelOutput result =
+      forward_with_typed_input(model_, tokens, positions, kv_caches, params);
   return make_graph_output(result.hidden_states,
                            result.aux_hidden_states,
                            options_.enable_graph_aux_hidden_states());
@@ -503,6 +514,15 @@ ModelOutput MluGraphExecutorImpl::run(const torch::Tensor& tokens,
   }
 
   return ModelOutput(hidden_states);
+}
+
+ModelOutput MluGraphExecutorImpl::run(const torch::Tensor& tokens,
+                                      const torch::Tensor& positions,
+                                      std::vector<KVCache>& kv_caches,
+                                      const model_input::ModelInput& input) {
+  ModelInputParams params;
+  model_input::apply_model_input_to_legacy(input, &params);
+  return run(tokens, positions, kv_caches, params);
 }
 
 }  // namespace xllm::mlu

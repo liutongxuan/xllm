@@ -314,6 +314,11 @@ class AclGraphExecutorImpl : public ExecutorImpl {
                   std::vector<KVCache>& kv_caches,
                   const ModelInputParams& params) override;
 
+  ModelOutput run(const torch::Tensor& tokens,
+                  const torch::Tensor& positions,
+                  std::vector<KVCache>& kv_caches,
+                  const model_input::ModelInput& input) override;
+
   static std::optional<std::pair<torch::Tensor, torch::Tensor>>
   find_first_full_attention_cache(const std::vector<KVCache>& kv_caches);
 

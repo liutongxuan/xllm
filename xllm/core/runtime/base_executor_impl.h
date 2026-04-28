@@ -45,6 +45,10 @@ class BaseExecutorImpl : public ExecutorImpl {
                   const torch::Tensor& positions,
                   std::vector<KVCache>& kv_caches,
                   const ModelInputParams& params) override;
+  ModelOutput run(const torch::Tensor& tokens,
+                  const torch::Tensor& positions,
+                  std::vector<KVCache>& kv_caches,
+                  const model_input::ModelInput& input) override;
 
  private:
   // not own

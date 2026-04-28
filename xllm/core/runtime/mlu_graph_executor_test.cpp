@@ -25,12 +25,32 @@ limitations under the License.
 #include "core/framework/batch/batch.h"
 #include "core/framework/kv_cache/kv_cache.h"
 #include "core/framework/model/model_args.h"
+#include "core/framework/model/model_input.h"
 #include "core/framework/model/model_output.h"
 #include "mlu_graph_executor_impl.h"
 #include "platform/device.h"
 #include "runtime/options.h"
 
 namespace xllm {
+namespace {
+torch::Tensor expect_typed_run_matches_legacy_run(
+    ::xllm::mlu::MluGraphExecutorImpl* executor,
+    const torch::Tensor& tokens,
+    const torch::Tensor& positions,
+    std::vector<KVCache>& kv_caches,
+    const ModelInputParams& params) {
+  const torch::Tensor legacy_output =
+      executor->run({tokens}, {positions}, kv_caches, {params}).hidden_states;
+  const model_input::ModelInput typed_input =
+      model_input::make_model_input_from_legacy(params);
+  const torch::Tensor typed_output =
+      executor->run({tokens}, {positions}, kv_caches, typed_input)
+          .hidden_states;
+  EXPECT_TRUE(torch::allclose(typed_output, legacy_output, 1e-5, 1e-6));
+  return typed_output;
+}
+}  // namespace
+
 class MockCausalLM : public CausalLM {
  public:
   MockCausalLM(const torch::TensorOptions& options) : options_(options) {
@@ -198,6 +218,19 @@ TEST_F(MluGraphExecutorTest, DifferentBatchSizes) {
     EXPECT_TRUE(torch::allclose(eager_output, graph_output, 1e-5, 1e-6));
     EXPECT_TRUE(torch::allclose(eager_output, replay_output, 1e-5, 1e-6));
   }
+}
+
+TEST_F(MluGraphExecutorTest, TypedRunMatchesLegacyRun) {
+  const int32_t batch_size = 8;
+  const uint64_t seed = 123;
+  auto forward_input = prepare_inputs(batch_size, seed);
+
+  expect_typed_run_matches_legacy_run(impl_.get(),
+                                      forward_input.token_ids,
+                                      forward_input.positions,
+                                      kv_caches_,
+                                      forward_input.input_params);
+  torch_mlu::synchronize();
 }
 
 // Test multiple runs to verify consistency across different execution modes
