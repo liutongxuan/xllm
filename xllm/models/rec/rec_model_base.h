@@ -55,8 +55,8 @@ class RecForCausalLMImplBase : public torch::nn::Module {
   }
 
   // Typed-input entry for Step 3 migration: unwraps the LLM/Rec partitions into
-  // a legacy ModelInputParams and dispatches through the legacy forward. Future
-  // refactors can replace the body to consume input.llm/input.rec directly.
+  // a legacy ModelInputParams and dispatches through the legacy forward. VLM
+  // and DiT partitions are not consumed by Rec models.
   virtual ModelOutput forward(const torch::Tensor& tokens,
                               const torch::Tensor& positions,
                               std::vector<KVCache>& kv_caches,
@@ -64,7 +64,10 @@ class RecForCausalLMImplBase : public torch::nn::Module {
     CHECK(input.llm.has_value())
         << "Rec forward requires the llm partition in ModelInput";
     ModelInputParams params;
-    model_input::apply_model_input_to_legacy(input, &params);
+    model_input::apply_llm_model_input_params_to_legacy(*input.llm, &params);
+    if (input.rec.has_value()) {
+      model_input::apply_rec_model_input_params_to_legacy(*input.rec, &params);
+    }
     return forward(tokens, positions, kv_caches, params);
   }
 
@@ -75,7 +78,12 @@ class RecForCausalLMImplBase : public torch::nn::Module {
     CHECK(input.llm.has_value())
         << "Rec forward requires the llm partition in ModelInput";
     ModelInputParams params;
-    model_input::apply_model_input_to_legacy(std::move(input), &params);
+    model_input::apply_llm_model_input_params_to_legacy(std::move(*input.llm),
+                                                        &params);
+    if (input.rec.has_value()) {
+      model_input::apply_rec_model_input_params_to_legacy(std::move(*input.rec),
+                                                          &params);
+    }
     return forward(tokens, positions, kv_caches, params);
   }
 

@@ -313,10 +313,9 @@ class MtpForCausalLMImplBase : public torch::nn::Module {
     return model_(tokens, positions, kv_caches, input_params);
   }
 
-  // Typed-input entry for Step 3 migration: unwraps the LLM partition into a
-  // legacy ModelInputParams and dispatches through the legacy forward. Future
-  // refactors can replace the body to consume input.llm directly without
-  // building a full ModelInputParams.
+  // Typed-input entry for Step 3 migration: unwraps the relevant partitions
+  // (LLM always, plus Rec for multi-round usages) into a legacy
+  // ModelInputParams. VLM and DiT are not consumed by MTP draft models.
   virtual ModelOutput forward(const torch::Tensor& tokens,
                               const torch::Tensor& positions,
                               std::vector<KVCache>& kv_caches,
@@ -324,7 +323,10 @@ class MtpForCausalLMImplBase : public torch::nn::Module {
     CHECK(input.llm.has_value())
         << "MTP forward requires the llm partition in ModelInput";
     ModelInputParams params;
-    model_input::apply_model_input_to_legacy(input, &params);
+    model_input::apply_llm_model_input_params_to_legacy(*input.llm, &params);
+    if (input.rec.has_value()) {
+      model_input::apply_rec_model_input_params_to_legacy(*input.rec, &params);
+    }
     return forward(tokens, positions, kv_caches, params);
   }
 
@@ -335,7 +337,12 @@ class MtpForCausalLMImplBase : public torch::nn::Module {
     CHECK(input.llm.has_value())
         << "MTP forward requires the llm partition in ModelInput";
     ModelInputParams params;
-    model_input::apply_model_input_to_legacy(std::move(input), &params);
+    model_input::apply_llm_model_input_params_to_legacy(std::move(*input.llm),
+                                                        &params);
+    if (input.rec.has_value()) {
+      model_input::apply_rec_model_input_params_to_legacy(std::move(*input.rec),
+                                                          &params);
+    }
     return forward(tokens, positions, kv_caches, params);
   }
 

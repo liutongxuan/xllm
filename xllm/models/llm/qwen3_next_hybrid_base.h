@@ -208,10 +208,9 @@ class Qwen3HybridForCausalLMImplBase : public torch::nn::Module {
     return model_->forward(tokens, positions, kv_caches, input_params);
   }
 
-  // Typed-input entry for Step 3 migration: unwraps the LLM partition into a
-  // legacy ModelInputParams and dispatches through the legacy forward. Future
-  // refactors can replace the body to consume input.llm directly without
-  // building a full ModelInputParams.
+  // Typed-input entry for Step 3 migration: unwraps the relevant partitions
+  // (LLM always, plus VLM/Rec when used as a backbone) into a legacy
+  // ModelInputParams. DiT is intentionally not consumed by hybrid LLM models.
   virtual ModelOutput forward(const torch::Tensor& tokens,
                               const torch::Tensor& positions,
                               std::vector<KVCache>& kv_caches,
@@ -219,7 +218,13 @@ class Qwen3HybridForCausalLMImplBase : public torch::nn::Module {
     CHECK(input.llm.has_value())
         << "Hybrid LLM forward requires the llm partition in ModelInput";
     ModelInputParams params;
-    model_input::apply_model_input_to_legacy(input, &params);
+    model_input::apply_llm_model_input_params_to_legacy(*input.llm, &params);
+    if (input.vlm.has_value()) {
+      model_input::apply_vlm_model_input_params_to_legacy(*input.vlm, &params);
+    }
+    if (input.rec.has_value()) {
+      model_input::apply_rec_model_input_params_to_legacy(*input.rec, &params);
+    }
     return forward(tokens, positions, kv_caches, params);
   }
 
@@ -230,7 +235,16 @@ class Qwen3HybridForCausalLMImplBase : public torch::nn::Module {
     CHECK(input.llm.has_value())
         << "Hybrid LLM forward requires the llm partition in ModelInput";
     ModelInputParams params;
-    model_input::apply_model_input_to_legacy(std::move(input), &params);
+    model_input::apply_llm_model_input_params_to_legacy(std::move(*input.llm),
+                                                        &params);
+    if (input.vlm.has_value()) {
+      model_input::apply_vlm_model_input_params_to_legacy(std::move(*input.vlm),
+                                                          &params);
+    }
+    if (input.rec.has_value()) {
+      model_input::apply_rec_model_input_params_to_legacy(std::move(*input.rec),
+                                                          &params);
+    }
     return forward(tokens, positions, kv_caches, params);
   }
 
