@@ -15,6 +15,8 @@ limitations under the License.
 
 #include "model_input.h"
 
+#include <utility>
+
 namespace xllm {
 namespace model_input {
 
@@ -22,6 +24,17 @@ ModelInput make_model_input_from_legacy(const xllm::ModelInputParams& params) {
   ModelInput model_input;
   const ModelInputParamBundle bundle =
       make_model_input_param_bundle_from_legacy(params);
+  model_input.llm = bundle.llm;
+  model_input.vlm = bundle.vlm;
+  model_input.dit = bundle.dit;
+  model_input.rec = bundle.rec;
+  return model_input;
+}
+
+ModelInput make_model_input_from_legacy(xllm::ModelInputParams&& params) {
+  ModelInput model_input;
+  const ModelInputParamBundle bundle =
+      make_model_input_param_bundle_from_legacy(std::move(params));
   model_input.llm = bundle.llm;
   model_input.vlm = bundle.vlm;
   model_input.dit = bundle.dit;

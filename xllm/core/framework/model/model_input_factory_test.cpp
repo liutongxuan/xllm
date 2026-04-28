@@ -18,6 +18,7 @@ limitations under the License.
 #include <gtest/gtest.h>
 
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "causal_lm.h"
@@ -213,6 +214,18 @@ TEST(ModelInputFactoryTest, DitModelCreatesDitInputDirectly) {
   EXPECT_FALSE(has_llm(input));
   EXPECT_FALSE(has_vlm(input));
   EXPECT_TRUE(has_dit(input));
+}
+
+TEST(ModelInputFactoryTest, MakeModelInputFromLegacyMoveKeepsPartitions) {
+  ModelInputParams params;
+  params.deep_stacks.push_back(torch::zeros({1, 1}));
+  auto& onerec = params.mutable_onerec_params();
+  onerec.bs = 2;
+
+  const ModelInput input = make_model_input_from_legacy(std::move(params));
+  EXPECT_TRUE(has_llm(input));
+  EXPECT_TRUE(has_vlm(input));
+  EXPECT_TRUE(has_rec(input));
 }
 
 }  // namespace

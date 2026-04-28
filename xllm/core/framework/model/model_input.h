@@ -31,6 +31,7 @@ struct ModelInput {
 };
 
 ModelInput make_model_input_from_legacy(const xllm::ModelInputParams& params);
+ModelInput make_model_input_from_legacy(xllm::ModelInputParams&& params);
 void apply_model_input_to_legacy(const ModelInput& src,
                                  xllm::ModelInputParams* dst);
 
