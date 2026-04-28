@@ -61,6 +61,8 @@ class RecForCausalLMImplBase : public torch::nn::Module {
                               const torch::Tensor& positions,
                               std::vector<KVCache>& kv_caches,
                               const model_input::ModelInput& input) {
+    CHECK(input.llm.has_value())
+        << "Rec forward requires the llm partition in ModelInput";
     ModelInputParams params;
     model_input::apply_model_input_to_legacy(input, &params);
     return forward(tokens, positions, kv_caches, params);
@@ -70,6 +72,8 @@ class RecForCausalLMImplBase : public torch::nn::Module {
                               const torch::Tensor& positions,
                               std::vector<KVCache>& kv_caches,
                               model_input::ModelInput&& input) {
+    CHECK(input.llm.has_value())
+        << "Rec forward requires the llm partition in ModelInput";
     ModelInputParams params;
     model_input::apply_model_input_to_legacy(std::move(input), &params);
     return forward(tokens, positions, kv_caches, params);
