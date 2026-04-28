@@ -19,8 +19,6 @@ cc_library(
     model_input.cpp
     model_input_factory.cpp
     model_input_param_groups.cpp
-    npu_cp_ep_padding.cpp
-    npu_dp_ep_padding.cpp
   DEPS
     :common
     :common_layers
@@ -43,26 +41,3 @@ cc_test(
     model
     GTest::gtest_main
 )
-
-if(USE_NPU)
-cc_test(
-    NAME 
-      npu_dp_ep_padding_test
-    SRCS
-      npu_dp_ep_padding_test.cpp
-    DEPS
-      :parallel_state
-      torch
-      model
-      absl::synchronization
-      absl::time
-      GTest::gtest_main
-)
-
-target_link_libraries(npu_dp_ep_padding_test
-                 PUBLIC Python::Python
-                 $<$<BOOL:${USE_NPU}>:ascendcl>
-                 $<$<BOOL:${USE_NPU}>:hccl>
-                 $<$<BOOL:${USE_NPU}>:c_sec>
-                 $<$<BOOL:${USE_NPU}>:nnopbase>)
-endif()

@@ -26,7 +26,6 @@ namespace xllm {
 namespace model_input {
 
 struct LLMModelInputParams {
-  bool enable_mla = false;
   BatchForwardType batch_forward_type;
   int32_t num_sequences = 0;
   int32_t kv_max_seq_len = 0;

@@ -22,12 +22,6 @@ limitations under the License.
 namespace xllm {
 namespace model_input {
 
-namespace {
-bool has_rec_payload(const xllm::ModelInputParams& params) {
-  return !std::holds_alternative<std::monostate>(params.rec_params);
-}
-}  // namespace
-
 ModelInput ModelInputFactory::create_all(const xllm::ModelInputParams& params) {
   return ModelInput::from_legacy(params);
 }
@@ -39,9 +33,6 @@ ModelInput ModelInputFactory::create_for_llm(
   ModelInputParamBundle bundle = ModelInputParamBundle::from_legacy(params);
   ModelInput input;
   input.llm = bundle.llm;
-  if (has_rec_payload(params)) {
-    input.rec = bundle.rec;
-  }
   return input;
 }
 

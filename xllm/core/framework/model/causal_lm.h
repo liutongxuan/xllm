@@ -92,9 +92,6 @@ class CausalLM : public torch::nn::Module {
     model_input::ModelInputParamBundle bundle =
         model_input::ModelInputParamBundle::from_legacy(parameters);
     input.llm = bundle.llm;
-    if (!std::holds_alternative<std::monostate>(parameters.rec_params)) {
-      input.rec = bundle.rec;
-    }
     return input;
   }
 

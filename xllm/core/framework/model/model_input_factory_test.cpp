@@ -23,6 +23,7 @@ limitations under the License.
 #include "causal_lm.h"
 #include "causal_vlm.h"
 #include "dit_model.h"
+#include "rec_causal_lm.h"
 
 namespace xllm {
 namespace model_input {
@@ -75,6 +76,27 @@ class FakeCausalVLM final : public CausalVLM {
   torch::TensorOptions options_{torch::TensorOptions().device(torch::kCPU)};
 };
 
+class FakeRecCausalLM final : public RecCausalLM {
+ public:
+  ModelOutput forward(const torch::Tensor&,
+                      const torch::Tensor&,
+                      std::vector<KVCache>&,
+                      const ModelInputParams&) override {
+    return ModelOutput();
+  }
+  torch::Tensor logits(const torch::Tensor&, const torch::Tensor&) override {
+    return torch::Tensor();
+  }
+  void load_model(std::unique_ptr<ModelLoader>) override {}
+  torch::Device device() const override { return torch::Device(torch::kCPU); }
+  void prepare_expert_weight(int32_t, const std::vector<int32_t>&) override {}
+  void update_expert_weight(int32_t) override {}
+  const torch::TensorOptions& options() const override { return options_; }
+
+ private:
+  torch::TensorOptions options_{torch::TensorOptions().device(torch::kCPU)};
+};
+
 class FakeDiTModel final : public DiTModel {
  public:
   DiTForwardOutput forward(const DiTForwardInput&) override {
@@ -96,6 +118,17 @@ TEST(ModelInputFactoryTest, CreateForLlmIncludesOnlyLlmByDefault) {
   EXPECT_TRUE(input.has_llm());
   EXPECT_FALSE(input.has_vlm());
   EXPECT_FALSE(input.has_dit());
+  EXPECT_FALSE(input.has_rec());
+}
+
+TEST(ModelInputFactoryTest, CreateForLlmIgnoresRecPartitionWhenPresent) {
+  FakeCausalLM model;
+  ModelInputParams params;
+  auto& onerec = params.mutable_onerec_params();
+  onerec.bs = 2;
+
+  const ModelInput input = ModelInputFactory::create_for_llm(model, params);
+  EXPECT_TRUE(input.has_llm());
   EXPECT_FALSE(input.has_rec());
 }
 
@@ -133,6 +166,15 @@ TEST(ModelInputFactoryTest, CreateForRecIncludesRecPartitionWhenPresent) {
   EXPECT_TRUE(input.has_rec());
 }
 
+TEST(ModelInputFactoryTest, CreateForRecKeepsRecPartitionEmptyWhenMissing) {
+  FakeCausalLM model;
+  ModelInputParams params;
+
+  const ModelInput input = ModelInputFactory::create_for_rec(model, params);
+  EXPECT_TRUE(input.has_llm());
+  EXPECT_FALSE(input.has_rec());
+}
+
 TEST(ModelInputFactoryTest, CausalLmCreatesLlmInputDirectly) {
   FakeCausalLM model;
   ModelInputParams params;
@@ -140,6 +182,17 @@ TEST(ModelInputFactoryTest, CausalLmCreatesLlmInputDirectly) {
   EXPECT_TRUE(input.has_llm());
   EXPECT_FALSE(input.has_vlm());
   EXPECT_FALSE(input.has_dit());
+}
+
+TEST(ModelInputFactoryTest, RecCausalLmCreatesRecInputDirectlyWhenPresent) {
+  FakeRecCausalLM model;
+  ModelInputParams params;
+  auto& onerec = params.mutable_onerec_params();
+  onerec.bs = 2;
+
+  const ModelInput input = model.create_model_input(params);
+  EXPECT_TRUE(input.has_llm());
+  EXPECT_TRUE(input.has_rec());
 }
 
 TEST(ModelInputFactoryTest, CausalVlmCreatesVlmInputDirectly) {

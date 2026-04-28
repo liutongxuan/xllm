@@ -23,7 +23,6 @@ namespace model_input {
 LLMModelInputParams LLMModelInputParams::from_legacy(
     const xllm::ModelInputParams& src) {
   LLMModelInputParams dst;
-  dst.enable_mla = src.enable_mla;
   dst.batch_forward_type = src.batch_forward_type;
   dst.num_sequences = src.num_sequences;
   dst.kv_max_seq_len = src.kv_max_seq_len;
@@ -77,7 +76,6 @@ LLMModelInputParams LLMModelInputParams::from_legacy(
 }
 
 void LLMModelInputParams::apply_to_legacy(xllm::ModelInputParams* dst) const {
-  dst->enable_mla = enable_mla;
   dst->batch_forward_type = batch_forward_type;
   dst->num_sequences = num_sequences;
   dst->kv_max_seq_len = kv_max_seq_len;
