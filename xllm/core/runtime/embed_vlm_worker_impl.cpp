@@ -27,6 +27,7 @@ limitations under the License.
 
 #include "common/metrics.h"
 #include "framework/kv_cache/kv_cache.h"
+#include "framework/model/model_input.h"
 #include "framework/model/model_input_params.h"
 #include "framework/state_dict/state_dict.h"
 #include "models/model_registry.h"
@@ -67,8 +68,10 @@ std::optional<ForwardOutput> EmbedVLMWorkerImpl::step(
   auto sampling_params = input.sampling_params.to(device_, dtype_);
 
   // call model executor forward to get hidden states
+  auto typed_input =
+      model_input::make_model_input_from_legacy(std::move(params));
   auto model_output = model_executor_->forward(
-      flatten_tokens, flatten_positions, kv_caches_, params);
+      flatten_tokens, flatten_positions, kv_caches_, std::move(typed_input));
   auto hidden_states = model_output.hidden_states;
   ret = device_.synchronize_default_stream();
   COUNTER_ADD(execution_latency_seconds_model, timer.elapsed_seconds());

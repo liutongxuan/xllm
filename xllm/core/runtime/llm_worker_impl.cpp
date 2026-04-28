@@ -30,6 +30,7 @@ limitations under the License.
 #include "common/types.h"
 #include "core/common/global_flags.h"
 #include "framework/kv_cache/kv_cache.h"
+#include "framework/model/model_input.h"
 #include "framework/model/model_input_params.h"
 #include "framework/state_dict/state_dict.h"
 #if defined(USE_CUDA) || defined(USE_ILU) || defined(USE_MUSA)
@@ -131,8 +132,10 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_internal(
   }
 
   // call model executor forward to get hidden states
+  auto typed_input =
+      model_input::make_model_input_from_legacy(input.input_params);
   auto model_output = model_executor_->forward(
-      input.token_ids, input.positions, kv_caches_, input.input_params);
+      input.token_ids, input.positions, kv_caches_, std::move(typed_input));
   if (!model_output.hidden_states.defined()) {
     return std::nullopt;
   }
