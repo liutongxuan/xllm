@@ -23,6 +23,7 @@ limitations under the License.
 #include <unordered_map>
 
 #include "core/framework/kv_cache/kv_cache.h"
+#include "core/framework/model/model_input.h"
 #include "core/framework/model/model_input_params.h"
 #include "core/framework/model/model_output.h"
 #include "core/framework/model_context.h"
@@ -1037,6 +1038,26 @@ class MiniCPMV2_6Impl : public torch::nn::Module {
                       std::vector<KVCache>& kv_caches,
                       const ModelInputParams& input_params) {
     return language_model_(tokens, positions, kv_caches, input_params);
+  }
+
+  // Step 3 typed forward: VLM consumes the llm + vlm partitions and delegates
+  // to the language model's typed forward (LLM family already opted in).
+  ModelOutput forward(const torch::Tensor& tokens,
+                      const torch::Tensor& positions,
+                      std::vector<KVCache>& kv_caches,
+                      const model_input::ModelInput& input) {
+    CHECK(input.llm.has_value())
+        << "VLM forward requires the llm partition in ModelInput";
+    return language_model_(tokens, positions, kv_caches, input);
+  }
+
+  ModelOutput forward(const torch::Tensor& tokens,
+                      const torch::Tensor& positions,
+                      std::vector<KVCache>& kv_caches,
+                      model_input::ModelInput&& input) {
+    CHECK(input.llm.has_value())
+        << "VLM forward requires the llm partition in ModelInput";
+    return language_model_(tokens, positions, kv_caches, std::move(input));
   }
 
   torch::Tensor logits(const torch::Tensor& hidden_states,

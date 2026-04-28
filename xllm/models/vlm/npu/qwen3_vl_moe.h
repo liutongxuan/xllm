@@ -18,6 +18,7 @@ limitations under the License.
 #include <atb/atb_infer.h>
 
 #include "core/framework/kv_cache/kv_cache.h"
+#include "core/framework/model/model_input.h"
 #include "core/framework/model/model_input_params.h"
 #include "core/framework/model/model_output.h"
 #include "core/framework/model_context.h"
@@ -162,6 +163,46 @@ class Qwen3_VLMoeForConditionalGenerationImpl : public torch::nn::Module {
                       const ModelInputParams& input_params) {
     input_params.deep_stacks = std::move(get_deep_stacks(input_params));
     return language_model_(tokens, positions, kv_caches, input_params);
+  }
+
+  // Step 3 typed forward: VLM consumes the llm + vlm partitions; lower into
+  // the legacy ModelInputParams and reuse the legacy forward so the
+  // get_deep_stacks pre-processing keeps running unchanged.
+  ModelOutput forward(const torch::Tensor& tokens,
+                      const torch::Tensor& positions,
+                      std::vector<KVCache>& kv_caches,
+                      const model_input::ModelInput& input) {
+    CHECK(input.llm.has_value())
+        << "VLM forward requires the llm partition in ModelInput";
+    ModelInputParams params;
+    model_input::apply_llm_model_input_params_to_legacy(*input.llm, &params);
+    if (input.vlm.has_value()) {
+      model_input::apply_vlm_model_input_params_to_legacy(*input.vlm, &params);
+    }
+    if (input.rec.has_value()) {
+      model_input::apply_rec_model_input_params_to_legacy(*input.rec, &params);
+    }
+    return forward(tokens, positions, kv_caches, params);
+  }
+
+  ModelOutput forward(const torch::Tensor& tokens,
+                      const torch::Tensor& positions,
+                      std::vector<KVCache>& kv_caches,
+                      model_input::ModelInput&& input) {
+    CHECK(input.llm.has_value())
+        << "VLM forward requires the llm partition in ModelInput";
+    ModelInputParams params;
+    model_input::apply_llm_model_input_params_to_legacy(std::move(*input.llm),
+                                                        &params);
+    if (input.vlm.has_value()) {
+      model_input::apply_vlm_model_input_params_to_legacy(std::move(*input.vlm),
+                                                          &params);
+    }
+    if (input.rec.has_value()) {
+      model_input::apply_rec_model_input_params_to_legacy(std::move(*input.rec),
+                                                          &params);
+    }
+    return forward(tokens, positions, kv_caches, params);
   }
 
   torch::Tensor logits(const torch::Tensor& hidden_states,
