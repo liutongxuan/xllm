@@ -23,6 +23,20 @@ limitations under the License.
 namespace xllm {
 namespace model_input {
 
+// `ModelInput` is the typed view of a model's per-call input, partitioned by
+// model family (llm / vlm / dit / rec). It coexists with the legacy
+// `xllm::ModelInputParams` while migration is in progress:
+//
+//   * Producers (workers/tests) typically still hand out legacy params and
+//     `make_model_input_from_legacy` builds the typed view on the boundary.
+//   * Model bases declare typed `forward(...)` overloads; `CausalLMImpl` /
+//     `RecCausalLMImpl` / `CausalVLMImpl` use SFINAE traits in
+//     `model_traits.h` to route calls directly to the model when it consumes
+//     typed input, otherwise the base default falls back to
+//     `apply_model_input_to_legacy` and the legacy `forward(...)`.
+//   * To opt a model into the typed path, give it a
+//     `forward(..., const ModelInput&)` (and ideally a `&&` overload). The
+//     trait will pick it up automatically.
 struct ModelInput {
   std::optional<LLMModelInputParams> llm;
   std::optional<VLMModelInputParams> vlm;
