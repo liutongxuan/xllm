@@ -33,35 +33,65 @@ namespace model_input {
 namespace {
 
 struct TypedForwardModel {
+  bool typed_const_called = false;
+  bool typed_rvalue_called = false;
+  bool legacy_called = false;
+
   ModelOutput forward(const torch::Tensor&,
                       const torch::Tensor&,
                       std::vector<KVCache>&,
                       const ModelInput&) {
+    typed_const_called = true;
     return ModelOutput();
   }
   ModelOutput forward(const torch::Tensor&,
                       const torch::Tensor&,
                       std::vector<KVCache>&,
                       ModelInput&&) {
+    typed_rvalue_called = true;
     return ModelOutput();
   }
-};
-
-struct LegacyOnlyForwardModel {
   ModelOutput forward(const torch::Tensor&,
                       const torch::Tensor&,
                       std::vector<KVCache>&,
                       const ModelInputParams&) {
+    legacy_called = true;
     return ModelOutput();
   }
+  torch::Tensor logits(const torch::Tensor&, const torch::Tensor&) {
+    return torch::Tensor();
+  }
+  void load_model(std::unique_ptr<ModelLoader>) {}
+  void prepare_expert_weight(int32_t, const std::vector<int32_t>&) {}
+  void update_expert_weight(int32_t) {}
+};
+
+struct LegacyOnlyForwardModel {
+  bool legacy_called = false;
+
+  ModelOutput forward(const torch::Tensor&,
+                      const torch::Tensor&,
+                      std::vector<KVCache>&,
+                      const ModelInputParams&) {
+    legacy_called = true;
+    return ModelOutput();
+  }
+  torch::Tensor logits(const torch::Tensor&, const torch::Tensor&) {
+    return torch::Tensor();
+  }
+  void load_model(std::unique_ptr<ModelLoader>) {}
+  void prepare_expert_weight(int32_t, const std::vector<int32_t>&) {}
+  void update_expert_weight(int32_t) {}
 };
 
 struct TypedForwardHolder {
-  TypedForwardModel* operator->() { return nullptr; }
+  TypedForwardModel* impl = nullptr;
+  TypedForwardModel* operator->() const { return impl; }
 };
 
 struct LegacyOnlyForwardHolder {
-  LegacyOnlyForwardModel* operator->() { return nullptr; }
+  LegacyOnlyForwardModel* impl = nullptr;
+  LegacyOnlyForwardModel* operator->() const { return impl; }
 };
 
 static_assert(detail::has_typed_forward<TypedForwardHolder>::value,
@@ -259,6 +289,46 @@ TEST(ModelInputTest, ApplyToLegacyMoveKeepsPartitions) {
 
   EXPECT_TRUE(restored.deep_stacks.size() == 1);
   EXPECT_FALSE(std::holds_alternative<std::monostate>(restored.rec_params));
+}
+
+TEST(ModelInputTest, CausalLmImplDispatchesTypedForwardWhenSupported) {
+  TypedForwardModel impl;
+  CausalLMImpl<TypedForwardHolder> wrapper(
+      TypedForwardHolder{&impl}, torch::TensorOptions().device(torch::kCPU));
+
+  std::vector<KVCache> kv_caches;
+  torch::Tensor tokens;
+  torch::Tensor positions;
+  ModelInput typed_input;
+  typed_input.llm = LLMModelInputParams{};
+
+  wrapper.forward(tokens, positions, kv_caches, typed_input);
+  EXPECT_TRUE(impl.typed_const_called);
+  EXPECT_FALSE(impl.legacy_called);
+
+  impl.typed_const_called = false;
+  ModelInput rvalue_input;
+  rvalue_input.llm = LLMModelInputParams{};
+  wrapper.forward(tokens, positions, kv_caches, std::move(rvalue_input));
+  EXPECT_TRUE(impl.typed_rvalue_called);
+  EXPECT_FALSE(impl.typed_const_called);
+  EXPECT_FALSE(impl.legacy_called);
+}
+
+TEST(ModelInputTest, CausalLmImplFallsBackToLegacyWhenNoTypedForward) {
+  LegacyOnlyForwardModel impl;
+  CausalLMImpl<LegacyOnlyForwardHolder> wrapper(
+      LegacyOnlyForwardHolder{&impl},
+      torch::TensorOptions().device(torch::kCPU));
+
+  std::vector<KVCache> kv_caches;
+  torch::Tensor tokens;
+  torch::Tensor positions;
+  ModelInput typed_input;
+  typed_input.llm = LLMModelInputParams{};
+
+  wrapper.forward(tokens, positions, kv_caches, typed_input);
+  EXPECT_TRUE(impl.legacy_called);
 }
 
 }  // namespace
