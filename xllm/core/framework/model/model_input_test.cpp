@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "model_input_factory.h"
+#include "model_input.h"
 
 #include <gtest/gtest.h>
 
@@ -154,72 +154,7 @@ class FakeDiTModel final : public DiTModel {
   torch::TensorOptions options_{torch::TensorOptions().device(torch::kCPU)};
 };
 
-TEST(ModelInputFactoryTest, CreateForLlmIncludesOnlyLlmByDefault) {
-  FakeCausalLM model;
-  ModelInputParams params;
-
-  const ModelInput input = ModelInputFactory::create_for_llm(model, params);
-  EXPECT_TRUE(has_llm(input));
-  EXPECT_FALSE(has_vlm(input));
-  EXPECT_FALSE(has_dit(input));
-  EXPECT_FALSE(has_rec(input));
-}
-
-TEST(ModelInputFactoryTest, CreateForLlmIgnoresRecPartitionWhenPresent) {
-  FakeCausalLM model;
-  ModelInputParams params;
-  auto& onerec = params.mutable_onerec_params();
-  onerec.bs = 2;
-
-  const ModelInput input = ModelInputFactory::create_for_llm(model, params);
-  EXPECT_TRUE(has_llm(input));
-  EXPECT_FALSE(has_rec(input));
-}
-
-TEST(ModelInputFactoryTest, CreateForVlmIncludesVlmPartition) {
-  FakeCausalVLM model;
-  ModelInputParams params;
-  params.deep_stacks.push_back(torch::zeros({1, 1}));
-
-  const ModelInput input = ModelInputFactory::create_for_vlm(model, params);
-  EXPECT_TRUE(has_llm(input));
-  EXPECT_TRUE(has_vlm(input));
-  EXPECT_FALSE(has_dit(input));
-}
-
-TEST(ModelInputFactoryTest, CreateForDitIncludesDitPartition) {
-  FakeDiTModel model;
-  ModelInputParams params;
-  params.dit_forward_input.prompts.push_back("dit prompt");
-
-  const ModelInput input = ModelInputFactory::create_for_dit(model, params);
-  EXPECT_FALSE(has_llm(input));
-  EXPECT_FALSE(has_vlm(input));
-  EXPECT_TRUE(has_dit(input));
-  EXPECT_FALSE(has_rec(input));
-}
-
-TEST(ModelInputFactoryTest, CreateForRecIncludesRecPartitionWhenPresent) {
-  FakeCausalLM model;
-  ModelInputParams params;
-  auto& onerec = params.mutable_onerec_params();
-  onerec.bs = 2;
-
-  const ModelInput input = ModelInputFactory::create_for_rec(model, params);
-  EXPECT_TRUE(has_llm(input));
-  EXPECT_TRUE(has_rec(input));
-}
-
-TEST(ModelInputFactoryTest, CreateForRecKeepsRecPartitionEmptyWhenMissing) {
-  FakeCausalLM model;
-  ModelInputParams params;
-
-  const ModelInput input = ModelInputFactory::create_for_rec(model, params);
-  EXPECT_TRUE(has_llm(input));
-  EXPECT_FALSE(has_rec(input));
-}
-
-TEST(ModelInputFactoryTest, CausalLmCreatesLlmInputDirectly) {
+TEST(ModelInputTest, CausalLmCreatesLlmInputDirectly) {
   FakeCausalLM model;
   ModelInputParams params;
   const ModelInput input = model.create_model_input(params);
@@ -228,7 +163,7 @@ TEST(ModelInputFactoryTest, CausalLmCreatesLlmInputDirectly) {
   EXPECT_FALSE(has_dit(input));
 }
 
-TEST(ModelInputFactoryTest, CausalLmCreatesLlmInputDirectlyFromMovedParams) {
+TEST(ModelInputTest, CausalLmCreatesLlmInputDirectlyFromMovedParams) {
   FakeCausalLM model;
   ModelInputParams params;
   const ModelInput input = model.create_model_input(std::move(params));
@@ -237,7 +172,7 @@ TEST(ModelInputFactoryTest, CausalLmCreatesLlmInputDirectlyFromMovedParams) {
   EXPECT_FALSE(has_dit(input));
 }
 
-TEST(ModelInputFactoryTest, RecCausalLmCreatesRecInputDirectlyWhenPresent) {
+TEST(ModelInputTest, RecCausalLmCreatesRecInputDirectlyWhenPresent) {
   FakeRecCausalLM model;
   ModelInputParams params;
   auto& onerec = params.mutable_onerec_params();
@@ -248,7 +183,7 @@ TEST(ModelInputFactoryTest, RecCausalLmCreatesRecInputDirectlyWhenPresent) {
   EXPECT_TRUE(has_rec(input));
 }
 
-TEST(ModelInputFactoryTest,
+TEST(ModelInputTest,
      RecCausalLmCreatesRecInputDirectlyFromMovedParamsWhenPresent) {
   FakeRecCausalLM model;
   ModelInputParams params;
@@ -260,7 +195,7 @@ TEST(ModelInputFactoryTest,
   EXPECT_TRUE(has_rec(input));
 }
 
-TEST(ModelInputFactoryTest, CausalVlmCreatesVlmInputDirectly) {
+TEST(ModelInputTest, CausalVlmCreatesVlmInputDirectly) {
   FakeCausalVLM model;
   ModelInputParams params;
   params.deep_stacks.push_back(torch::zeros({1, 1}));
@@ -270,7 +205,7 @@ TEST(ModelInputFactoryTest, CausalVlmCreatesVlmInputDirectly) {
   EXPECT_FALSE(has_dit(input));
 }
 
-TEST(ModelInputFactoryTest, CausalVlmCreatesVlmInputDirectlyFromMovedParams) {
+TEST(ModelInputTest, CausalVlmCreatesVlmInputDirectlyFromMovedParams) {
   FakeCausalVLM model;
   ModelInputParams params;
   params.deep_stacks.push_back(torch::zeros({1, 1}));
@@ -280,7 +215,7 @@ TEST(ModelInputFactoryTest, CausalVlmCreatesVlmInputDirectlyFromMovedParams) {
   EXPECT_FALSE(has_dit(input));
 }
 
-TEST(ModelInputFactoryTest, DitModelCreatesDitInputDirectly) {
+TEST(ModelInputTest, DitModelCreatesDitInputDirectly) {
   FakeDiTModel model;
   ModelInputParams params;
   params.dit_forward_input.prompts.push_back("dit prompt");
@@ -290,7 +225,7 @@ TEST(ModelInputFactoryTest, DitModelCreatesDitInputDirectly) {
   EXPECT_TRUE(has_dit(input));
 }
 
-TEST(ModelInputFactoryTest, DitModelCreatesDitInputDirectlyFromMovedParams) {
+TEST(ModelInputTest, DitModelCreatesDitInputDirectlyFromMovedParams) {
   FakeDiTModel model;
   ModelInputParams params;
   params.dit_forward_input.prompts.push_back("dit prompt");
@@ -300,7 +235,7 @@ TEST(ModelInputFactoryTest, DitModelCreatesDitInputDirectlyFromMovedParams) {
   EXPECT_TRUE(has_dit(input));
 }
 
-TEST(ModelInputFactoryTest, MakeModelInputFromLegacyMoveKeepsPartitions) {
+TEST(ModelInputTest, MakeModelInputFromLegacyMoveKeepsPartitions) {
   ModelInputParams params;
   params.deep_stacks.push_back(torch::zeros({1, 1}));
   auto& onerec = params.mutable_onerec_params();
@@ -312,7 +247,7 @@ TEST(ModelInputFactoryTest, MakeModelInputFromLegacyMoveKeepsPartitions) {
   EXPECT_TRUE(has_rec(input));
 }
 
-TEST(ModelInputFactoryTest, ApplyToLegacyMoveKeepsPartitions) {
+TEST(ModelInputTest, ApplyToLegacyMoveKeepsPartitions) {
   ModelInputParams params;
   params.deep_stacks.push_back(torch::zeros({1, 1}));
   auto& onerec = params.mutable_onerec_params();
@@ -320,7 +255,7 @@ TEST(ModelInputFactoryTest, ApplyToLegacyMoveKeepsPartitions) {
 
   ModelInput input = make_model_input_from_legacy(std::move(params));
   ModelInputParams restored;
-  ModelInputFactory::apply_to_legacy(std::move(input), &restored);
+  apply_model_input_to_legacy(std::move(input), &restored);
 
   EXPECT_TRUE(restored.deep_stacks.size() == 1);
   EXPECT_FALSE(std::holds_alternative<std::monostate>(restored.rec_params));
