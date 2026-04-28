@@ -58,6 +58,29 @@ class RecCausalLMImpl : public RecCausalLM {
     return model_->forward(tokens, positions, kv_caches, parameters);
   }
 
+  ModelOutput forward(const torch::Tensor& tokens,
+                      const torch::Tensor& positions,
+                      std::vector<KVCache>& kv_caches,
+                      const model_input::ModelInput& input) override {
+    if constexpr (detail::has_typed_forward<Model>::value) {
+      return model_->forward(tokens, positions, kv_caches, input);
+    } else {
+      return RecCausalLM::forward(tokens, positions, kv_caches, input);
+    }
+  }
+
+  ModelOutput forward(const torch::Tensor& tokens,
+                      const torch::Tensor& positions,
+                      std::vector<KVCache>& kv_caches,
+                      model_input::ModelInput&& input) override {
+    if constexpr (detail::has_typed_forward_rvalue<Model>::value) {
+      return model_->forward(tokens, positions, kv_caches, std::move(input));
+    } else {
+      return RecCausalLM::forward(
+          tokens, positions, kv_caches, std::move(input));
+    }
+  }
+
   torch::Tensor pooler(const torch::Tensor& hidden_states,
                        const torch::Tensor& seleted_idxes) override {
     return model_->pooler(hidden_states, seleted_idxes);

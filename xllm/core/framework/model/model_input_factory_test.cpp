@@ -25,11 +25,53 @@ limitations under the License.
 #include "causal_lm.h"
 #include "causal_vlm.h"
 #include "dit_model.h"
+#include "model_traits.h"
 #include "rec_causal_lm.h"
 
 namespace xllm {
 namespace model_input {
 namespace {
+
+struct TypedForwardModel {
+  ModelOutput forward(const torch::Tensor&,
+                      const torch::Tensor&,
+                      std::vector<KVCache>&,
+                      const ModelInput&) {
+    return ModelOutput();
+  }
+  ModelOutput forward(const torch::Tensor&,
+                      const torch::Tensor&,
+                      std::vector<KVCache>&,
+                      ModelInput&&) {
+    return ModelOutput();
+  }
+};
+
+struct LegacyOnlyForwardModel {
+  ModelOutput forward(const torch::Tensor&,
+                      const torch::Tensor&,
+                      std::vector<KVCache>&,
+                      const ModelInputParams&) {
+    return ModelOutput();
+  }
+};
+
+struct TypedForwardHolder {
+  TypedForwardModel* operator->() { return nullptr; }
+};
+
+struct LegacyOnlyForwardHolder {
+  LegacyOnlyForwardModel* operator->() { return nullptr; }
+};
+
+static_assert(detail::has_typed_forward<TypedForwardHolder>::value,
+              "typed forward holder must satisfy has_typed_forward");
+static_assert(detail::has_typed_forward_rvalue<TypedForwardHolder>::value,
+              "typed forward holder must satisfy has_typed_forward_rvalue");
+static_assert(!detail::has_typed_forward<LegacyOnlyForwardHolder>::value,
+              "legacy-only holder must not satisfy has_typed_forward");
+static_assert(!detail::has_typed_forward_rvalue<LegacyOnlyForwardHolder>::value,
+              "legacy-only holder must not satisfy has_typed_forward_rvalue");
 
 class FakeCausalLM final : public CausalLM {
  public:
