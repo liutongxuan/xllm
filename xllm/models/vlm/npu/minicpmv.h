@@ -23,6 +23,7 @@ limitations under the License.
 #include <unordered_map>
 
 #include "core/framework/kv_cache/kv_cache.h"
+#include "core/framework/model/model_input.h"
 #include "core/framework/model/model_input_params.h"
 #include "core/framework/model/model_output.h"
 #include "core/framework/model_context.h"
@@ -837,6 +838,13 @@ class MiniCPMV2_6Impl : public torch::nn::Module {
     image_inputs = generate_image_inputs(pixel_values, tgt_sizes);
   }
 
+  void prepare_encoder_input(const model_input::ModelInput& input,
+                             std::optional<MiniCPMVImageInputs>& image_inputs) {
+    ModelInputParams input_params;
+    model_input::apply_model_input_to_legacy(input, &input_params);
+    prepare_encoder_input(input_params, image_inputs);
+  }
+
   torch::Tensor get_image_bounds(
       const torch::Tensor& input_ids,
       int64_t im_start_id,
@@ -1012,6 +1020,12 @@ class MiniCPMV2_6Impl : public torch::nn::Module {
     return multimodal_embeds;
   }
 
+  MMDict get_multimodal_embeddings(const model_input::ModelInput& input) {
+    ModelInputParams input_params;
+    model_input::apply_model_input_to_legacy(input, &input_params);
+    return get_multimodal_embeddings(input_params);
+  }
+
   torch::Tensor get_input_embeddings(const torch::Tensor input_ids,
                                      const ModelInputParams& input_params) {
     const auto& mm_data = input_params.mm_data;
@@ -1032,11 +1046,32 @@ class MiniCPMV2_6Impl : public torch::nn::Module {
         inputs_embeds, multimodal_embeds, image_bounds);
     return inputs_embeds;
   }
+
+  torch::Tensor get_input_embeddings(const torch::Tensor input_ids,
+                                     const model_input::ModelInput& input) {
+    ModelInputParams input_params;
+    model_input::apply_model_input_to_legacy(input, &input_params);
+    return get_input_embeddings(input_ids, input_params);
+  }
+
+  // Step 3 typed forward: VLM consumes the llm + vlm partitions and delegates
+  // to the language model's typed forward (LLM family already opted in).
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) {
-    return language_model_(tokens, positions, kv_caches, input_params);
+                      const model_input::ModelInput& input) {
+    CHECK(input.llm.has_value())
+        << "VLM forward requires the llm partition in ModelInput";
+    return language_model_(tokens, positions, kv_caches, input);
+  }
+
+  ModelOutput forward(const torch::Tensor& tokens,
+                      const torch::Tensor& positions,
+                      std::vector<KVCache>& kv_caches,
+                      model_input::ModelInput&& input) {
+    CHECK(input.llm.has_value())
+        << "VLM forward requires the llm partition in ModelInput";
+    return language_model_(tokens, positions, kv_caches, std::move(input));
   }
 
   torch::Tensor logits(const torch::Tensor& hidden_states,

@@ -287,11 +287,16 @@ class CudaGraphExecutorImpl : public ExecutorImpl {
 
   ForwardInput prepare_inputs(Batch& batch) override;
 
-  // Execute model with graph optimization for decode phase
+  // Execute model with graph optimization for decode phase.
+  using ExecutorImpl::run;
   ModelOutput run(const torch::Tensor& tokens,
                   const torch::Tensor& positions,
                   std::vector<KVCache>& kv_caches,
-                  const ModelInputParams& params) override;
+                  const model_input::ModelInput& input) override;
+  ModelOutput run(const torch::Tensor& tokens,
+                  const torch::Tensor& positions,
+                  std::vector<KVCache>& kv_caches,
+                  model_input::ModelInput&& input) override;
 
   // Return current graph executor memory usage in bytes (including persistent
   // parameters). Exposed for tests and diagnostics.

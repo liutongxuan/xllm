@@ -15,6 +15,7 @@ limitations under the License.
 
 #pragma once
 
+#include "core/framework/model/model_input.h"
 #include "core/framework/model/model_output.h"
 #include "core/layers/common/lm_head.h"
 #include "core/layers/qwen3_vision_layer.h"
@@ -150,12 +151,31 @@ class Qwen3_VLMoeForConditionalGenerationImpl : public torch::nn::Module {
     return inputs_embeds;
   }
 
+  // Step 3 typed forward: VLM consumes the llm + vlm partitions; lower into
+  // the legacy ModelInputParams and reuse the legacy forward so the
+  // get_deep_stacks pre-processing keeps running unchanged.
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) {
-    input_params.deep_stacks = std::move(get_deep_stacks(input_params));
-    return language_model_(tokens, positions, kv_caches, input_params);
+                      const model_input::ModelInput& input) {
+    CHECK(input.llm.has_value())
+        << "VLM forward requires the llm partition in ModelInput";
+    ModelInputParams params;
+    model_input::apply_model_input_to_legacy(input, &params);
+    params.deep_stacks = std::move(get_deep_stacks(params));
+    return language_model_(tokens, positions, kv_caches, params);
+  }
+
+  ModelOutput forward(const torch::Tensor& tokens,
+                      const torch::Tensor& positions,
+                      std::vector<KVCache>& kv_caches,
+                      model_input::ModelInput&& input) {
+    CHECK(input.llm.has_value())
+        << "VLM forward requires the llm partition in ModelInput";
+    ModelInputParams params;
+    model_input::apply_model_input_to_legacy(std::move(input), &params);
+    params.deep_stacks = std::move(get_deep_stacks(params));
+    return language_model_(tokens, positions, kv_caches, params);
   }
 
   torch::Tensor logits(const torch::Tensor& hidden_states,

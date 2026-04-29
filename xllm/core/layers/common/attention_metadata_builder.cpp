@@ -16,10 +16,12 @@ limitations under the License.
 #include "attention_metadata_builder.h"
 
 #include <numeric>
+#include <variant>
 
 #include "attention_metadata.h"
 #include "core/common/global_flags.h"
 #include "framework/model/model_args.h"
+#include "framework/model/model_input.h"
 #include "framework/model/model_input_params.h"
 
 namespace xllm::layer {
@@ -27,7 +29,7 @@ namespace xllm::layer {
 namespace {
 
 AttentionMetadata build_attention_metadata(
-    const ModelInputParams& params,
+    const model_input::LLMModelInputParams& params,
     bool enable_mla,
     const std::string& compute_dtype,
     const std::optional<torch::Tensor>& attn_mask) {
@@ -67,8 +69,8 @@ AttentionMetadata build_attention_metadata(
   // graph_buffer.attn_mask (e.g. Qwen2_5_VL sets graph_buffer.attn_mask for
   // LongCat text encoding)
   std::optional<torch::Tensor> mask_to_use = attn_mask;
-  if (!mask_to_use.has_value() && params.graph_buffer.attn_mask.defined()) {
-    mask_to_use = params.graph_buffer.attn_mask;
+  if (!mask_to_use.has_value() && params.graph_attn_mask.defined()) {
+    mask_to_use = params.graph_attn_mask;
   }
   if (mask_to_use.has_value()) {
     attn_metadata.attn_mask = mask_to_use.value();
@@ -83,11 +85,11 @@ AttentionMetadata build_attention_metadata(
   bool is_decode = !params.batch_forward_type.is_prefill() &&
                    !params.batch_forward_type.is_mixed() &&
                    !params.batch_forward_type.is_chunked_prefill();
-  bool use_acl_graph = FLAGS_enable_graph && is_decode &&
-                       params.graph_buffer.tiling_data.defined();
+  bool use_acl_graph =
+      FLAGS_enable_graph && is_decode && params.graph_tiling_data.defined();
   if (use_acl_graph) {
     // ACL graph mode: use CustomPagedAttention with tiling_data on device
-    attn_metadata.paged_attention_tiling_data = params.graph_buffer.tiling_data;
+    attn_metadata.paged_attention_tiling_data = params.graph_tiling_data;
   }
   // Provide host seq_lens for NPU kernels (required by CustomPagedAttention).
   if (!params.kv_seq_lens_vec.empty()) {
@@ -149,11 +151,13 @@ AttentionMetadata build_attention_metadata(
 
   // TODO: set use_tensor_core from options.
   // for xattention
-  if (params.has_llmrec_params()) {
-    const auto& llmrec_params = *params.llmrec_params();
-    if (llmrec_params.current_round_tensor.defined() &&
-        llmrec_params.current_round_tensor.numel() > 0) {
-      attn_metadata.step_tensor = llmrec_params.current_round_tensor;
+  const auto* llmrec_params =
+      std::get_if<LlmRecMultiRoundParams>(&params.rec_params);
+  if (llmrec_params != nullptr) {
+    const auto& llmrec = *llmrec_params;
+    if (llmrec_params->current_round_tensor.defined() &&
+        llmrec_params->current_round_tensor.numel() > 0) {
+      attn_metadata.step_tensor = llmrec_params->current_round_tensor;
     }
 
     if (!FLAGS_enable_xattention_one_stage) {
@@ -162,34 +166,34 @@ AttentionMetadata build_attention_metadata(
           XAttentionTwoStageDecodeCache{});
       auto& cache = attn_metadata.xattention_two_stage_decode_cache.value();
 
-      cache.shared_lse = llmrec_params.two_stage_shared_lse;
-      cache.shared_o = llmrec_params.two_stage_shared_o;
-      cache.unshared_lse = llmrec_params.two_stage_unshared_lse;
-      cache.unshared_o = llmrec_params.two_stage_unshared_o;
-      cache.q_cu_seq_lens_shared = llmrec_params.two_stage_q_cu_seq_lens_shared;
+      cache.shared_lse = llmrec.two_stage_shared_lse;
+      cache.shared_o = llmrec.two_stage_shared_o;
+      cache.unshared_lse = llmrec.two_stage_unshared_lse;
+      cache.unshared_o = llmrec.two_stage_unshared_o;
+      cache.q_cu_seq_lens_shared = llmrec.two_stage_q_cu_seq_lens_shared;
       cache.paged_kv_indptr_expanded =
-          llmrec_params.two_stage_paged_kv_indptr_expanded;
+          llmrec.two_stage_paged_kv_indptr_expanded;
       cache.paged_kv_indices_expanded =
-          llmrec_params.two_stage_paged_kv_indices_expanded;
+          llmrec.two_stage_paged_kv_indices_expanded;
       cache.paged_kv_last_page_len_expanded =
-          llmrec_params.two_stage_paged_kv_last_page_len_expanded;
+          llmrec.two_stage_paged_kv_last_page_len_expanded;
 
       if (cache.q_cu_seq_lens_shared.defined()) {
         cache.cached_batch_size =
             static_cast<int32_t>(cache.q_cu_seq_lens_shared.numel()) - 1;
       }
-      cache.cached_beam_size = llmrec_params.beam_width;
-      if (!llmrec_params.unshared_k_caches.empty()) {
+      cache.cached_beam_size = llmrec.beam_width;
+      if (!llmrec.unshared_k_caches.empty()) {
         cache.cached_max_decode_step =
-            static_cast<int32_t>(llmrec_params.unshared_k_caches[0].size(2));
+            static_cast<int32_t>(llmrec.unshared_k_caches[0].size(2));
       }
       if (cache.shared_o.defined() && cache.shared_o.dim() == 3) {
         cache.cached_num_heads = static_cast<int32_t>(cache.shared_o.size(1));
         cache.cached_head_size = static_cast<int32_t>(cache.shared_o.size(2));
       }
-      if (llmrec_params.current_round_tensor.defined() &&
-          llmrec_params.current_round_tensor.numel() > 0) {
-        cache.cached_step = llmrec_params.current_round_tensor.item<int32_t>();
+      if (llmrec.current_round_tensor.defined() &&
+          llmrec.current_round_tensor.numel() > 0) {
+        cache.cached_step = llmrec.current_round_tensor.item<int32_t>();
       }
 #endif
     }
@@ -201,7 +205,7 @@ AttentionMetadata build_attention_metadata(
 }  // namespace
 
 AttentionMetadata AttentionMetadataBuilder::build(
-    const ModelInputParams& params,
+    const model_input::LLMModelInputParams& params,
     bool enable_mla,
     const std::optional<torch::Tensor>& attn_mask) {
   return AttentionMetadataBuilder::build(
@@ -209,11 +213,36 @@ AttentionMetadata AttentionMetadataBuilder::build(
 }
 
 AttentionMetadata AttentionMetadataBuilder::build(
-    const ModelInputParams& params,
+    const model_input::LLMModelInputParams& params,
     bool enable_mla,
     const std::string& compute_dtype,
     const std::optional<torch::Tensor>& attn_mask) {
   return build_attention_metadata(params, enable_mla, compute_dtype, attn_mask);
+}
+
+AttentionMetadata AttentionMetadataBuilder::build(
+    const ModelInputParams& params,
+    bool enable_mla,
+    const std::optional<torch::Tensor>& attn_mask) {
+  model_input::ModelInput typed_input =
+      model_input::make_model_input_from_legacy(params);
+  CHECK(typed_input.llm.has_value())
+      << "AttentionMetadataBuilder requires llm input";
+  const model_input::LLMModelInputParams llm_params = *typed_input.llm;
+  return build(llm_params, enable_mla, attn_mask);
+}
+
+AttentionMetadata AttentionMetadataBuilder::build(
+    const ModelInputParams& params,
+    bool enable_mla,
+    const std::string& compute_dtype,
+    const std::optional<torch::Tensor>& attn_mask) {
+  model_input::ModelInput typed_input =
+      model_input::make_model_input_from_legacy(params);
+  CHECK(typed_input.llm.has_value())
+      << "AttentionMetadataBuilder requires llm input";
+  const model_input::LLMModelInputParams llm_params = *typed_input.llm;
+  return build(llm_params, enable_mla, compute_dtype, attn_mask);
 }
 
 }  // namespace xllm::layer

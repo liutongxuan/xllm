@@ -123,17 +123,17 @@ uint32_t HierarchyKVCacheTransfer::transfer_kv_blocks(
 }
 
 void HierarchyKVCacheTransfer::set_layer_synchronizer(
-    ModelInputParams& params) {
+    model_input::LLMModelInputParams& llm_input) {
 #if defined(USE_NPU)
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (layer_wise_load_synchronizer_.count(params.batch_id) != 0) {
-      params.layer_wise_load_synchronizer =
-          layer_wise_load_synchronizer_[params.batch_id];
-      layer_wise_load_synchronizer_.erase(params.batch_id);
+    if (layer_wise_load_synchronizer_.count(llm_input.batch_id) != 0) {
+      llm_input.layer_wise_load_synchronizer =
+          layer_wise_load_synchronizer_[llm_input.batch_id];
+      layer_wise_load_synchronizer_.erase(llm_input.batch_id);
       uint32_t event_cnt =
-          params.layer_wise_load_synchronizer->get_event_size();
-      params.layers_per_bacth_copy =
+          llm_input.layer_wise_load_synchronizer->get_event_size();
+      llm_input.layers_per_bacth_copy =
           (options_.layers() + event_cnt - 1) / event_cnt;
     }
   }

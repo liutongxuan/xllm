@@ -154,8 +154,11 @@ folly::SemiFuture<bool> DiTWorkerImpl::init_model_async(
 std::optional<ForwardOutput> DiTWorkerImpl::step(const ForwardInput& inputs) {
   torch::DeviceGuard device_guard(device_);
   Timer timer;
+  model_input::ModelInput typed_input = inputs.get_typed_input();
+  CHECK(typed_input.dit.has_value())
+      << "DiTWorkerImpl::step requires dit partition in ModelInput";
   auto output = dit_model_executor_->forward(
-      inputs.input_params.dit_forward_input.to(device_, dtype_));
+      typed_input.dit->dit_forward_input.to(device_, dtype_));
 
   auto ret = device_.synchronize_default_stream();
   COUNTER_ADD(execution_latency_seconds_model, timer.elapsed_seconds());

@@ -27,6 +27,7 @@ limitations under the License.
 
 #include "common/metrics.h"
 #include "framework/kv_cache/kv_cache.h"
+#include "framework/model/model_input.h"
 #include "framework/model/model_input_params.h"
 #include "framework/state_dict/state_dict.h"
 #include "models/model_registry.h"
@@ -58,8 +59,9 @@ std::optional<ForwardOutput> VLMWorkerImpl::step(const ForwardInput& input) {
   Timer timer;
   // TODO guojinrong, to adapt multi stream parallel later
   // call model executor forward to get hidden states
+  model_input::ModelInput typed_input = input.get_typed_input();
   auto model_output = model_executor_->forward(
-      input.token_ids, input.positions, kv_caches_, input.input_params);
+      input.token_ids, input.positions, kv_caches_, std::move(typed_input));
   auto& sampling_params = input.sampling_params;
   torch::Tensor logits;
   if (sampling_params.selected_token_idxes.defined()) {

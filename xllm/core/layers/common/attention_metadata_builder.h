@@ -23,6 +23,9 @@ limitations under the License.
 namespace xllm {
 struct ModelArgs;
 struct ModelInputParams;
+namespace model_input {
+struct LLMModelInputParams;
+}  // namespace model_input
 
 namespace layer {
 
@@ -33,14 +36,25 @@ struct AttentionMetadata;
 // allowing attention_metadata.h to not depend on model_input_params.h.
 class AttentionMetadataBuilder {
  public:
-  // Build AttentionMetadata from ModelInputParams with default compute_dtype
+  // Build AttentionMetadata from typed llm input with default compute_dtype
   // ("float").
+  static AttentionMetadata build(
+      const model_input::LLMModelInputParams& params,
+      bool enable_mla,
+      const std::optional<torch::Tensor>& attn_mask = {});
+
+  // Build AttentionMetadata from typed llm input with specified compute_dtype.
+  static AttentionMetadata build(
+      const model_input::LLMModelInputParams& params,
+      bool enable_mla,
+      const std::string& compute_dtype,
+      const std::optional<torch::Tensor>& attn_mask = {});
+
+  // Legacy wrappers.
   static AttentionMetadata build(
       const ModelInputParams& params,
       bool enable_mla,
       const std::optional<torch::Tensor>& attn_mask = {});
-
-  // Build AttentionMetadata from ModelInputParams with specified compute_dtype.
   static AttentionMetadata build(
       const ModelInputParams& params,
       bool enable_mla,

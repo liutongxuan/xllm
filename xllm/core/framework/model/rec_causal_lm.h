@@ -22,6 +22,24 @@ namespace xllm {
 class RecCausalLM : public CausalLM {
  public:
   ~RecCausalLM() override = default;
+
+  model_input::ModelInput create_model_input(
+      const ModelInputParams& parameters) const override {
+    model_input::ModelInput input =
+        model_input::make_model_input_from_legacy(parameters);
+    input.vlm.reset();
+    input.dit.reset();
+    return input;
+  }
+
+  model_input::ModelInput create_model_input(
+      ModelInputParams&& parameters) const override {
+    model_input::ModelInput input =
+        model_input::make_model_input_from_legacy(std::move(parameters));
+    input.vlm.reset();
+    input.dit.reset();
+    return input;
+  }
 };
 
 template <typename Model>
@@ -30,11 +48,32 @@ class RecCausalLMImpl : public RecCausalLM {
   RecCausalLMImpl(Model model, const torch::TensorOptions& options)
       : model_(std::move(model)), options_(options) {}
 
+  using RecCausalLM::forward;
+
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& parameters) override {
-    return model_->forward(tokens, positions, kv_caches, parameters);
+                      const model_input::ModelInput& input) override {
+    if constexpr (detail::has_typed_forward<Model>::value) {
+      return model_->forward(tokens, positions, kv_caches, input);
+    } else {
+      ModelInputParams params;
+      model_input::apply_model_input_to_legacy(input, &params);
+      return model_->forward(tokens, positions, kv_caches, params);
+    }
+  }
+
+  ModelOutput forward(const torch::Tensor& tokens,
+                      const torch::Tensor& positions,
+                      std::vector<KVCache>& kv_caches,
+                      model_input::ModelInput&& input) override {
+    if constexpr (detail::has_typed_forward_rvalue<Model>::value) {
+      return model_->forward(tokens, positions, kv_caches, std::move(input));
+    } else {
+      ModelInputParams params;
+      model_input::apply_model_input_to_legacy(std::move(input), &params);
+      return model_->forward(tokens, positions, kv_caches, params);
+    }
   }
 
   torch::Tensor pooler(const torch::Tensor& hidden_states,

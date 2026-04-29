@@ -2037,6 +2037,7 @@ inline void deserialize_raw_forward_input(const char*& buffer,
                          input_params.kv_cache_tokens_nums,
                          input_params.kv_cache_tokens_nums_host,
                          stream);
+  forward_input.sync_input_from_legacy();
 
   // sampling_params
   uint64_t selected_token_idxes_size;
@@ -2417,6 +2418,7 @@ void convert_raw_forward_input_to_forward_input(RawForwardInput& raw_input,
 
   // dit input data
   input_params.dit_forward_input = std::move(raw_input.dit_forward_input);
+  forward_input.sync_input_from_legacy();
 
   if (!raw_input.selected_token_idxes.empty()) {
     util::pad_2d_vector<int64_t>(raw_input.unique_token_ids_vec, 0);

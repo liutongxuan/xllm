@@ -18,6 +18,7 @@ limitations under the License.
 #include <algorithm>
 
 #include "common/metrics.h"
+#include "framework/model/model_input.h"
 #include "framework/sampling/rejection_sampler.h"
 #include "util/slice.h"
 #include "util/timer.h"
@@ -53,6 +54,56 @@ std::string summarize_int32_span(std::span<const int32_t> values,
   return out;
 }
 
+bool is_decode_batch(const ForwardInput& input) {
+  model_input::ModelInput typed_input = input.get_typed_input();
+  CHECK(typed_input.llm.has_value())
+      << "SuffixWorker requires the llm partition in ModelInput";
+  return typed_input.llm->batch_forward_type.is_decode();
+}
+
+int32_t get_num_sequences(const ForwardInput& input) {
+  model_input::ModelInput typed_input = input.get_typed_input();
+  CHECK(typed_input.llm.has_value())
+      << "SuffixWorker requires the llm partition in ModelInput";
+  return typed_input.llm->num_sequences;
+}
+
+std::vector<std::string> get_request_ids(const ForwardInput& input) {
+  model_input::ModelInput typed_input = input.get_typed_input();
+  CHECK(typed_input.llm.has_value())
+      << "SuffixWorker requires the llm partition in ModelInput";
+  return typed_input.llm->request_ids;
+}
+
+int32_t get_q_seq_len(const ForwardInput& input, int32_t seq_id) {
+  model_input::ModelInput typed_input = input.get_typed_input();
+  CHECK(typed_input.llm.has_value())
+      << "SuffixWorker requires the llm partition in ModelInput";
+  const model_input::LLMModelInputParams& llm_input = *typed_input.llm;
+  if (!llm_input.q_seq_lens_vec.empty()) {
+    return llm_input.q_seq_lens_vec[seq_id];
+  }
+  if (llm_input.q_seq_lens.defined()) {
+    return llm_input.q_seq_lens[seq_id].item<int32_t>();
+  }
+  CHECK(false) << "SuffixWorker requires q_seq_lens in typed llm input";
+  return -1;
+}
+
+void scale_dp_global_token_nums(ForwardInput* input, int32_t scale) {
+  CHECK(input != nullptr);
+  model_input::ModelInput typed_input = input->get_typed_input();
+  CHECK(typed_input.llm.has_value())
+      << "SuffixWorker requires the llm partition in ModelInput";
+  std::vector<int32_t>& dp_global_token_nums =
+      typed_input.llm->dp_global_token_nums;
+  for (auto& token_num : dp_global_token_nums) {
+    token_num *= scale;
+  }
+  input->input = std::move(typed_input);
+  input->sync_legacy_from_input();
+}
+
 }  // namespace
 
 namespace {
@@ -77,15 +128,14 @@ SuffixWorkerImpl::SuffixWorkerImpl(const ParallelArgs& parallel_args,
 
 std::optional<ForwardOutput> SuffixWorkerImpl::step_empty(
     const ForwardInput& input) {
-  if (!input.input_params.batch_forward_type.is_decode()) {
+  if (!is_decode_batch(input)) {
     auto output = impl_->step(input);
     output->sample_output.embeddings = torch::Tensor();
     return output;
   } else {
     ForwardInput new_input = input;
-    for (auto& it : new_input.input_params.dp_global_token_nums) {
-      it *= options_.num_speculative_tokens() + 1;
-    }
+    scale_dp_global_token_nums(&new_input,
+                               options_.num_speculative_tokens() + 1);
 
     auto future = impl_->step_async(new_input);
     ForwardOutput output = std::move(future).get().value();
@@ -103,9 +153,8 @@ std::optional<ForwardOutput> SuffixWorkerImpl::step_prefill(
   COUNTER_ADD(speculative_execution_latency_seconds_target,
               timer.elapsed_seconds());
 
-  const auto& input_params = input.input_params;
-  const int32_t num_sequences = input_params.num_sequences;
-  const auto& request_ids = input_params.request_ids;
+  const int32_t num_sequences = get_num_sequences(input);
+  const auto& request_ids = get_request_ids(input);
 
   if (suffix_cache_ != nullptr &&
       request_ids.size() == static_cast<size_t>(num_sequences)) {
@@ -116,7 +165,7 @@ std::optional<ForwardOutput> SuffixWorkerImpl::step_prefill(
 
     int32_t start_idx = 0;
     for (int32_t seq_id = 0; seq_id < num_sequences; ++seq_id) {
-      int32_t q_len = input_params.get_q_seq_len(seq_id);
+      int32_t q_len = get_q_seq_len(input, seq_id);
       Slice<int32_t> seq_tokens =
           tokens_ids_slice.slice(start_idx, start_idx + q_len);
       start_idx += q_len;
@@ -175,9 +224,9 @@ std::optional<ForwardOutput> SuffixWorkerImpl::step_prefill(
 std::optional<ForwardOutput> SuffixWorkerImpl::step_decode(
     const ForwardInput& input) {
   const int32_t num_speculative_tokens = options_.num_speculative_tokens();
-  const int32_t num_sequences = input.input_params.num_sequences;
+  const int32_t num_sequences = get_num_sequences(input);
   const int32_t num_val_tokens = num_speculative_tokens + 1;
-  const auto& request_ids = input.input_params.request_ids;
+  const auto& request_ids = get_request_ids(input);
 
   const bool has_request_ids =
       suffix_cache_ != nullptr &&

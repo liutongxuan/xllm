@@ -22,6 +22,7 @@ limitations under the License.
 #include <vector>
 
 #include "core/framework/dit_model_loader.h"
+#include "core/framework/model/model_input.h"
 #include "core/runtime/dit_forward_params.h"
 namespace xllm {
 
@@ -33,6 +34,26 @@ class DiTModel : public torch::nn::Module {
   virtual torch::Device device() const = 0;
   virtual const torch::TensorOptions& options() const = 0;
   virtual void load_model(std::unique_ptr<DiTModelLoader> loader) = 0;
+
+  virtual model_input::ModelInput create_model_input(
+      const ModelInputParams& parameters) const {
+    model_input::ModelInput input =
+        model_input::make_model_input_from_legacy(parameters);
+    input.llm.reset();
+    input.vlm.reset();
+    input.rec.reset();
+    return input;
+  }
+
+  virtual model_input::ModelInput create_model_input(
+      ModelInputParams&& parameters) const {
+    model_input::ModelInput input =
+        model_input::make_model_input_from_legacy(std::move(parameters));
+    input.llm.reset();
+    input.vlm.reset();
+    input.rec.reset();
+    return input;
+  }
 };
 
 template <typename Model>

@@ -18,6 +18,7 @@ limitations under the License.
 #include <glog/logging.h>
 
 #include "common/global_flags.h"
+#include "framework/model/model_input.h"
 #include "layers/common/dp_utils.h"
 
 namespace xllm {
@@ -27,7 +28,7 @@ namespace {
 
 #if defined(USE_MLU)
 bool use_moe_all2all(bool enable_deep_ep,
-                     const ModelInputParams& input_params) {
+                     const model_input::LLMModelInputParams& input_params) {
   return enable_deep_ep && all_dp_ranks_are_decode(input_params);
 }
 #endif
@@ -98,7 +99,7 @@ Qwen3MoeDecoderLayerImpl::Qwen3MoeDecoderLayerImpl(const ModelContext& context,
 
 torch::Tensor Qwen3MoeDecoderLayerImpl::run_moe(
     torch::Tensor x,
-    const ModelInputParams& input_params) {
+    const model_input::LLMModelInputParams& input_params) {
 #if defined(USE_MLU)
   const bool enable_moe_all2all =
       use_moe_all2all(enable_deep_ep_, input_params);
@@ -132,7 +133,7 @@ torch::Tensor Qwen3MoeDecoderLayerImpl::forward(
     torch::Tensor& positions,
     const AttentionMetadata& attn_metadata,
     KVCache& kv_cache,
-    const ModelInputParams& input_params) {
+    const model_input::LLMModelInputParams& input_params) {
   // Pre-attention norm
   if (!residual.has_value()) {
     residual = x;
@@ -155,6 +156,22 @@ torch::Tensor Qwen3MoeDecoderLayerImpl::forward(
   }
 
   return x;
+}
+
+torch::Tensor Qwen3MoeDecoderLayerImpl::forward(
+    torch::Tensor& x,
+    std::optional<torch::Tensor>& residual,
+    torch::Tensor& positions,
+    const AttentionMetadata& attn_metadata,
+    KVCache& kv_cache,
+    const ModelInputParams& input_params) {
+  model_input::ModelInput typed_input =
+      model_input::make_model_input_from_legacy(input_params);
+  CHECK(typed_input.llm.has_value())
+      << "Qwen3MoeDecoderLayer forward requires llm input";
+  const model_input::LLMModelInputParams llm_input_params = *typed_input.llm;
+  return forward(
+      x, residual, positions, attn_metadata, kv_cache, llm_input_params);
 }
 
 }  // namespace layer

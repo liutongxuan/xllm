@@ -19,11 +19,13 @@ limitations under the License.
 
 #include <cstdint>
 #include <memory>
+#include <utility>
 
 #include "common/macros.h"
 #include "framework/batch/batch.h"
 #include "framework/kv_cache/kv_cache.h"
 #include "framework/model/causal_lm.h"
+#include "framework/model/model_input.h"
 #include "framework/model/model_input_params.h"
 #include "framework/model/model_output.h"
 #include "options.h"
@@ -36,13 +38,41 @@ class ExecutorImpl {
 
   virtual ForwardInput prepare_inputs(Batch& batch) = 0;
 
+  // Typed run is the canonical virtual entry. Subclasses implement these
+  // overloads; callers that still hold legacy `ModelInputParams` can use the
+  // non-virtual `run(...)` wrappers below.
   // tokens: vector size is dp_size, each element is [num_tokens/dp_size]
   // positions: vector size is dp_size, each element is [num_tokens/dp_size]
   // token pos in the sequence returns: ModelOutput
   virtual ModelOutput run(const torch::Tensor& tokens,
                           const torch::Tensor& positions,
                           std::vector<KVCache>& kv_caches,
-                          const ModelInputParams& params) = 0;
+                          const model_input::ModelInput& input) = 0;
+
+  virtual ModelOutput run(const torch::Tensor& tokens,
+                          const torch::Tensor& positions,
+                          std::vector<KVCache>& kv_caches,
+                          model_input::ModelInput&& input) = 0;
+
+  ModelOutput run(const torch::Tensor& tokens,
+                  const torch::Tensor& positions,
+                  std::vector<KVCache>& kv_caches,
+                  const ModelInputParams& params) {
+    return run(tokens,
+               positions,
+               kv_caches,
+               model_input::make_model_input_from_legacy(params));
+  }
+
+  ModelOutput run(const torch::Tensor& tokens,
+                  const torch::Tensor& positions,
+                  std::vector<KVCache>& kv_caches,
+                  ModelInputParams&& params) {
+    return run(tokens,
+               positions,
+               kv_caches,
+               model_input::make_model_input_from_legacy(std::move(params)));
+  }
 };
 
 }  // namespace xllm

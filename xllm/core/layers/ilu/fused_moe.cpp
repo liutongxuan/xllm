@@ -20,6 +20,7 @@ limitations under the License.
 #include <iomanip>
 
 #include "common/global_flags.h"
+#include "framework/model/model_input.h"
 #include "framework/parallel_state/parallel_state.h"
 #include "kernels/ops_api.h"
 #include "layers/common/dp_utils.h"
@@ -710,8 +711,9 @@ torch::Tensor FusedMoEImpl::forward_experts(const torch::Tensor& hidden_states,
   return final_hidden_states;
 }
 
-torch::Tensor FusedMoEImpl::forward(const torch::Tensor& hidden_states,
-                                    const ModelInputParams& input_params) {
+torch::Tensor FusedMoEImpl::forward(
+    const torch::Tensor& hidden_states,
+    const model_input::LLMModelInputParams& input_params) {
   // we only support all2all communication for decode stage for now
   bool enable_all2all_communication =
       enable_deep_ep_ && std::all_of(input_params.dp_is_decode.begin(),
@@ -744,6 +746,15 @@ torch::Tensor FusedMoEImpl::forward(const torch::Tensor& hidden_states,
   }
 
   return output;
+}
+
+torch::Tensor FusedMoEImpl::forward(const torch::Tensor& hidden_states,
+                                    const ModelInputParams& input_params) {
+  model_input::ModelInput typed_input =
+      model_input::make_model_input_from_legacy(input_params);
+  CHECK(typed_input.llm.has_value()) << "MoE forward requires llm input";
+  const model_input::LLMModelInputParams llm_input_params = *typed_input.llm;
+  return forward(hidden_states, llm_input_params);
 }
 
 void FusedMoEImpl::load_e_score_correction_bias(const StateDict& state_dict) {

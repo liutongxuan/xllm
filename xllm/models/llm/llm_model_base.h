@@ -23,6 +23,7 @@ limitations under the License.
 
 #include "core/common/interruption_bus.h"
 #include "core/framework/kv_cache/kv_cache.h"
+#include "core/framework/model/model_input.h"
 #include "core/framework/model/model_input_params.h"
 #include "core/framework/model/model_output.h"
 #include "core/framework/model_context.h"
@@ -53,6 +54,48 @@ class LlmModelImplBase : public torch::nn::Module {
   virtual std::pair<torch::Tensor, torch::Tensor> apply_mrope(
       const torch::Tensor positions) {
     return std::make_pair(torch::Tensor(), torch::Tensor());
+  }
+
+  // Typed-input entry for Step 3 migration: dispatch to the legacy forward via
+  // a per-partition adapter. Lets callers (e.g. LlmForCausalLMImplBase) pass
+  // ModelInput straight through; future commits can replace the body with
+  // direct input.llm field reads without touching outer wrappers.
+  virtual ModelOutput forward(torch::Tensor tokens,
+                              torch::Tensor positions,
+                              std::vector<KVCache>& kv_caches,
+                              const model_input::ModelInput& input) {
+    CHECK(input.llm.has_value())
+        << "LLM model forward requires the llm partition in ModelInput";
+    model_input::LLMModelInputParams llm_input_params = *input.llm;
+    if (input.rec.has_value()) {
+      llm_input_params.rec_params = input.rec->rec_params;
+    }
+    return forward(tokens, positions, kv_caches, llm_input_params);
+  }
+
+  virtual ModelOutput forward(torch::Tensor tokens,
+                              torch::Tensor positions,
+                              std::vector<KVCache>& kv_caches,
+                              model_input::ModelInput&& input) {
+    CHECK(input.llm.has_value())
+        << "LLM model forward requires the llm partition in ModelInput";
+    model_input::LLMModelInputParams llm_input_params = std::move(*input.llm);
+    if (input.rec.has_value()) {
+      llm_input_params.rec_params = std::move(input.rec->rec_params);
+    }
+    return forward(tokens, positions, kv_caches, llm_input_params);
+  }
+
+  virtual ModelOutput forward(
+      torch::Tensor tokens,
+      torch::Tensor positions,
+      std::vector<KVCache>& kv_caches,
+      const model_input::LLMModelInputParams& input_params) {
+    ModelInputParams params;
+    model_input::ModelInput input;
+    input.llm = input_params;
+    model_input::apply_model_input_to_legacy(input, &params);
+    return forward(tokens, positions, kv_caches, params);
   }
 
   // tokens: [num_tokens]
@@ -180,14 +223,26 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
     return model_->get_input_embeddings(input_ids);
   }
 
-  // tokens: [num_tokens]
-  // positions: [num_tokens] token pos in the sequence
-  // returns: [num_tokens, hidden_size]
+  // Typed-input entry for Step 3 migration: unwraps the relevant partitions
+  // (LLM always, plus VLM/Rec when used as a backbone for VL/multi-round Rec
+  // models) into a legacy ModelInputParams and dispatches through the legacy
+  // forward. DiT is intentionally not consumed by LLM-style models.
   virtual ModelOutput forward(const torch::Tensor& tokens,
                               const torch::Tensor& positions,
                               std::vector<KVCache>& kv_caches,
-                              const ModelInputParams& input_params) {
-    return model_(tokens, positions, kv_caches, input_params);
+                              const model_input::ModelInput& input) {
+    CHECK(input.llm.has_value())
+        << "LLM forward requires the llm partition in ModelInput";
+    return model_(tokens, positions, kv_caches, input);
+  }
+
+  virtual ModelOutput forward(const torch::Tensor& tokens,
+                              const torch::Tensor& positions,
+                              std::vector<KVCache>& kv_caches,
+                              model_input::ModelInput&& input) {
+    CHECK(input.llm.has_value())
+        << "LLM forward requires the llm partition in ModelInput";
+    return model_(tokens, positions, kv_caches, std::move(input));
   }
 
   // hidden_states: [num_tokens, hidden_size]

@@ -20,6 +20,7 @@ limitations under the License.
 
 #include <algorithm>
 #include <cstdint>
+#include <utility>
 
 #include "common/global_flags.h"
 #include "common/metrics.h"
@@ -113,6 +114,25 @@ uint32_t get_tp_size(const xllm::runtime::Options& options) {
   return static_cast<uint32_t>(world_size / dp_size);
 }
 
+uint32_t get_graph_dp_tokens(
+    uint32_t actual_tokens,
+    const xllm::model_input::LLMModelInputParams& llm_input,
+    const xllm::runtime::Options& options) {
+  if (llm_input.dp_global_token_nums.size() <= 1) {
+    return get_bucket_num_tokens(actual_tokens);
+  }
+
+  const auto max_token_num =
+      std::max_element(llm_input.dp_global_token_nums.begin(),
+                       llm_input.dp_global_token_nums.end());
+  CHECK(max_token_num != llm_input.dp_global_token_nums.end())
+      << "dp_global_token_nums is empty";
+  uint32_t bucket_tokens =
+      get_bucket_num_tokens(static_cast<uint32_t>(*max_token_num));
+  uint32_t tp_size = get_tp_size(options);
+  return align_tokens(std::max(bucket_tokens, tp_size), tp_size);
+}
+
 uint32_t get_graph_dp_tokens(uint32_t actual_tokens,
                              const xllm::ModelInputParams& params,
                              const xllm::runtime::Options& options) {
@@ -146,6 +166,48 @@ xllm::ModelInputParams make_graph_params(const xllm::ModelInputParams& params,
                              static_cast<int32_t>(padding_num_tokens));
   }
   return graph_params;
+}
+
+RunMode get_run_mode(const xllm::runtime::Options& options,
+                     const xllm::model_input::LLMModelInputParams& llm_input) {
+  if (options.is_draft_engine()) {
+    return RunMode::kDraft;
+  }
+
+  if (!llm_input.batch_forward_type.is_decode()) {
+    return RunMode::kNonDecode;
+  }
+
+  if (llm_input.q_max_seq_len == 0) {
+    return RunMode::kDummy;
+  }
+
+  if (llm_input.dp_global_token_nums.size() <= 1) {
+    return RunMode::kGraph;
+  }
+
+  if (has_zero_tokens(llm_input.dp_global_token_nums)) {
+    return RunMode::kDummy;
+  }
+
+  if (llm_input.dp_is_decode.size() != llm_input.dp_global_token_nums.size()) {
+    return RunMode::kBadDpMeta;
+  }
+
+  if (std::find(llm_input.dp_is_decode.begin(),
+                llm_input.dp_is_decode.end(),
+                0) != llm_input.dp_is_decode.end()) {
+    return RunMode::kMixedDp;
+  }
+
+  if (!dp_tokens_equal(llm_input.dp_global_token_nums)) {
+    if (llm_input.q_max_seq_len == 1) {
+      return RunMode::kPaddedDpGraph;
+    }
+    return RunMode::kUnevenDp;
+  }
+
+  return RunMode::kGraph;
 }
 
 RunMode get_run_mode(const xllm::runtime::Options& options,
@@ -398,10 +460,12 @@ ForwardInput MluGraphExecutorImpl::prepare_inputs(Batch& batch) {
       options_.num_decoding_tokens(), 0, args_, options_.cp_size());
 }
 
-ModelOutput MluGraphExecutorImpl::run_eager(const torch::Tensor& tokens,
-                                            const torch::Tensor& positions,
-                                            std::vector<KVCache>& kv_caches,
-                                            const ModelInputParams& params) {
+ModelOutput MluGraphExecutorImpl::run_eager(
+    const torch::Tensor& tokens,
+    const torch::Tensor& positions,
+    std::vector<KVCache>& kv_caches,
+    const model_input::ModelInput& input,
+    const ModelInputParams& params) {
   RunMode run_mode = get_run_mode(options_, params);
   if (run_mode == RunMode::kDraft) {
     LOG_FIRST_N(INFO, 1) << "MLU graph fallback to eager for draft worker";
@@ -419,7 +483,7 @@ ModelOutput MluGraphExecutorImpl::run_eager(const torch::Tensor& tokens,
         << "MLU graph fallback to eager because dp_is_decode is invalid";
   }
   COUNTER_INC(num_model_execution_total_eager);
-  ModelOutput result = model_->forward(tokens, positions, kv_caches, params);
+  ModelOutput result = model_->forward(tokens, positions, kv_caches, input);
   return make_graph_output(result.hidden_states,
                            result.aux_hidden_states,
                            options_.enable_graph_aux_hidden_states());
@@ -439,22 +503,27 @@ void MluGraphExecutorImpl::init_param_once() {
 ModelOutput MluGraphExecutorImpl::run(const torch::Tensor& tokens,
                                       const torch::Tensor& positions,
                                       std::vector<KVCache>& kv_caches,
-                                      const ModelInputParams& params) {
-  const RunMode run_mode = get_run_mode(options_, params);
+                                      const model_input::ModelInput& input) {
+  CHECK(input.llm.has_value())
+      << "MluGraphExecutorImpl::run requires llm partition in ModelInput";
+  const model_input::LLMModelInputParams& llm_input = *input.llm;
+  ModelInputParams params;
+  model_input::apply_model_input_to_legacy(input, &params);
+  const RunMode run_mode = get_run_mode(options_, llm_input);
   if (!allow_graph(run_mode)) {
-    return run_eager(tokens, positions, kv_caches, params);
+    return run_eager(tokens, positions, kv_caches, input, params);
   }
 
   init_param_once();
 
   const uint32_t actual_tokens = static_cast<uint32_t>(tokens.size(0));
   const uint32_t graph_tokens =
-      get_graph_dp_tokens(actual_tokens, params, options_);
+      get_graph_dp_tokens(actual_tokens, llm_input, options_);
   if (graph_tokens > kMaxGraphTokens) {
     LOG_FIRST_N(INFO, 1)
         << "MLU graph fallback to eager because graph bucket num_tokens "
         << graph_tokens << " exceeds limit " << kMaxGraphTokens;
-    return run_eager(tokens, positions, kv_caches, params);
+    return run_eager(tokens, positions, kv_caches, input, params);
   }
   const ModelInputParams graph_params = make_graph_params(params, graph_tokens);
 
@@ -503,6 +572,16 @@ ModelOutput MluGraphExecutorImpl::run(const torch::Tensor& tokens,
   }
 
   return ModelOutput(hidden_states);
+}
+
+ModelOutput MluGraphExecutorImpl::run(const torch::Tensor& tokens,
+                                      const torch::Tensor& positions,
+                                      std::vector<KVCache>& kv_caches,
+                                      model_input::ModelInput&& input) {
+  return run(tokens,
+             positions,
+             kv_caches,
+             static_cast<const model_input::ModelInput&>(input));
 }
 
 }  // namespace xllm::mlu

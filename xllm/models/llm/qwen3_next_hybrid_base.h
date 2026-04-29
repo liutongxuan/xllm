@@ -24,6 +24,7 @@ limitations under the License.
 
 #include "core/common/global_flags.h"
 #include "core/framework/kv_cache/kv_cache.h"
+#include "core/framework/model/model_input.h"
 #include "core/framework/model/model_input_params.h"
 #include "core/framework/model/model_output.h"
 #include "core/framework/model_context.h"
@@ -78,6 +79,15 @@ class Qwen3HybridModelImplBase : public Qwen3HybridModelModule {
 
   // tokens: [num_tokens]
   // positions: [num_tokens] token pos in the sequence
+  ModelOutput forward(torch::Tensor tokens,
+                      torch::Tensor positions,
+                      std::vector<KVCache>& kv_caches,
+                      const model_input::LLMModelInputParams& input_params) {
+    model_input::ModelInput input;
+    input.llm = input_params;
+    return forward(tokens, positions, kv_caches, input);
+  }
+
   ModelOutput forward(torch::Tensor tokens,
                       torch::Tensor positions,
                       std::vector<KVCache>& kv_caches,
@@ -205,6 +215,40 @@ class Qwen3HybridForCausalLMImplBase : public torch::nn::Module {
                       std::vector<KVCache>& kv_caches,
                       const ModelInputParams& input_params) {
     return model_->forward(tokens, positions, kv_caches, input_params);
+  }
+
+  ModelOutput forward(const torch::Tensor& tokens,
+                      const torch::Tensor& positions,
+                      std::vector<KVCache>& kv_caches,
+                      const model_input::LLMModelInputParams& input_params) {
+    model_input::ModelInput input;
+    input.llm = input_params;
+    return forward(tokens, positions, kv_caches, input);
+  }
+
+  // Typed-input entry for Step 3 migration: unwraps the relevant partitions
+  // (LLM always, plus VLM/Rec when used as a backbone) into a legacy
+  // ModelInputParams. DiT is intentionally not consumed by hybrid LLM models.
+  virtual ModelOutput forward(const torch::Tensor& tokens,
+                              const torch::Tensor& positions,
+                              std::vector<KVCache>& kv_caches,
+                              const model_input::ModelInput& input) {
+    CHECK(input.llm.has_value())
+        << "Hybrid LLM forward requires the llm partition in ModelInput";
+    ModelInputParams params;
+    model_input::apply_model_input_to_legacy(input, &params);
+    return forward(tokens, positions, kv_caches, params);
+  }
+
+  virtual ModelOutput forward(const torch::Tensor& tokens,
+                              const torch::Tensor& positions,
+                              std::vector<KVCache>& kv_caches,
+                              model_input::ModelInput&& input) {
+    CHECK(input.llm.has_value())
+        << "Hybrid LLM forward requires the llm partition in ModelInput";
+    ModelInputParams params;
+    model_input::apply_model_input_to_legacy(std::move(input), &params);
+    return forward(tokens, positions, kv_caches, params);
   }
 
   // hidden_states: [num_tokens, hidden_size]

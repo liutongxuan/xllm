@@ -41,6 +41,18 @@ class MMEmbeddingVLMImpl : public MMEmbeddingVLM {
   MMEmbeddingVLMImpl(Model model, const torch::TensorOptions& options)
       : model_(std::move(model)), options_(options) {}
 
+  MMDict encode(const model_input::ModelInput& input) override {
+    ModelInputParams input_params;
+    model_input::apply_model_input_to_legacy(input, &input_params);
+    return model_->encode(input_params);
+  }
+
+  MMDict encode(model_input::ModelInput&& input) override {
+    ModelInputParams input_params;
+    model_input::apply_model_input_to_legacy(std::move(input), &input_params);
+    return model_->encode(input_params);
+  }
+
   virtual MMDict encode(const ModelInputParams& input_params) override {
     return model_->encode(input_params);
   };

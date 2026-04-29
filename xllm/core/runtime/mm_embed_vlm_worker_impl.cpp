@@ -24,7 +24,7 @@ limitations under the License.
 
 #include "common/metrics.h"
 #include "framework/kv_cache/kv_cache.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_input.h"
 #include "framework/state_dict/state_dict.h"
 #include "models/model_registry.h"
 #include "options.h"
@@ -54,20 +54,23 @@ std::optional<ForwardOutput> MMEmbedVLMWorkerImpl::step(
   auto ret = device_.synchronize_default_stream();
 
   Timer timer;
+  ForwardInput input_on_device = input.to(device_, dtype_);
 
   // TODO remove language params in only vision model forward.
   // TODO to adapt multi stream parallel later, just use [0] temporarily
   // all tensors should be on the same device as model
-  auto flatten_tokens = input.token_ids.to(device_);
-  auto flatten_positions = input.positions.to(device_);
-  auto params = input.input_params.to(device_);
-  auto sampling_params = input.sampling_params.to(device_, dtype_);
+  auto flatten_tokens = input_on_device.token_ids;
+  auto flatten_positions = input_on_device.positions;
+  (void)flatten_tokens;
+  (void)flatten_positions;
+  model_input::ModelInput typed_input = input_on_device.get_typed_input();
+  auto sampling_params = input_on_device.sampling_params;
   CHECK(input.sampling_params.is_embeddings)
       << "Only mm embedding is supported.";
 
   // call model executor forward to get hidden states
   MMEmbeddingVLM* em_model = dynamic_cast<MMEmbeddingVLM*>(model_.get());
-  auto encode_output = em_model->encode(params);
+  auto encode_output = em_model->encode(std::move(typed_input));
   const auto it = encode_output.find("image|embedding");
   if (it == encode_output.end() ||
       !std::holds_alternative<std::vector<torch::Tensor>>(it->second)) {

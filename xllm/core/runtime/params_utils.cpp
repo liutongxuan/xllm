@@ -23,6 +23,7 @@ limitations under the License.
 #include "common/global_flags.h"
 #include "common/macros.h"
 #include "common/metrics.h"
+#include "framework/model/model_input.h"
 #include "framework/model/model_input_params.h"
 #include "framework/request/mm_batch_data.h"
 #include "runtime/forward_params.h"
@@ -388,6 +389,8 @@ void proto_to_forward_input(const proto::ForwardInput* pb_forward_input,
     proto_to_dit_forward_input(pb_forward_input->dit_forward_input(),
                                input_params.dit_forward_input);
   }
+
+  forward_inputs.sync_input_from_legacy();
 
   COUNTER_ADD(proto_latency_seconds_proto2i, timer.elapsed_seconds());
 }

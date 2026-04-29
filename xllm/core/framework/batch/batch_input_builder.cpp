@@ -27,6 +27,7 @@ limitations under the License.
 #include "common/metrics.h"
 #include "framework/batch/mposition.h"
 #include "framework/model/model_args.h"
+#include "framework/model/model_input.h"
 #include "framework/model/model_input_params.h"
 #include "framework/request/sequence.h"
 #include "framework/sampling/sampling_params.h"
@@ -584,6 +585,9 @@ ForwardInput BatchInputBuilder::state_to_forward_input() {
                                        state_.unique_token_counts_vec,
                                        state_.unique_token_lens_vec);
   }
+
+  forward_input.input =
+      model_input::make_model_input_from_legacy(forward_input.input_params);
 
   return forward_input;
 }

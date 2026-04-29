@@ -114,6 +114,30 @@ struct has_pooler<T,
                       std::declval<const torch::Tensor&>()))>>
     : std::true_type {};
 
+template <typename T, typename = void>
+struct has_typed_forward : std::false_type {};
+
+template <typename T>
+struct has_typed_forward<T,
+                         std::void_t<decltype(std::declval<T>()->forward(
+                             std::declval<const torch::Tensor&>(),
+                             std::declval<const torch::Tensor&>(),
+                             std::declval<std::vector<KVCache>&>(),
+                             std::declval<const model_input::ModelInput&>()))>>
+    : std::true_type {};
+
+template <typename T, typename = void>
+struct has_typed_forward_rvalue : std::false_type {};
+
+template <typename T>
+struct has_typed_forward_rvalue<
+    T,
+    std::void_t<decltype(std::declval<T>()->forward(
+        std::declval<const torch::Tensor&>(),
+        std::declval<const torch::Tensor&>(),
+        std::declval<std::vector<KVCache>&>(),
+        std::declval<model_input::ModelInput&&>()))>> : std::true_type {};
+
 #if defined(USE_NPU)
 template <typename T, typename = void>
 struct has_get_npu_lm_head : std::false_type {};

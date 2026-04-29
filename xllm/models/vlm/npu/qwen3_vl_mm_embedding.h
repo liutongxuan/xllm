@@ -131,6 +131,18 @@ class MMEmbeddingVLMImpl<npu::model::Qwen3_VLForMMEmbedding>
                      const torch::TensorOptions& options)
       : model_(std::move(model)), options_(options) {}
 
+  MMDict encode(const model_input::ModelInput& input) override {
+    ModelInputParams input_params;
+    model_input::apply_model_input_to_legacy(input, &input_params);
+    return model_->encode(input_params);
+  }
+
+  MMDict encode(model_input::ModelInput&& input) override {
+    ModelInputParams input_params;
+    model_input::apply_model_input_to_legacy(std::move(input), &input_params);
+    return model_->encode(input_params);
+  }
+
   MMDict encode(const ModelInputParams& input_params) override {
     return model_->encode(input_params);
   };
@@ -145,10 +157,17 @@ class MMEmbeddingVLMImpl<npu::model::Qwen3_VLForMMEmbedding>
     return torch::Tensor();
   }
 
-  virtual ModelOutput forward(const torch::Tensor& tokens,
-                              const torch::Tensor& positions,
-                              std::vector<KVCache>& kv_caches,
-                              const ModelInputParams& input_params) {
+  ModelOutput forward(const torch::Tensor& tokens,
+                      const torch::Tensor& positions,
+                      std::vector<KVCache>& kv_caches,
+                      const model_input::ModelInput& input) override {
+    return ModelOutput();
+  }
+
+  ModelOutput forward(const torch::Tensor& tokens,
+                      const torch::Tensor& positions,
+                      std::vector<KVCache>& kv_caches,
+                      model_input::ModelInput&& input) override {
     return ModelOutput();
   }
   virtual void prepare_expert_weight(int32_t layer_id,

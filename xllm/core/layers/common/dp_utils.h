@@ -18,7 +18,7 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_input.h"
 #include "framework/parallel_state/parallel_args.h"
 
 namespace xllm {
@@ -61,16 +61,23 @@ bool need_dp_moe_gather(const ParallelArgs& args, bool enable_moe_all2all);
 
 // gather tokens from all dp ranks before moe
 torch::Tensor gather_dp_tokens(const torch::Tensor& input,
+                               const model_input::LLMModelInputParams& params,
+                               const ParallelArgs& args);
+torch::Tensor gather_dp_tokens(const torch::Tensor& input,
                                const ModelInputParams& params,
                                const ParallelArgs& args);
 
 // given a tensor containing data from all DP ranks,
 // returns a slice containing only the tokens for the current DP rank
 torch::Tensor get_dp_local_slice(const torch::Tensor& input,
+                                 const model_input::LLMModelInputParams& params,
+                                 const ParallelArgs& args);
+torch::Tensor get_dp_local_slice(const torch::Tensor& input,
                                  const ModelInputParams& params,
                                  const ParallelArgs& args);
 
 // check if all dp ranks are decode
+bool all_dp_ranks_are_decode(const model_input::LLMModelInputParams& params);
 bool all_dp_ranks_are_decode(const ModelInputParams& params);
 
 }  // namespace layer

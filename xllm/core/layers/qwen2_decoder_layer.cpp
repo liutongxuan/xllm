@@ -15,6 +15,8 @@ limitations under the License.
 
 #include "qwen2_decoder_layer.h"
 
+#include "framework/model/model_input.h"
+
 namespace xllm {
 namespace layer {
 
@@ -90,7 +92,7 @@ torch::Tensor Qwen2DecoderLayerImpl::forward(
     torch::Tensor& positions,
     const AttentionMetadata& attn_metadata,
     KVCache& kv_cache,
-    const ModelInputParams& input_params) {
+    const model_input::LLMModelInputParams& /*input_params*/) {
   auto pre_fp8_scale = attention_->get_fp8_input_scale();
   auto post_fp8_scale = mlp_->get_fp8_input_scale();
 
@@ -107,6 +109,22 @@ torch::Tensor Qwen2DecoderLayerImpl::forward(
   x = mlp_->forward(x);
 
   return x;
+}
+
+torch::Tensor Qwen2DecoderLayerImpl::forward(
+    torch::Tensor& x,
+    std::optional<torch::Tensor>& residual,
+    torch::Tensor& positions,
+    const AttentionMetadata& attn_metadata,
+    KVCache& kv_cache,
+    const ModelInputParams& input_params) {
+  model_input::ModelInput typed_input =
+      model_input::make_model_input_from_legacy(input_params);
+  CHECK(typed_input.llm.has_value())
+      << "Qwen2DecoderLayer forward requires llm input";
+  const model_input::LLMModelInputParams llm_input_params = *typed_input.llm;
+  return forward(
+      x, residual, positions, attn_metadata, kv_cache, llm_input_params);
 }
 
 }  // namespace layer

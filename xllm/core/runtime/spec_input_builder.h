@@ -25,8 +25,6 @@ limitations under the License.
 
 namespace xllm {
 
-struct ModelInputParams;
-
 namespace specBuilder {
 
 // CPU-side decoded input view used by builder helpers.
@@ -82,7 +80,7 @@ DecodeCpuView make_decode_cpu_view(const torch::Tensor& token_ids_cpu,
                                    const Slice<int32_t>& kv_seq_lens_slice);
 
 // Appends one logical decode row into output buffers.
-void append_decode_row(const ModelInputParams& params,
+void append_decode_row(int32_t num_sequences,
                        const DecodeCpuView& view,
                        const RowSpec& row,
                        int32_t block_size,
@@ -98,7 +96,7 @@ TokenWithOffset resolve_token_with_position_offset(
     int32_t last_step_decode_num);
 
 // Resolves a token from last-step output and appends one decode row.
-void append_decode_row_from_last_step(const ModelInputParams& params,
+void append_decode_row_from_last_step(int32_t num_sequences,
                                       const DecodeCpuView& view,
                                       int32_t seq_id,
                                       int32_t input_token_id,
@@ -125,9 +123,11 @@ void update_kv_seq_lens_and_max(std::vector<int32_t>& kv_seq_lens_vec,
                                 int32_t kv_len,
                                 int32_t& kv_max_seq_len);
 
-// Builds q_cu_seq_lens tensor from params.get_q_seq_len(i).
-torch::Tensor build_q_cu_seq_lens_tensor(const ModelInputParams& params,
-                                         torch::Device device = torch::kCPU);
+// Builds q_cu_seq_lens tensor from per-sequence q lengths.
+torch::Tensor build_q_cu_seq_lens_tensor(
+    const std::vector<int32_t>& q_seq_lens_vec,
+    int32_t num_sequences,
+    torch::Device device = torch::kCPU);
 
 namespace draftProbs {
 

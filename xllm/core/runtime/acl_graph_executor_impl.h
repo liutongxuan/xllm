@@ -308,11 +308,16 @@ class AclGraphExecutorImpl : public ExecutorImpl {
 
   ForwardInput prepare_inputs(Batch& batch) override;
 
-  // Execute model with graph optimization for decode phase
+  // Execute model with graph optimization for decode phase.
+  using ExecutorImpl::run;
   ModelOutput run(const torch::Tensor& tokens,
                   const torch::Tensor& positions,
                   std::vector<KVCache>& kv_caches,
-                  const ModelInputParams& params) override;
+                  const model_input::ModelInput& input) override;
+  ModelOutput run(const torch::Tensor& tokens,
+                  const torch::Tensor& positions,
+                  std::vector<KVCache>& kv_caches,
+                  model_input::ModelInput&& input) override;
 
   static std::optional<std::pair<torch::Tensor, torch::Tensor>>
   find_first_full_attention_cache(const std::vector<KVCache>& kv_caches);

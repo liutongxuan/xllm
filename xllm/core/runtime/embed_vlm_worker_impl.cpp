@@ -27,13 +27,21 @@ limitations under the License.
 
 #include "common/metrics.h"
 #include "framework/kv_cache/kv_cache.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_input.h"
 #include "framework/state_dict/state_dict.h"
 #include "models/model_registry.h"
 #include "options.h"
 #include "util/timer.h"
 
 namespace xllm {
+namespace {
+std::vector<int32_t> get_q_seq_lens_vec(const ForwardInput& input) {
+  model_input::ModelInput typed_input = input.get_typed_input();
+  CHECK(typed_input.llm.has_value())
+      << "EmbedVLMWorker requires the llm partition in ModelInput";
+  return typed_input.llm->q_seq_lens_vec;
+}
+}  // namespace
 
 EmbedVLMWorkerImpl::EmbedVLMWorkerImpl(const ParallelArgs& parallel_args,
                                        const torch::Device& device,
@@ -58,17 +66,18 @@ std::optional<ForwardOutput> EmbedVLMWorkerImpl::step(
   auto ret = device_.synchronize_default_stream();
 
   Timer timer;
+  ForwardInput input_on_device = input.to(device_, dtype_);
 
   // TODO to adapt multi stream parallel later, just use [0] temporarily
   // all tensors should be on the same device as model
-  auto flatten_tokens = input.token_ids.to(device_);
-  auto flatten_positions = input.positions.to(device_);
-  auto params = input.input_params.to(device_);
-  auto sampling_params = input.sampling_params.to(device_, dtype_);
+  auto flatten_tokens = input_on_device.token_ids;
+  auto flatten_positions = input_on_device.positions;
+  model_input::ModelInput typed_input = input_on_device.get_typed_input();
+  auto sampling_params = input_on_device.sampling_params;
 
   // call model executor forward to get hidden states
   auto model_output = model_executor_->forward(
-      flatten_tokens, flatten_positions, kv_caches_, params);
+      flatten_tokens, flatten_positions, kv_caches_, std::move(typed_input));
   auto hidden_states = model_output.hidden_states;
   ret = device_.synchronize_default_stream();
   COUNTER_ADD(execution_latency_seconds_model, timer.elapsed_seconds());
@@ -88,10 +97,10 @@ std::optional<ForwardOutput> EmbedVLMWorkerImpl::step(
     // split full embeddings and add them to mm_embeddings
     // so that the user could receive embeddings of images and texts
     if (FLAGS_enable_return_mm_full_embeddings) {
-      auto q_seq_len_vec = input.input_params.q_seq_lens_vec;
+      std::vector<int32_t> q_seq_len_vec = get_q_seq_lens_vec(input_on_device);
       sample_output.mm_embeddings.reserve(q_seq_len_vec.size());
       int32_t token_start_idx = 0;
-      for (auto seq_len : q_seq_len_vec) {
+      for (const int seq_len : q_seq_len_vec) {
         auto image_embed =
             embeddings.slice(0, token_start_idx, token_start_idx + seq_len);
         sample_output.mm_embeddings.emplace_back(image_embed);

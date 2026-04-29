@@ -27,6 +27,7 @@ limitations under the License.
 #include <vector>
 
 #include "common/types.h"
+#include "framework/model/model_input.h"
 #include "framework/model/model_input_params.h"
 #include "framework/request/mm_batch_data.h"
 #include "framework/request/mm_data.h"
@@ -120,6 +121,26 @@ struct StepDecodeMeta {
 
 // Inputs for forward execution
 struct ForwardInput {
+  bool has_typed_partition() const {
+    return input.llm.has_value() || input.vlm.has_value() ||
+           input.dit.has_value() || input.rec.has_value();
+  }
+
+  model_input::ModelInput get_typed_input() const {
+    if (has_typed_partition()) {
+      return input;
+    }
+    return model_input::make_model_input_from_legacy(input_params);
+  }
+
+  void sync_input_from_legacy() {
+    input = model_input::make_model_input_from_legacy(input_params);
+  }
+
+  void sync_legacy_from_input() {
+    model_input::apply_model_input_to_legacy(input, &input_params);
+  }
+
   ForwardInput to(const torch::Device& device, torch::ScalarType dtype) const {
     ForwardInput inputs;
     inputs.token_ids = safe_to(token_ids, device, true);
@@ -132,7 +153,10 @@ struct ForwardInput {
         inputs.positions.scalar_type() != torch::kInt64) {
       inputs.positions = inputs.positions.to(torch::kInt64);
     }
-    inputs.input_params = input_params.to(device);
+    ModelInputParams merged_input_params = input_params;
+    model_input::apply_model_input_to_legacy(input, &merged_input_params);
+    inputs.input_params = merged_input_params.to(device);
+    inputs.sync_input_from_legacy();
     inputs.sampling_params = sampling_params.to(device, dtype);
     inputs.decoder_sampling_params = decoder_sampling_params.to(device, dtype);
     inputs.transfer_kv_infos = transfer_kv_infos;
@@ -164,6 +188,7 @@ struct ForwardInput {
   torch::Tensor token_ids;
   // flatten positions
   torch::Tensor positions;
+  model_input::ModelInput input;
   ModelInputParams input_params;
   SamplingParameters sampling_params;
   SamplingParameters decoder_sampling_params;

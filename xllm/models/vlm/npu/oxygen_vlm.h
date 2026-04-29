@@ -24,6 +24,7 @@ limitations under the License.
 #include <unordered_map>
 
 #include "core/framework/kv_cache/kv_cache.h"
+#include "core/framework/model/model_input.h"
 #include "core/framework/model/model_input_params.h"
 #include "core/framework/model/model_output.h"
 #include "core/layers/npu/npu_lm_head_impl.h"
@@ -47,37 +48,47 @@ class OxygenvlmForConditionalGenerationImpl : public torch::nn::Module {
         register_module("language_model", OxygenForCausalLM(context));
   }
 
-  void prepare_encoder_input(const ModelInputParams& input_params,
+  void prepare_encoder_input(const model_input::ModelInput& input,
                              std::optional<Glm4VImageInputs>& image_inputs,
                              std::optional<Glm4VVideoInputs>& video_inputs) {
-    const auto& mm_data = input_params.mm_data;
+    CHECK(input.vlm.has_value())
+        << "Oxygen VLM requires the vlm partition in ModelInput";
+    const MMBatchData& mm_data = input.vlm->mm_data;
     torch::Tensor pixel_values;
-    if (const auto& res = mm_data.get<torch::Tensor>("pixel_values"))
+    if (const auto& res = mm_data.get<torch::Tensor>("pixel_values")) {
       pixel_values = res.value();
+    }
 
     torch::Tensor image_grid_thw;
-    if (const auto& res = mm_data.get<torch::Tensor>("image_grid_thw"))
+    if (const auto& res = mm_data.get<torch::Tensor>("image_grid_thw")) {
       image_grid_thw = res.value();
+    }
 
     torch::Tensor pixel_values_videos;
-    if (const auto& res = mm_data.get<torch::Tensor>("pixel_values_videos"))
+    if (const auto& res = mm_data.get<torch::Tensor>("pixel_values_videos")) {
       pixel_values_videos = res.value();
+    }
 
     torch::Tensor video_grid_thw;
-    if (const auto& res = mm_data.get<torch::Tensor>("video_grid_thw"))
+    if (const auto& res = mm_data.get<torch::Tensor>("video_grid_thw")) {
       video_grid_thw = res.value();
+    }
 
-    if (pixel_values.defined() && image_grid_thw.defined())
+    if (pixel_values.defined() && image_grid_thw.defined()) {
       image_inputs = Glm4VImageInputs{pixel_values, image_grid_thw};
+    }
 
-    if (pixel_values_videos.defined() && video_grid_thw.defined())
+    if (pixel_values_videos.defined() && video_grid_thw.defined()) {
       video_inputs = Glm4VVideoInputs{pixel_values_videos, video_grid_thw};
+    }
   }
 
-  MMDict get_multimodal_embeddings(const ModelInputParams& input_params) {
+  MMDict get_multimodal_embeddings(const model_input::ModelInput& input) {
+    ModelInputParams input_params;
+    model_input::apply_model_input_to_legacy(input, &input_params);
     std::optional<Glm4VImageInputs> image_input;
     std::optional<Glm4VVideoInputs> video_input;
-    prepare_encoder_input(input_params, image_input, video_input);
+    prepare_encoder_input(input, image_input, video_input);
 
     auto merge_size = model_args_.mm_image_merge_size();
     MMDict multimodal_embeds;
@@ -146,8 +157,10 @@ class OxygenvlmForConditionalGenerationImpl : public torch::nn::Module {
   }
 
   torch::Tensor get_input_embeddings(const torch::Tensor input_ids,
-                                     const ModelInputParams& input_params) {
-    const auto& mm_data = input_params.mm_data;
+                                     const model_input::ModelInput& input) {
+    CHECK(input.vlm.has_value())
+        << "Oxygen VLM requires the vlm partition in ModelInput";
+    const MMBatchData& mm_data = input.vlm->mm_data;
     torch::Tensor multimodal_embeds;
     if (const auto& emb = mm_data.get<torch::Tensor>("embedding")) {
       multimodal_embeds = emb.value();
@@ -162,12 +175,24 @@ class OxygenvlmForConditionalGenerationImpl : public torch::nn::Module {
     return inputs_embeds;
   }
 
+  // Step 3 typed forward: VLM consumes the llm + vlm partitions and delegates
+  // to the language model's typed forward (LLM family already opted in).
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) {
-    auto emb = language_model_(tokens, positions, kv_caches, input_params);
-    return emb;
+                      const model_input::ModelInput& input) {
+    CHECK(input.llm.has_value())
+        << "VLM forward requires the llm partition in ModelInput";
+    return language_model_(tokens, positions, kv_caches, input);
+  }
+
+  ModelOutput forward(const torch::Tensor& tokens,
+                      const torch::Tensor& positions,
+                      std::vector<KVCache>& kv_caches,
+                      model_input::ModelInput&& input) {
+    CHECK(input.llm.has_value())
+        << "VLM forward requires the llm partition in ModelInput";
+    return language_model_(tokens, positions, kv_caches, std::move(input));
   }
 
   torch::Tensor logits(const torch::Tensor& hidden_states,

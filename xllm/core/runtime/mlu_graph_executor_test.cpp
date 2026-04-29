@@ -25,12 +25,32 @@ limitations under the License.
 #include "core/framework/batch/batch.h"
 #include "core/framework/kv_cache/kv_cache.h"
 #include "core/framework/model/model_args.h"
+#include "core/framework/model/model_input.h"
 #include "core/framework/model/model_output.h"
 #include "mlu_graph_executor_impl.h"
 #include "platform/device.h"
 #include "runtime/options.h"
 
 namespace xllm {
+namespace {
+torch::Tensor expect_typed_run_matches_legacy_run(
+    ::xllm::mlu::MluGraphExecutorImpl* executor,
+    const torch::Tensor& tokens,
+    const torch::Tensor& positions,
+    std::vector<KVCache>& kv_caches,
+    const ModelInputParams& params) {
+  const torch::Tensor legacy_output =
+      executor->run({tokens}, {positions}, kv_caches, {params}).hidden_states;
+  const model_input::ModelInput typed_input =
+      model_input::make_model_input_from_legacy(params);
+  const torch::Tensor typed_output =
+      executor->run({tokens}, {positions}, kv_caches, typed_input)
+          .hidden_states;
+  EXPECT_TRUE(torch::allclose(typed_output, legacy_output, 1e-5, 1e-6));
+  return typed_output;
+}
+}  // namespace
+
 class MockCausalLM : public CausalLM {
  public:
   MockCausalLM(const torch::TensorOptions& options) : options_(options) {
@@ -38,22 +58,35 @@ class MockCausalLM : public CausalLM {
     weight_ = register_parameter("weight", weight, false);
   }
 
+  using CausalLM::forward;
+
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& params) override {
-    (void)tokens;
+                      const model_input::ModelInput& input) override {
     (void)positions;
     (void)kv_caches;
+    CHECK(input.llm.has_value());
+    const auto& llm = *input.llm;
     ++forward_cnt_;
     last_tokens_size_ = tokens.size(0);
-    last_dp_token_nums_ = params.dp_global_token_nums;
-    auto hidden_states = params.input_embedding.matmul(weight_);
+    last_dp_token_nums_ = llm.dp_global_token_nums;
+    auto hidden_states = llm.input_embedding.matmul(weight_);
     if (return_aux_hidden_states_) {
       auto aux_hidden_states = hidden_states + 1;
       return ModelOutput(hidden_states, torch::Tensor(), aux_hidden_states);
     }
     return ModelOutput(hidden_states);
+  }
+
+  ModelOutput forward(const torch::Tensor& tokens,
+                      const torch::Tensor& positions,
+                      std::vector<KVCache>& kv_caches,
+                      model_input::ModelInput&& input) override {
+    return forward(tokens,
+                   positions,
+                   kv_caches,
+                   static_cast<const model_input::ModelInput&>(input));
   }
   torch::Tensor logits(const torch::Tensor& hidden_states,
                        const torch::Tensor& seleted_idxes) override {
@@ -198,6 +231,19 @@ TEST_F(MluGraphExecutorTest, DifferentBatchSizes) {
     EXPECT_TRUE(torch::allclose(eager_output, graph_output, 1e-5, 1e-6));
     EXPECT_TRUE(torch::allclose(eager_output, replay_output, 1e-5, 1e-6));
   }
+}
+
+TEST_F(MluGraphExecutorTest, TypedRunMatchesLegacyRun) {
+  const int32_t batch_size = 8;
+  const uint64_t seed = 123;
+  auto forward_input = prepare_inputs(batch_size, seed);
+
+  expect_typed_run_matches_legacy_run(impl_.get(),
+                                      forward_input.token_ids,
+                                      forward_input.positions,
+                                      kv_caches_,
+                                      forward_input.input_params);
+  torch_mlu::synchronize();
 }
 
 // Test multiple runs to verify consistency across different execution modes
