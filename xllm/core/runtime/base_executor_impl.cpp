@@ -37,18 +37,6 @@ ForwardInput BaseExecutorImpl::prepare_inputs(Batch& batch) {
 ModelOutput BaseExecutorImpl::run(const torch::Tensor& tokens,
                                   const torch::Tensor& positions,
                                   std::vector<KVCache>& kv_caches,
-                                  const ModelInputParams& params) {
-  // Pass legacy params directly to the model. Pre-converting to typed input
-  // and back at this boundary added a wasteful round trip while the model
-  // chain still consumes ModelInputParams; once a model consumes typed input
-  // natively, callers should invoke the typed run() entry below.
-  COUNTER_INC(num_model_execution_total_eager);
-  return model_->forward(tokens, positions, kv_caches, params);
-}
-
-ModelOutput BaseExecutorImpl::run(const torch::Tensor& tokens,
-                                  const torch::Tensor& positions,
-                                  std::vector<KVCache>& kv_caches,
                                   const model_input::ModelInput& input) {
   COUNTER_INC(num_model_execution_total_eager);
   return model_->forward(tokens, positions, kv_caches, input);

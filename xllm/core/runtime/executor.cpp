@@ -41,13 +41,6 @@ ForwardInput Executor::prepare_inputs(Batch& batch) {
 ModelOutput Executor::forward(const torch::Tensor& tokens,
                               const torch::Tensor& positions,
                               std::vector<KVCache>& kv_caches,
-                              const ModelInputParams& params) {
-  return impl_->run(tokens, positions, kv_caches, params);
-}
-
-ModelOutput Executor::forward(const torch::Tensor& tokens,
-                              const torch::Tensor& positions,
-                              std::vector<KVCache>& kv_caches,
                               const model_input::ModelInput& input) {
   return impl_->run(tokens, positions, kv_caches, input);
 }
@@ -57,6 +50,26 @@ ModelOutput Executor::forward(const torch::Tensor& tokens,
                               std::vector<KVCache>& kv_caches,
                               model_input::ModelInput&& input) {
   return impl_->run(tokens, positions, kv_caches, std::move(input));
+}
+
+ModelOutput Executor::forward(const torch::Tensor& tokens,
+                              const torch::Tensor& positions,
+                              std::vector<KVCache>& kv_caches,
+                              const ModelInputParams& params) {
+  return forward(tokens,
+                 positions,
+                 kv_caches,
+                 model_input::make_model_input_from_legacy(params));
+}
+
+ModelOutput Executor::forward(const torch::Tensor& tokens,
+                              const torch::Tensor& positions,
+                              std::vector<KVCache>& kv_caches,
+                              ModelInputParams&& params) {
+  return forward(tokens,
+                 positions,
+                 kv_caches,
+                 model_input::make_model_input_from_legacy(std::move(params)));
 }
 
 }  // namespace xllm

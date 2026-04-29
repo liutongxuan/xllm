@@ -20,6 +20,7 @@ limitations under the License.
 
 #include <algorithm>
 #include <cstdint>
+#include <utility>
 
 #include "common/global_flags.h"
 #include "common/metrics.h"
@@ -439,7 +440,9 @@ void MluGraphExecutorImpl::init_param_once() {
 ModelOutput MluGraphExecutorImpl::run(const torch::Tensor& tokens,
                                       const torch::Tensor& positions,
                                       std::vector<KVCache>& kv_caches,
-                                      const ModelInputParams& params) {
+                                      const model_input::ModelInput& input) {
+  ModelInputParams params;
+  model_input::apply_model_input_to_legacy(input, &params);
   const RunMode run_mode = get_run_mode(options_, params);
   if (!allow_graph(run_mode)) {
     return run_eager(tokens, positions, kv_caches, params);
@@ -503,6 +506,15 @@ ModelOutput MluGraphExecutorImpl::run(const torch::Tensor& tokens,
   }
 
   return ModelOutput(hidden_states);
+}
+
+ModelOutput MluGraphExecutorImpl::run(const torch::Tensor& tokens,
+                                      const torch::Tensor& positions,
+                                      std::vector<KVCache>& kv_caches,
+                                      model_input::ModelInput&& input) {
+  ModelInputParams params;
+  model_input::apply_model_input_to_legacy(std::move(input), &params);
+  return run(tokens, positions, kv_caches, params);
 }
 
 }  // namespace xllm::mlu

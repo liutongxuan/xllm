@@ -43,10 +43,7 @@ class VlmExecutorImpl : public ExecutorImpl {
 
   ForwardInput prepare_inputs(Batch& batch) override;
 
-  ModelOutput run(const torch::Tensor& tokens,
-                  const torch::Tensor& positions,
-                  std::vector<KVCache>& kv_caches,
-                  const ModelInputParams& params) override;
+  using ExecutorImpl::run;
   ModelOutput run(const torch::Tensor& tokens,
                   const torch::Tensor& positions,
                   std::vector<KVCache>& kv_caches,

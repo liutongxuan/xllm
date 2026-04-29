@@ -23,6 +23,7 @@ limitations under the License.
 #include <torch_npu/torch_npu.h>
 
 #include <numeric>
+#include <utility>
 
 #include "core/common/global_flags.h"
 #ifdef TORCH_HIGHER_THAN_PTA6
@@ -985,7 +986,9 @@ ForwardInput AclGraphExecutorImpl::prepare_inputs(Batch& batch) {
 ModelOutput AclGraphExecutorImpl::run(const torch::Tensor& tokens,
                                       const torch::Tensor& positions,
                                       std::vector<KVCache>& kv_caches,
-                                      const ModelInputParams& params) {
+                                      const model_input::ModelInput& input) {
+  ModelInputParams params;
+  model_input::apply_model_input_to_legacy(input, &params);
   // no mirco batch in decode phase
   const torch::Tensor& tokens_tensor = tokens;
   const torch::Tensor& positions_tensor = positions;
@@ -1086,6 +1089,15 @@ ModelOutput AclGraphExecutorImpl::run(const torch::Tensor& tokens,
              << bucket_num_tokens;
   COUNTER_INC(num_model_execution_total_eager);
   return model_->forward(tokens, positions, kv_caches, params);
+}
+
+ModelOutput AclGraphExecutorImpl::run(const torch::Tensor& tokens,
+                                      const torch::Tensor& positions,
+                                      std::vector<KVCache>& kv_caches,
+                                      model_input::ModelInput&& input) {
+  ModelInputParams params;
+  model_input::apply_model_input_to_legacy(std::move(input), &params);
+  return run(tokens, positions, kv_caches, params);
 }
 
 void AclGraph::print_graph_tensors() const {

@@ -26,6 +26,7 @@ limitations under the License.
 #include <numeric>
 #include <shared_mutex>
 #include <unordered_map>
+#include <utility>
 
 #include "core/common/global_flags.h"
 #include "core/common/metrics.h"
@@ -1260,7 +1261,9 @@ ModelOutput CudaGraphExecutorImpl::attach_aux_hidden_states_if_needed(
 ModelOutput CudaGraphExecutorImpl::run(const torch::Tensor& tokens,
                                        const torch::Tensor& positions,
                                        std::vector<KVCache>& kv_caches,
-                                       const ModelInputParams& params) {
+                                       const model_input::ModelInput& input) {
+  ModelInputParams params;
+  model_input::apply_model_input_to_legacy(input, &params);
   const bool is_prefill = params.batch_forward_type.is_prefill();
   const bool is_decode = params.batch_forward_type.is_decode();
 
@@ -1438,6 +1441,15 @@ ModelOutput CudaGraphExecutorImpl::run(const torch::Tensor& tokens,
              << bucket_num_tokens;
   COUNTER_INC(num_model_execution_total_eager);
   return model_->forward(tokens, positions, kv_caches, params);
+}
+
+ModelOutput CudaGraphExecutorImpl::run(const torch::Tensor& tokens,
+                                       const torch::Tensor& positions,
+                                       std::vector<KVCache>& kv_caches,
+                                       model_input::ModelInput&& input) {
+  ModelInputParams params;
+  model_input::apply_model_input_to_legacy(std::move(input), &params);
+  return run(tokens, positions, kv_caches, params);
 }
 
 // bucket will be [1, 2, 4, 8, 16, 32, 48, 64, ..., max_seqs_per_batch]

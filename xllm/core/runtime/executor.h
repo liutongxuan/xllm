@@ -39,14 +39,11 @@ class Executor final {
 
   ForwardInput prepare_inputs(Batch& batch);
 
+  // Typed forward is the canonical entry. Callers still carrying legacy
+  // `ModelInputParams` can use the non-virtual wrappers below.
   // tokens: vector size is dp_size, each element is [num_tokens/dp_size]
   // positions: vector size is dp_size, each element is [num_tokens/dp_size]
   // token pos in the sequence returns: ModelOutput
-  ModelOutput forward(const torch::Tensor& tokens,
-                      const torch::Tensor& positions,
-                      std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& params);
-
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
@@ -55,6 +52,14 @@ class Executor final {
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
                       model_input::ModelInput&& input);
+  ModelOutput forward(const torch::Tensor& tokens,
+                      const torch::Tensor& positions,
+                      std::vector<KVCache>& kv_caches,
+                      const ModelInputParams& params);
+  ModelOutput forward(const torch::Tensor& tokens,
+                      const torch::Tensor& positions,
+                      std::vector<KVCache>& kv_caches,
+                      ModelInputParams&& params);
 
  private:
   std::unique_ptr<ExecutorImpl> impl_;

@@ -52,13 +52,6 @@ MMDict VlmExecutorImpl::encode(const ModelInputParams& params) {
 ModelOutput VlmExecutorImpl::run(const torch::Tensor& tokens,
                                  const torch::Tensor& positions,
                                  std::vector<KVCache>& kv_caches,
-                                 const ModelInputParams& params) {
-  return run_with_legacy_params(tokens, positions, kv_caches, params);
-}
-
-ModelOutput VlmExecutorImpl::run(const torch::Tensor& tokens,
-                                 const torch::Tensor& positions,
-                                 std::vector<KVCache>& kv_caches,
                                  const model_input::ModelInput& input) {
   ModelInputParams params;
   model_input::apply_model_input_to_legacy(input, &params);
