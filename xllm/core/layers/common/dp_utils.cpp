@@ -181,7 +181,7 @@ bool need_dp_moe_gather(const ParallelArgs& args, bool enable_moe_all2all) {
 }
 
 torch::Tensor gather_dp_tokens(const torch::Tensor& input,
-                               const ModelInputParams& params,
+                               const model_input::LLMModelInputParams& params,
                                const ParallelArgs& args) {
   if (args.dp_size() <= 1) {
     return input;
@@ -192,7 +192,7 @@ torch::Tensor gather_dp_tokens(const torch::Tensor& input,
 }
 
 torch::Tensor get_dp_local_slice(const torch::Tensor& input,
-                                 const ModelInputParams& params,
+                                 const model_input::LLMModelInputParams& params,
                                  const ParallelArgs& args) {
   if (args.dp_size() <= 1) {
     return input;
@@ -210,7 +210,7 @@ torch::Tensor get_dp_local_slice(const torch::Tensor& input,
   return input.slice(0, start, end);
 }
 
-bool all_dp_ranks_are_decode(const ModelInputParams& params) {
+bool all_dp_ranks_are_decode(const model_input::LLMModelInputParams& params) {
   if (params.dp_is_decode.empty()) {
     return params.dp_global_token_nums.size() <= 1;
   }
@@ -218,6 +218,28 @@ bool all_dp_ranks_are_decode(const ModelInputParams& params) {
   return std::all_of(params.dp_is_decode.begin(),
                      params.dp_is_decode.end(),
                      [](int32_t val) { return val == 1; });
+}
+
+torch::Tensor gather_dp_tokens(const torch::Tensor& input,
+                               const ModelInputParams& params,
+                               const ParallelArgs& args) {
+  const model_input::LLMModelInputParams llm_params =
+      model_input::make_llm_model_input_params_from_legacy(params);
+  return gather_dp_tokens(input, llm_params, args);
+}
+
+torch::Tensor get_dp_local_slice(const torch::Tensor& input,
+                                 const ModelInputParams& params,
+                                 const ParallelArgs& args) {
+  const model_input::LLMModelInputParams llm_params =
+      model_input::make_llm_model_input_params_from_legacy(params);
+  return get_dp_local_slice(input, llm_params, args);
+}
+
+bool all_dp_ranks_are_decode(const ModelInputParams& params) {
+  const model_input::LLMModelInputParams llm_params =
+      model_input::make_llm_model_input_params_from_legacy(params);
+  return all_dp_ranks_are_decode(llm_params);
 }
 
 }  // namespace layer

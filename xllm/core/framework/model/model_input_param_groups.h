@@ -81,6 +81,7 @@ struct LLMModelInputParams {
   std::vector<int32_t> ring_cache_seqlen_host;
   torch::Tensor graph_attn_mask;
   torch::Tensor graph_tiling_data;
+  xllm::RecModelInputParams rec_params;
   std::shared_ptr<layer::AttentionMetadata> attn_metadata;
   bool enable_cuda_graph = false;
 };

@@ -71,6 +71,7 @@ LLMModelInputParams make_llm_model_input_params_from_legacy(
   dst.ring_cache_seqlen_host = src.ring_cache_seqlen_host;
   dst.graph_attn_mask = src.graph_buffer.attn_mask;
   dst.graph_tiling_data = src.graph_buffer.tiling_data;
+  dst.rec_params = src.rec_params;
   dst.attn_metadata = src.attn_metadata;
   dst.enable_cuda_graph = src.enable_cuda_graph;
   return dst;
@@ -127,6 +128,7 @@ LLMModelInputParams make_llm_model_input_params_from_legacy(
   dst.ring_cache_seqlen_host = std::move(src.ring_cache_seqlen_host);
   dst.graph_attn_mask = std::move(src.graph_buffer.attn_mask);
   dst.graph_tiling_data = std::move(src.graph_buffer.tiling_data);
+  dst.rec_params = std::move(src.rec_params);
   dst.attn_metadata = std::move(src.attn_metadata);
   dst.enable_cuda_graph = src.enable_cuda_graph;
   return dst;
@@ -181,6 +183,7 @@ void apply_llm_model_input_params_to_legacy(const LLMModelInputParams& src,
   dst->ring_cache_seqlen_host = src.ring_cache_seqlen_host;
   dst->graph_buffer.attn_mask = src.graph_attn_mask;
   dst->graph_buffer.tiling_data = src.graph_tiling_data;
+  dst->rec_params = src.rec_params;
   dst->attn_metadata = src.attn_metadata;
   dst->enable_cuda_graph = src.enable_cuda_graph;
 }
@@ -235,6 +238,7 @@ void apply_llm_model_input_params_to_legacy(LLMModelInputParams&& src,
   dst->ring_cache_seqlen_host = std::move(src.ring_cache_seqlen_host);
   dst->graph_buffer.attn_mask = std::move(src.graph_attn_mask);
   dst->graph_buffer.tiling_data = std::move(src.graph_tiling_data);
+  dst->rec_params = std::move(src.rec_params);
   dst->attn_metadata = std::move(src.attn_metadata);
   dst->enable_cuda_graph = src.enable_cuda_graph;
 }
