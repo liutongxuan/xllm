@@ -710,8 +710,9 @@ torch::Tensor FusedMoEImpl::forward_experts(const torch::Tensor& hidden_states,
   return final_hidden_states;
 }
 
-torch::Tensor FusedMoEImpl::forward(const torch::Tensor& hidden_states,
-                                    const ModelInputParams& input_params) {
+torch::Tensor FusedMoEImpl::forward(
+    const torch::Tensor& hidden_states,
+    const model_input::LLMModelInputParams& input_params) {
   // we only support all2all communication for decode stage for now
   bool enable_all2all_communication =
       enable_deep_ep_ && std::all_of(input_params.dp_is_decode.begin(),
@@ -744,6 +745,13 @@ torch::Tensor FusedMoEImpl::forward(const torch::Tensor& hidden_states,
   }
 
   return output;
+}
+
+torch::Tensor FusedMoEImpl::forward(const torch::Tensor& hidden_states,
+                                    const ModelInputParams& input_params) {
+  const model_input::LLMModelInputParams llm_input_params =
+      model_input::make_llm_model_input_params_from_legacy(input_params);
+  return forward(hidden_states, llm_input_params);
 }
 
 void FusedMoEImpl::load_e_score_correction_bias(const StateDict& state_dict) {

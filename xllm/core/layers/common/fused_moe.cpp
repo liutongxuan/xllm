@@ -41,11 +41,19 @@ torch::Tensor FusedMoEImpl::forward_experts(
 }
 
 torch::Tensor FusedMoEImpl::forward(const torch::Tensor& /*hidden_states*/,
-                                    const ModelInputParams& /*input_params*/) {
+                                    const model_input::LLMModelInputParams&
+                                    /*input_params*/) {
   NOT_IMPLEMENTED_WITH_MSG(
       "FusedMoE is not supported for this backend. Please use MLU or ILU "
       "backend for MoE models.");
   return torch::Tensor();
+}
+
+torch::Tensor FusedMoEImpl::forward(const torch::Tensor& hidden_states,
+                                    const ModelInputParams& input_params) {
+  const model_input::LLMModelInputParams llm_input_params =
+      model_input::make_llm_model_input_params_from_legacy(input_params);
+  return forward(hidden_states, llm_input_params);
 }
 
 void FusedMoEImpl::load_state_dict(const StateDict& /*state_dict*/) {

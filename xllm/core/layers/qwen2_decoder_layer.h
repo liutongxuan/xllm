@@ -25,6 +25,7 @@ limitations under the License.
 #include "common/rms_norm.h"
 #include "framework/kv_cache/kv_cache.h"
 #include "framework/model/model_args.h"
+#include "framework/model/model_input_param_groups.h"
 #include "framework/model/model_input_params.h"
 #include "framework/model_context.h"
 #include "framework/parallel_state/parallel_args.h"
@@ -40,6 +41,12 @@ class Qwen2DecoderLayerImpl : public torch::nn::Module {
 
   void load_state_dict(const StateDict& state_dict);
 
+  torch::Tensor forward(torch::Tensor& x,
+                        std::optional<torch::Tensor>& residual,
+                        torch::Tensor& positions,
+                        const AttentionMetadata& attn_metadata,
+                        KVCache& kv_cache,
+                        const model_input::LLMModelInputParams& input_params);
   torch::Tensor forward(torch::Tensor& x,
                         std::optional<torch::Tensor>& residual,
                         torch::Tensor& positions,

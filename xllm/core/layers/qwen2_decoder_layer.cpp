@@ -90,7 +90,7 @@ torch::Tensor Qwen2DecoderLayerImpl::forward(
     torch::Tensor& positions,
     const AttentionMetadata& attn_metadata,
     KVCache& kv_cache,
-    const ModelInputParams& input_params) {
+    const model_input::LLMModelInputParams& /*input_params*/) {
   auto pre_fp8_scale = attention_->get_fp8_input_scale();
   auto post_fp8_scale = mlp_->get_fp8_input_scale();
 
@@ -107,6 +107,19 @@ torch::Tensor Qwen2DecoderLayerImpl::forward(
   x = mlp_->forward(x);
 
   return x;
+}
+
+torch::Tensor Qwen2DecoderLayerImpl::forward(
+    torch::Tensor& x,
+    std::optional<torch::Tensor>& residual,
+    torch::Tensor& positions,
+    const AttentionMetadata& attn_metadata,
+    KVCache& kv_cache,
+    const ModelInputParams& input_params) {
+  const model_input::LLMModelInputParams llm_input_params =
+      model_input::make_llm_model_input_params_from_legacy(input_params);
+  return forward(
+      x, residual, positions, attn_metadata, kv_cache, llm_input_params);
 }
 
 }  // namespace layer

@@ -21,6 +21,7 @@ limitations under the License.
 #include <utility>
 
 #include "framework/model/model_args.h"
+#include "framework/model/model_input_param_groups.h"
 #include "framework/model/model_input_params.h"
 #include "framework/parallel_state/parallel_args.h"
 #include "framework/quant_args.h"
@@ -56,6 +57,8 @@ class FusedMoEImpl : public torch::nn::Module {
       bool enable_all2all_communication,
       const std::optional<RouteInfo>& route_info = std::nullopt);
   torch::Tensor forward_shared(const torch::Tensor& hidden_states);
+  torch::Tensor forward(const torch::Tensor& hidden_states,
+                        const model_input::LLMModelInputParams& input_params);
   torch::Tensor forward(const torch::Tensor& hidden_states,
                         const ModelInputParams& input_params);
   void load_state_dict(const StateDict& state_dict);
