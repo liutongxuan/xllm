@@ -171,10 +171,48 @@ class FakeAttnCausalLM final : public CausalLM {
         /*sliding_window=*/-1);
   }
 
+  using CausalLM::forward;
+
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& params) override {
+                      const model_input::ModelInput& input) override {
+    ModelInputParams params;
+    model_input::apply_model_input_to_legacy(input, &params);
+    return forward_impl(tokens, positions, kv_caches, params);
+  }
+
+  ModelOutput forward(const torch::Tensor& tokens,
+                      const torch::Tensor& positions,
+                      std::vector<KVCache>& kv_caches,
+                      model_input::ModelInput&& input) override {
+    ModelInputParams params;
+    model_input::apply_model_input_to_legacy(std::move(input), &params);
+    return forward_impl(tokens, positions, kv_caches, params);
+  }
+
+  const torch::TensorOptions& options() const override { return options_; }
+
+  torch::Tensor logits(const torch::Tensor& hidden_states,
+                       const torch::Tensor& selected_idxes) override {
+    (void)selected_idxes;
+    const int64_t vocab_size = std::max<int64_t>(args_.vocab_size(), 1024);
+    return torch::zeros({hidden_states.size(0), vocab_size},
+                        torch::dtype(torch::kFloat32).device(device_));
+  }
+
+  void load_model(std::unique_ptr<ModelLoader> loader) override {
+    (void)loader;
+  }
+  torch::Device device() const override { return device_; }
+  void prepare_expert_weight(int32_t, const std::vector<int32_t>&) override {}
+  void update_expert_weight(int32_t) override {}
+
+ private:
+  ModelOutput forward_impl(const torch::Tensor& tokens,
+                           const torch::Tensor& positions,
+                           std::vector<KVCache>& kv_caches,
+                           const ModelInputParams& params) {
     (void)positions;
     CHECK(!kv_caches.empty());
 
@@ -204,24 +242,6 @@ class FakeAttnCausalLM final : public CausalLM {
     return ModelOutput(out);
   }
 
-  const torch::TensorOptions& options() const override { return options_; }
-
-  torch::Tensor logits(const torch::Tensor& hidden_states,
-                       const torch::Tensor& selected_idxes) override {
-    (void)selected_idxes;
-    const int64_t vocab_size = std::max<int64_t>(args_.vocab_size(), 1024);
-    return torch::zeros({hidden_states.size(0), vocab_size},
-                        torch::dtype(torch::kFloat32).device(device_));
-  }
-
-  void load_model(std::unique_ptr<ModelLoader> loader) override {
-    (void)loader;
-  }
-  torch::Device device() const override { return device_; }
-  void prepare_expert_weight(int32_t, const std::vector<int32_t>&) override {}
-  void update_expert_weight(int32_t) override {}
-
- private:
   ModelArgs args_;
   torch::Device device_;
   torch::TensorOptions options_;

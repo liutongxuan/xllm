@@ -58,22 +58,35 @@ class MockCausalLM : public CausalLM {
     weight_ = register_parameter("weight", weight, false);
   }
 
+  using CausalLM::forward;
+
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& params) override {
-    (void)tokens;
+                      const model_input::ModelInput& input) override {
     (void)positions;
     (void)kv_caches;
+    CHECK(input.llm.has_value());
+    const auto& llm = *input.llm;
     ++forward_cnt_;
     last_tokens_size_ = tokens.size(0);
-    last_dp_token_nums_ = params.dp_global_token_nums;
-    auto hidden_states = params.input_embedding.matmul(weight_);
+    last_dp_token_nums_ = llm.dp_global_token_nums;
+    auto hidden_states = llm.input_embedding.matmul(weight_);
     if (return_aux_hidden_states_) {
       auto aux_hidden_states = hidden_states + 1;
       return ModelOutput(hidden_states, torch::Tensor(), aux_hidden_states);
     }
     return ModelOutput(hidden_states);
+  }
+
+  ModelOutput forward(const torch::Tensor& tokens,
+                      const torch::Tensor& positions,
+                      std::vector<KVCache>& kv_caches,
+                      model_input::ModelInput&& input) override {
+    return forward(tokens,
+                   positions,
+                   kv_caches,
+                   static_cast<const model_input::ModelInput&>(input));
   }
   torch::Tensor logits(const torch::Tensor& hidden_states,
                        const torch::Tensor& seleted_idxes) override {

@@ -240,12 +240,26 @@ class SimpleCausalLM : public CausalLM {
     return output;
   }
 
+  using CausalLM::forward;
+
   // Adapter method to match CausalLM base class interface
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& parameters) override {
-    auto hidden_states = forward_impl(tokens, positions, kv_caches, parameters);
+                      const model_input::ModelInput& input) override {
+    ModelInputParams params;
+    model_input::apply_model_input_to_legacy(input, &params);
+    auto hidden_states = forward_impl(tokens, positions, kv_caches, params);
+    return ModelOutput(hidden_states);
+  }
+
+  ModelOutput forward(const torch::Tensor& tokens,
+                      const torch::Tensor& positions,
+                      std::vector<KVCache>& kv_caches,
+                      model_input::ModelInput&& input) override {
+    ModelInputParams params;
+    model_input::apply_model_input_to_legacy(std::move(input), &params);
+    auto hidden_states = forward_impl(tokens, positions, kv_caches, params);
     return ModelOutput(hidden_states);
   }
 

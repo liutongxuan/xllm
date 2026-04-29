@@ -50,13 +50,46 @@ class CausalLM : public torch::nn::Module {
  public:
   ~CausalLM() override = default;
 
+  // Typed forward is the canonical virtual entry. Subclasses implement these
+  // overloads; callers that still hold legacy `ModelInputParams` can use the
+  // non-virtual `forward(...)` wrapper below, which lowers them through the
+  // typed dispatch.
   // tokens: [num_tokens]
   // positions: [num_tokens]
   // returns: [num_tokens, hidden_size]
   virtual ModelOutput forward(const torch::Tensor& tokens,
                               const torch::Tensor& positions,
                               std::vector<KVCache>& kv_caches,
-                              const ModelInputParams& parameters) = 0;
+                              const model_input::ModelInput& input) = 0;
+
+  virtual ModelOutput forward(const torch::Tensor& tokens,
+                              const torch::Tensor& positions,
+                              std::vector<KVCache>& kv_caches,
+                              model_input::ModelInput&& input) = 0;
+
+  // Backwards-compatible legacy entry. New callers should construct
+  // `model_input::ModelInput` directly; this wrapper exists to ease migration
+  // for code that still produces `ModelInputParams`.
+  ModelOutput forward(const torch::Tensor& tokens,
+                      const torch::Tensor& positions,
+                      std::vector<KVCache>& kv_caches,
+                      const ModelInputParams& parameters) {
+    return forward(tokens,
+                   positions,
+                   kv_caches,
+                   model_input::make_model_input_from_legacy(parameters));
+  }
+
+  ModelOutput forward(const torch::Tensor& tokens,
+                      const torch::Tensor& positions,
+                      std::vector<KVCache>& kv_caches,
+                      ModelInputParams&& parameters) {
+    return forward(
+        tokens,
+        positions,
+        kv_caches,
+        model_input::make_model_input_from_legacy(std::move(parameters)));
+  }
 
   virtual ModelOutput forward(const torch::Tensor& tokens,
                               const torch::Tensor& positions,
@@ -179,11 +212,32 @@ class CausalLMImpl : public CausalLM {
   CausalLMImpl(Model model, const torch::TensorOptions& options)
       : model_(std::move(model)), options_(options) {}
 
+  using CausalLM::forward;
+
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& parameters) override {
-    return model_->forward(tokens, positions, kv_caches, parameters);
+                      const model_input::ModelInput& input) override {
+    if constexpr (detail::has_typed_forward<Model>::value) {
+      return model_->forward(tokens, positions, kv_caches, input);
+    } else {
+      ModelInputParams params;
+      model_input::apply_model_input_to_legacy(input, &params);
+      return model_->forward(tokens, positions, kv_caches, params);
+    }
+  }
+
+  ModelOutput forward(const torch::Tensor& tokens,
+                      const torch::Tensor& positions,
+                      std::vector<KVCache>& kv_caches,
+                      model_input::ModelInput&& input) override {
+    if constexpr (detail::has_typed_forward_rvalue<Model>::value) {
+      return model_->forward(tokens, positions, kv_caches, std::move(input));
+    } else {
+      ModelInputParams params;
+      model_input::apply_model_input_to_legacy(std::move(input), &params);
+      return model_->forward(tokens, positions, kv_caches, params);
+    }
   }
 
   ModelOutput forward(const torch::Tensor& tokens,

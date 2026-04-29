@@ -108,7 +108,13 @@ class FakeCausalLM final : public CausalLM {
   ModelOutput forward(const torch::Tensor&,
                       const torch::Tensor&,
                       std::vector<KVCache>&,
-                      const ModelInputParams&) override {
+                      const ModelInput&) override {
+    return ModelOutput();
+  }
+  ModelOutput forward(const torch::Tensor&,
+                      const torch::Tensor&,
+                      std::vector<KVCache>&,
+                      ModelInput&&) override {
     return ModelOutput();
   }
   torch::Tensor logits(const torch::Tensor&, const torch::Tensor&) override {
@@ -134,7 +140,13 @@ class FakeCausalVLM final : public CausalVLM {
   ModelOutput forward(const torch::Tensor&,
                       const torch::Tensor&,
                       std::vector<KVCache>&,
-                      const ModelInputParams&) override {
+                      const ModelInput&) override {
+    return ModelOutput();
+  }
+  ModelOutput forward(const torch::Tensor&,
+                      const torch::Tensor&,
+                      std::vector<KVCache>&,
+                      ModelInput&&) override {
     return ModelOutput();
   }
   torch::Tensor logits(const torch::Tensor&, const torch::Tensor&) override {
@@ -155,7 +167,13 @@ class FakeRecCausalLM final : public RecCausalLM {
   ModelOutput forward(const torch::Tensor&,
                       const torch::Tensor&,
                       std::vector<KVCache>&,
-                      const ModelInputParams&) override {
+                      const ModelInput&) override {
+    return ModelOutput();
+  }
+  ModelOutput forward(const torch::Tensor&,
+                      const torch::Tensor&,
+                      std::vector<KVCache>&,
+                      ModelInput&&) override {
     return ModelOutput();
   }
   torch::Tensor logits(const torch::Tensor&, const torch::Tensor&) override {
