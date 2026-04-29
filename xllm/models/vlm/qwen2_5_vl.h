@@ -619,13 +619,6 @@ class Qwen2_5_VLForConditionalGenerationImpl : public torch::nn::Module {
     return inputs_embeds;
   }
 
-  ModelOutput forward(const torch::Tensor& tokens,
-                      const torch::Tensor& positions,
-                      std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) {
-    return language_model_(tokens, positions, kv_caches, input_params);
-  }
-
   // Step 3 typed forward: VLM consumes the llm + vlm partitions and delegates
   // to the language model's typed forward (LLM family already opted in).
   ModelOutput forward(const torch::Tensor& tokens,

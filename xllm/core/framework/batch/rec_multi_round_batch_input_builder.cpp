@@ -30,6 +30,7 @@ limitations under the License.
 #include "core/util/rec_model_utils.h"
 #include "framework/batch/mposition.h"
 #include "framework/model/model_args.h"
+#include "framework/model/model_input.h"
 #include "framework/model/model_input_params.h"
 #include "framework/request/sequence.h"
 #include "framework/request/sequences_group.h"
@@ -450,6 +451,8 @@ ForwardInput RecMultiRoundBatchInputBuilder::state_to_forward_input() {
 
   // Batch ID
   input_params.batch_id = batch_id_;
+  forward_input.input =
+      model_input::make_model_input_from_legacy(forward_input.input_params);
 
   return forward_input;
 }

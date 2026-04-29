@@ -25,7 +25,7 @@ limitations under the License.
 #include "common/rms_norm.h"
 #include "framework/kv_cache/kv_cache.h"
 #include "framework/model/model_args.h"
-#include "framework/model/model_input_param_groups.h"
+#include "framework/model/model_input.h"
 #include "framework/model/model_input_params.h"
 #include "framework/model_context.h"
 #include "framework/parallel_state/parallel_args.h"

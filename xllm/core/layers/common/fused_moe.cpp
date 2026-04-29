@@ -17,6 +17,8 @@ limitations under the License.
 
 #include <glog/logging.h>
 
+#include "framework/model/model_input.h"
+
 namespace xllm {
 namespace layer {
 
@@ -51,8 +53,10 @@ torch::Tensor FusedMoEImpl::forward(const torch::Tensor& /*hidden_states*/,
 
 torch::Tensor FusedMoEImpl::forward(const torch::Tensor& hidden_states,
                                     const ModelInputParams& input_params) {
-  const model_input::LLMModelInputParams llm_input_params =
-      model_input::make_llm_model_input_params_from_legacy(input_params);
+  model_input::ModelInput typed_input =
+      model_input::make_model_input_from_legacy(input_params);
+  CHECK(typed_input.llm.has_value()) << "MoE forward requires llm input";
+  const model_input::LLMModelInputParams llm_input_params = *typed_input.llm;
   return forward(hidden_states, llm_input_params);
 }
 

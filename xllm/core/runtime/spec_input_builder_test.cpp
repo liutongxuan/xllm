@@ -69,7 +69,7 @@ TEST(SpecDecodeInputBuilderTest, DraftInputsSingleRowPerSeq) {
     row.seq_id = seq_id;
     row.position_offset = 1;
     row.append_token = false;
-    append_decode_row(params, view, row, /*block_size=*/4, buf);
+    append_decode_row(params.num_sequences, view, row, /*block_size=*/4, buf);
   }
 
   EXPECT_TRUE(buf.out_token_ids.empty());
@@ -105,7 +105,7 @@ TEST(SpecDecodeInputBuilderTest, ValidateInputsNonAtbExpansion) {
       row.position_offset = 1 + val_idx;
       row.append_q_len_one = true;
       row.append_block_table = true;
-      append_decode_row(params, view, row, /*block_size=*/4, buf);
+      append_decode_row(params.num_sequences, view, row, /*block_size=*/4, buf);
     }
   }
 
@@ -131,17 +131,17 @@ TEST(SpecDecodeInputBuilderTest, AppendDecodeRowTokenKinds) {
   params.num_sequences = 2;
   DecodeBuildBuffers buf;
   append_decode_row(
-      params,
+      params.num_sequences,
       view,
       {.seq_id = 1, .use_input_token = true, .position_offset = 0},
       /*block_size=*/4,
       buf);
-  append_decode_row(params,
+  append_decode_row(params.num_sequences,
                     view,
                     {.seq_id = 0, .token_id = 123, .position_offset = 0},
                     /*block_size=*/4,
                     buf);
-  append_decode_row(params,
+  append_decode_row(params.num_sequences,
                     view,
                     {.seq_id = 0, .token_id = -2, .position_offset = 0},
                     /*block_size=*/4,
@@ -185,16 +185,17 @@ TEST(SpecDecodeInputBuilderTest, FirstDecodeInputsFixAndNonFixMix) {
 
   DecodeBuildBuffers buf;
   std::vector<int32_t> select_row_idx(2, 0);
-  auto emit_row =
-      [&](int32_t seq_id, int32_t token_id, int32_t position_offset) {
-        RowSpec row;
-        row.seq_id = seq_id;
-        row.token_id = token_id;
-        row.position_offset = position_offset;
-        row.append_q_len_one = true;
-        row.append_block_table = true;
-        append_decode_row(params, view, row, /*block_size=*/4, buf);
-      };
+  auto emit_row = [&](int32_t seq_id,
+                      int32_t token_id,
+                      int32_t position_offset) {
+    RowSpec row;
+    row.seq_id = seq_id;
+    row.token_id = token_id;
+    row.position_offset = position_offset;
+    row.append_q_len_one = true;
+    row.append_block_table = true;
+    append_decode_row(params.num_sequences, view, row, /*block_size=*/4, buf);
+  };
 
   emit_row(/*seq_id=*/0, /*token_id=*/90, /*position_offset=*/-1);
   emit_row(/*seq_id=*/0, /*token_id=*/100, /*position_offset=*/0);
@@ -225,7 +226,7 @@ TEST(SpecDecodeInputBuilderTest, AppendDecodeRowWithInputTokenSource) {
       token_ids, positions, block_tables, to_slice(kv_seq_lens));
 
   DecodeBuildBuffers buf;
-  append_decode_row(params,
+  append_decode_row(params.num_sequences,
                     view,
                     {.seq_id = 0,
                      .use_input_token = true,
@@ -234,7 +235,7 @@ TEST(SpecDecodeInputBuilderTest, AppendDecodeRowWithInputTokenSource) {
                      .append_block_table = true},
                     /*block_size=*/4,
                     buf);
-  append_decode_row(params,
+  append_decode_row(params.num_sequences,
                     view,
                     {.seq_id = 1,
                      .token_id = -2,
@@ -299,7 +300,7 @@ TEST(SpecDecodeInputBuilderTest, AppendDecodeRowFromLastStep) {
       last_step_tokens.data(), static_cast<size_t>(last_step_tokens.size())};
 
   DecodeBuildBuffers buf;
-  append_decode_row_from_last_step(params,
+  append_decode_row_from_last_step(params.num_sequences,
                                    view,
                                    /*seq_id=*/0,
                                    /*input_token_id=*/view.token_ids[0],
@@ -307,7 +308,7 @@ TEST(SpecDecodeInputBuilderTest, AppendDecodeRowFromLastStep) {
                                    /*last_step_decode_num=*/2,
                                    /*block_size=*/4,
                                    buf);
-  append_decode_row_from_last_step(params,
+  append_decode_row_from_last_step(params.num_sequences,
                                    view,
                                    /*seq_id=*/1,
                                    /*input_token_id=*/view.token_ids[1],
@@ -327,7 +328,8 @@ TEST(SpecDecodeInputBuilderTest, QCuSeqLensConsistency) {
   params.num_sequences = 3;
   params.q_seq_lens_vec = to_layout_seq_lens({1, 2, 3});
 
-  torch::Tensor q_cu_seq_lens = build_q_cu_seq_lens_tensor(params);
+  torch::Tensor q_cu_seq_lens =
+      build_q_cu_seq_lens_tensor(params.q_seq_lens_vec, params.num_sequences);
   EXPECT_EQ(tensor_to_vec_int32(q_cu_seq_lens),
             std::vector<int32_t>({1, 3, 6}));
 }

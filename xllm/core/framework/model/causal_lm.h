@@ -91,24 +91,6 @@ class CausalLM : public torch::nn::Module {
         model_input::make_model_input_from_legacy(std::move(parameters)));
   }
 
-  virtual ModelOutput forward(const torch::Tensor& tokens,
-                              const torch::Tensor& positions,
-                              std::vector<KVCache>& kv_caches,
-                              const model_input::ModelInput& input) {
-    ModelInputParams params;
-    model_input::apply_model_input_to_legacy(input, &params);
-    return forward(tokens, positions, kv_caches, params);
-  }
-
-  virtual ModelOutput forward(const torch::Tensor& tokens,
-                              const torch::Tensor& positions,
-                              std::vector<KVCache>& kv_caches,
-                              model_input::ModelInput&& input) {
-    ModelInputParams params;
-    model_input::apply_model_input_to_legacy(std::move(input), &params);
-    return forward(tokens, positions, kv_caches, params);
-  }
-
   // hidden_states: [num_tokens, hidden_size]
   // seleted_idxes: [num_tokens]
   // returns: [num_seqs, hidden_size]
@@ -139,20 +121,21 @@ class CausalLM : public torch::nn::Module {
 
   virtual model_input::ModelInput create_model_input(
       const ModelInputParams& parameters) const {
-    model_input::ModelInput input;
-    model_input::ModelInputParamBundle bundle =
-        model_input::make_model_input_param_bundle_from_legacy(parameters);
-    input.llm = bundle.llm;
+    model_input::ModelInput input =
+        model_input::make_model_input_from_legacy(parameters);
+    input.vlm.reset();
+    input.dit.reset();
+    input.rec.reset();
     return input;
   }
 
   virtual model_input::ModelInput create_model_input(
       ModelInputParams&& parameters) const {
-    model_input::ModelInput input;
-    model_input::ModelInputParamBundle bundle =
-        model_input::make_model_input_param_bundle_from_legacy(
-            std::move(parameters));
-    input.llm = bundle.llm;
+    model_input::ModelInput input =
+        model_input::make_model_input_from_legacy(std::move(parameters));
+    input.vlm.reset();
+    input.dit.reset();
+    input.rec.reset();
     return input;
   }
 
@@ -237,28 +220,6 @@ class CausalLMImpl : public CausalLM {
       ModelInputParams params;
       model_input::apply_model_input_to_legacy(std::move(input), &params);
       return model_->forward(tokens, positions, kv_caches, params);
-    }
-  }
-
-  ModelOutput forward(const torch::Tensor& tokens,
-                      const torch::Tensor& positions,
-                      std::vector<KVCache>& kv_caches,
-                      const model_input::ModelInput& input) override {
-    if constexpr (detail::has_typed_forward<Model>::value) {
-      return model_->forward(tokens, positions, kv_caches, input);
-    } else {
-      return CausalLM::forward(tokens, positions, kv_caches, input);
-    }
-  }
-
-  ModelOutput forward(const torch::Tensor& tokens,
-                      const torch::Tensor& positions,
-                      std::vector<KVCache>& kv_caches,
-                      model_input::ModelInput&& input) override {
-    if constexpr (detail::has_typed_forward_rvalue<Model>::value) {
-      return model_->forward(tokens, positions, kv_caches, std::move(input));
-    } else {
-      return CausalLM::forward(tokens, positions, kv_caches, std::move(input));
     }
   }
 

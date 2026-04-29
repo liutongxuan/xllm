@@ -17,6 +17,7 @@ limitations under the License.
 
 #include "common/global_flags.h"
 #include "common/metrics.h"
+#include "framework/model/model_input.h"
 #include "framework/request/mm_data.h"
 #include "spec_input_builder.h"
 #include "util/env_var.h"
@@ -42,6 +43,49 @@ runtime::Options MTPDraftOptions(const runtime::Options& options) {
       .num_decoding_tokens(1)
       .num_speculative_tokens(0);
   return opts;
+}
+
+bool is_decode_batch(const ForwardInput& input) {
+  model_input::ModelInput typed_input = input.get_typed_input();
+  CHECK(typed_input.llm.has_value())
+      << "MTPWorker requires the llm partition in ModelInput";
+  return typed_input.llm->batch_forward_type.is_decode();
+}
+
+std::vector<int32_t> get_embedding_ids(const ForwardInput& input) {
+  model_input::ModelInput typed_input = input.get_typed_input();
+  CHECK(typed_input.llm.has_value())
+      << "MTPWorker requires the llm partition in ModelInput";
+  return typed_input.llm->embedding_ids;
+}
+
+void set_input_embedding(ForwardInput* input, const torch::Tensor& embedding) {
+  CHECK(input != nullptr);
+  model_input::ModelInput typed_input = input->get_typed_input();
+  CHECK(typed_input.llm.has_value())
+      << "MTPWorker requires the llm partition in ModelInput";
+  typed_input.llm->input_embedding = embedding;
+  input->input = std::move(typed_input);
+  input->sync_legacy_from_input();
+}
+
+void scale_dp_global_token_nums(ForwardInput* input, int32_t scale) {
+  CHECK(input != nullptr);
+  if (input->has_typed_partition()) {
+    CHECK(input->input.llm.has_value())
+        << "MTPWorker requires the llm partition in ModelInput";
+    std::vector<int32_t>& dp_global_token_nums =
+        input->input.llm->dp_global_token_nums;
+    for (auto& token_num : dp_global_token_nums) {
+      token_num *= scale;
+    }
+    input->sync_legacy_from_input();
+    return;
+  }
+  for (auto& token_num : input->input_params.dp_global_token_nums) {
+    token_num *= scale;
+  }
+  input->sync_input_from_legacy();
 }
 
 }  // namespace
@@ -199,28 +243,30 @@ ForwardInput MTPWorkerImpl::update_input_by_last_step_output(
   // MTP decode correction uses embedding cache as source of truth instead of
   // WorkerImpl::last_step_output_.
   ForwardInput& new_inputs = inputs;
-  auto& input_params = new_inputs.input_params;
-  const int32_t num_sequences = input_params.num_sequences;
+  model_input::ModelInput typed_input = new_inputs.get_typed_input();
+  CHECK(typed_input.llm.has_value()) << "MTP decode update requires llm input";
+  model_input::LLMModelInputParams& llm_input_mut = *typed_input.llm;
+  const int32_t num_sequences = llm_input_mut.num_sequences;
   const int32_t block_size = options_.block_size();
 
   // DP empty-run may still be marked as decode in global batch type.
   // Skip correction when no local sequences are present.
-  if (num_sequences == 0 || input_params.embedding_ids.empty()) {
+  if (num_sequences == 0 || llm_input_mut.embedding_ids.empty()) {
     return inputs;
   }
 
   CHECK(embedding_cache_ != nullptr)
       << "embedding_cache_ must be initialized before decode correction";
   std::vector<int32_t> correction_tokens =
-      embedding_cache_->read_correction_tokens(input_params.embedding_ids);
+      embedding_cache_->read_correction_tokens(llm_input_mut.embedding_ids);
   std::vector<int32_t> position_offsets =
-      embedding_cache_->read_position_offsets(input_params.embedding_ids);
+      embedding_cache_->read_position_offsets(llm_input_mut.embedding_ids);
 
   torch::Tensor token_ids = safe_to(inputs.token_ids, torch::kCPU);
   torch::Tensor positions = safe_to(inputs.positions, torch::kCPU);
-  torch::Tensor block_tables = safe_to(input_params.block_tables, torch::kCPU);
+  torch::Tensor block_tables = safe_to(llm_input_mut.block_tables, torch::kCPU);
   auto view = specBuilder::make_decode_cpu_view(
-      token_ids, positions, block_tables, input_params.kv_seq_lens_vec);
+      token_ids, positions, block_tables, llm_input_mut.kv_seq_lens_vec);
   CHECK_EQ(correction_tokens.size(), static_cast<size_t>(num_sequences))
       << "decode correction token count mismatch";
   CHECK_EQ(position_offsets.size(), static_cast<size_t>(num_sequences))
@@ -243,7 +289,7 @@ ForwardInput MTPWorkerImpl::update_input_by_last_step_output(
       row.token_id = correction_tokens[seq_id];
       row.position_offset = position_offsets[seq_id];
     }
-    specBuilder::append_decode_row(input_params, view, row, block_size, buf);
+    specBuilder::append_decode_row(num_sequences, view, row, block_size, buf);
   }
 
   CHECK_EQ(buf.out_new_cache_slots.size(), buf.out_token_ids.size())
@@ -254,21 +300,23 @@ ForwardInput MTPWorkerImpl::update_input_by_last_step_output(
   torch::TensorOptions int_options = inputs.token_ids.options();
   new_inputs.token_ids = torch::tensor(buf.out_token_ids, int_options);
   new_inputs.positions = torch::tensor(buf.out_positions, int_options);
-  input_params.kv_max_seq_len = buf.kv_max_seq_len;
-  input_params.kv_seq_lens_vec = std::move(buf.out_kv_seq_lens);
-  input_params.kv_seq_lens =
-      torch::tensor(input_params.kv_seq_lens_vec, int_options);
-  input_params.q_cu_seq_lens =
-      specBuilder::build_q_cu_seq_lens_tensor(input_params);
-  input_params.new_cache_slots =
+  llm_input_mut.kv_max_seq_len = buf.kv_max_seq_len;
+  llm_input_mut.kv_seq_lens_vec = std::move(buf.out_kv_seq_lens);
+  llm_input_mut.kv_seq_lens =
+      torch::tensor(llm_input_mut.kv_seq_lens_vec, int_options);
+  llm_input_mut.q_cu_seq_lens = specBuilder::build_q_cu_seq_lens_tensor(
+      llm_input_mut.q_seq_lens_vec, llm_input_mut.num_sequences);
+  llm_input_mut.new_cache_slots =
       torch::tensor(buf.out_new_cache_slots, int_options);
+  new_inputs.input = std::move(typed_input);
+  new_inputs.sync_legacy_from_input();
 
   return new_inputs.to(device_, dtype_);
 }
 
 std::optional<ForwardOutput> MTPWorkerImpl::step_empty(
     const ForwardInput& input) {
-  if (!input.input_params.batch_forward_type.is_decode()) {
+  if (!is_decode_batch(input)) {
     auto output = impl_->step(input);
     auto draft_output = draft_impl_->step(input);
     (void)draft_output;
@@ -282,16 +330,13 @@ std::optional<ForwardOutput> MTPWorkerImpl::step_empty(
     }
 
     ForwardInput new_input = input;
-    for (auto& it : new_input.input_params.dp_global_token_nums) {
-      it *= options_.num_speculative_tokens() + 1;
-    }
+    scale_dp_global_token_nums(&new_input,
+                               options_.num_speculative_tokens() + 1);
     auto future = impl_->step_async(new_input);
     ForwardOutput output = std::move(future).get().value();
 
     new_input = input;
-    for (auto& it : new_input.input_params.dp_global_token_nums) {
-      it *= 2;
-    }
+    scale_dp_global_token_nums(&new_input, 2);
     auto draft_future = draft_impl_->step_async(new_input);
     ForwardOutput draft_output = std::move(draft_future).get().value();
     output.sample_output.embeddings = torch::Tensor();
@@ -317,7 +362,7 @@ std::optional<ForwardOutput> MTPWorkerImpl::step_prefill(
   auto next_tokens = safe_to(output.sample_output.next_tokens, torch::kInt);
 
   if (embeddings.defined()) {
-    prefill_input.input_params.input_embedding = embeddings.clone();
+    set_input_embedding(&prefill_input, embeddings.clone());
   }
   if (next_tokens.defined()) {
     auto& token_ids = prefill_input.token_ids;
@@ -334,7 +379,7 @@ std::optional<ForwardOutput> MTPWorkerImpl::step_prefill(
               timer.elapsed_seconds());
 
   if (input.sampling_params.selected_token_idxes.defined()) {
-    embedding_cache_->write(input.input_params.embedding_ids,
+    embedding_cache_->write(get_embedding_ids(input),
                             draft_output.sample_output.next_tokens,
                             draft_output.sample_output.embeddings,
                             draft_output.sample_output.probs,
@@ -351,8 +396,12 @@ std::optional<ForwardOutput> MTPWorkerImpl::step_prefill(
 void MTPWorkerImpl::prepare_prefill_inputs(const ForwardInput& input,
                                            ForwardInput& prefill_input) {
   prefill_input = input.to(device_, dtype_);
-  auto& input_params = prefill_input.input_params;
-  auto& extra_token_ids = input_params.extra_token_ids;
+  model_input::ModelInput typed_prefill_input = prefill_input.get_typed_input();
+  CHECK(typed_prefill_input.llm.has_value())
+      << "MTP prefill input requires llm input";
+  const model_input::LLMModelInputParams& llm_input = *typed_prefill_input.llm;
+
+  const std::vector<int32_t>& extra_token_ids = llm_input.extra_token_ids;
 
   torch::Tensor token_ids = safe_to(input.token_ids, torch::kCPU);
   Slice<int32_t> tokens_ids_slice = {
@@ -362,8 +411,10 @@ void MTPWorkerImpl::prepare_prefill_inputs(const ForwardInput& input,
   int32_t start_idx = 0;
   std::vector<int32_t> new_token_ids;
   new_token_ids.reserve(input.token_ids.numel());
-  for (size_t i = 0; i < input_params.num_sequences; ++i) {
-    int32_t q_len = input_params.get_q_seq_len(i);
+  for (size_t i = 0; i < llm_input.num_sequences; ++i) {
+    CHECK_LT(i, llm_input.q_seq_lens_vec.size())
+        << "MTP prefill requires q_seq_lens_vec for all sequences";
+    int32_t q_len = llm_input.q_seq_lens_vec[i];
     Slice<int32_t> tokens_ids_slice_i =
         tokens_ids_slice.slice(start_idx + 1, start_idx + q_len);
     start_idx += q_len;
@@ -411,8 +462,8 @@ std::optional<ForwardOutput> MTPWorkerImpl::step_decode_multi_step(
   Timer timer;
   draft_input.token_ids =
       safe_to(draft_outputs.back().sample_output.next_tokens, torch::kInt);
-  draft_input.input_params.input_embedding =
-      draft_outputs.back().sample_output.embeddings.to(device_);
+  set_input_embedding(
+      &draft_input, draft_outputs.back().sample_output.embeddings.to(device_));
 
   for (size_t i = 1; i < options_.num_speculative_tokens(); ++i) {
     auto future = draft_impl_->step_async(draft_input);
@@ -434,8 +485,7 @@ std::optional<ForwardOutput> MTPWorkerImpl::step_decode_multi_step(
     if (i < options_.num_speculative_tokens() - 1) {
       draft_input = next_step_input;
       draft_input.token_ids = safe_to(last_output.next_tokens, torch::kInt);
-      draft_input.input_params.input_embedding =
-          last_output.embeddings.to(device_);
+      set_input_embedding(&draft_input, last_output.embeddings.to(device_));
     }
   }
   COUNTER_ADD(speculative_execution_latency_seconds_draft,
@@ -448,7 +498,7 @@ std::optional<ForwardOutput> MTPWorkerImpl::step_decode_multi_step(
 ForwardOutput MTPWorkerImpl::prepare_last_output_for_decode(
     const ForwardInput& input) {
   ForwardOutput last_output =
-      embedding_cache_->read_for_decode(input.input_params.embedding_ids);
+      embedding_cache_->read_for_decode(get_embedding_ids(input));
   last_output.sample_output.next_tokens =
       last_output.sample_output.next_tokens.to(
           torch::dtype(torch::kInt).device(device_));
@@ -529,16 +579,19 @@ void MTPWorkerImpl::prepare_draft_extend_inputs(
     const SampleOutput& validate_output,
     ForwardInput& extend_input) {
   extend_input = base_input.to(device_, dtype_);
-  auto& input_params = extend_input.input_params;
-  const int32_t num_sequences = input_params.num_sequences;
+  model_input::ModelInput typed_input = extend_input.get_typed_input();
+  CHECK(typed_input.llm.has_value()) << "MTP draft-extend requires llm input";
+  const model_input::LLMModelInputParams& llm_input = *typed_input.llm;
+
+  const int32_t num_sequences = llm_input.num_sequences;
 
   const int32_t block_size = options_.block_size();
   torch::TensorOptions int_options = extend_input.token_ids.options();
   torch::Tensor token_ids = safe_to(base_input.token_ids, torch::kCPU);
   torch::Tensor positions = safe_to(base_input.positions, torch::kCPU);
-  torch::Tensor block_tables = safe_to(input_params.block_tables, torch::kCPU);
+  torch::Tensor block_tables = safe_to(llm_input.block_tables, torch::kCPU);
   auto view = specBuilder::make_decode_cpu_view(
-      token_ids, positions, block_tables, input_params.kv_seq_lens_vec);
+      token_ids, positions, block_tables, llm_input.kv_seq_lens_vec);
   torch::Tensor accepted_tokens =
       safe_to(validate_output.next_tokens, torch::kCPU);
   const auto accepted_embeddings = validate_output.embeddings;
@@ -565,7 +618,7 @@ void MTPWorkerImpl::prepare_draft_extend_inputs(
       row.position_offset = relative_offset;
       row.append_q_len_one = true;
       row.append_block_table = true;
-      specBuilder::append_decode_row(input_params, view, row, block_size, buf);
+      specBuilder::append_decode_row(num_sequences, view, row, block_size, buf);
       if (embedding.defined()) {
         expanded_embeddings.emplace_back(embedding.to(device_));
       } else {
@@ -613,30 +666,36 @@ void MTPWorkerImpl::prepare_draft_extend_inputs(
 
   extend_input.token_ids = torch::tensor(buf.out_token_ids, int_options);
   extend_input.positions = torch::tensor(buf.out_positions, int_options);
-  input_params.num_sequences = static_cast<int32_t>(buf.out_positions.size());
-  input_params.q_max_seq_len = 1;
-  input_params.batch_forward_type = BatchForwardType::DECODE;
-  input_params.q_seq_lens_vec = std::move(buf.out_q_seq_lens);
-  input_params.q_seq_lens =
-      torch::tensor(input_params.q_seq_lens_vec, int_options);
-  input_params.q_cu_seq_lens =
-      specBuilder::build_q_cu_seq_lens_tensor(input_params);
-  input_params.kv_max_seq_len = buf.kv_max_seq_len;
-  input_params.kv_seq_lens_vec = std::move(buf.out_kv_seq_lens);
-  input_params.kv_seq_lens =
-      torch::tensor(input_params.kv_seq_lens_vec, int_options);
-  input_params.new_cache_slots =
-      torch::tensor(buf.out_new_cache_slots, int_options);
   util::pad_2d_vector(buf.out_block_tables, /*pad_value=*/0);
-  input_params.block_tables =
+  model_input::ModelInput typed_extend_input = extend_input.get_typed_input();
+  CHECK(typed_extend_input.llm.has_value())
+      << "MTP draft-extend requires llm input";
+  model_input::LLMModelInputParams& llm_input_mut = *typed_extend_input.llm;
+  llm_input_mut.num_sequences = static_cast<int32_t>(buf.out_positions.size());
+  llm_input_mut.q_max_seq_len = 1;
+  llm_input_mut.batch_forward_type = BatchForwardType::DECODE;
+  llm_input_mut.q_seq_lens_vec = std::move(buf.out_q_seq_lens);
+  llm_input_mut.q_seq_lens =
+      torch::tensor(llm_input_mut.q_seq_lens_vec, int_options);
+  llm_input_mut.q_cu_seq_lens = specBuilder::build_q_cu_seq_lens_tensor(
+      llm_input_mut.q_seq_lens_vec, llm_input_mut.num_sequences);
+  llm_input_mut.kv_max_seq_len = buf.kv_max_seq_len;
+  llm_input_mut.kv_seq_lens_vec = std::move(buf.out_kv_seq_lens);
+  llm_input_mut.kv_seq_lens =
+      torch::tensor(llm_input_mut.kv_seq_lens_vec, int_options);
+  llm_input_mut.new_cache_slots =
+      torch::tensor(buf.out_new_cache_slots, int_options);
+  llm_input_mut.block_tables =
       create_2d_tensor(buf.out_block_tables, torch::kInt);
-  input_params.input_embedding = torch::stack(expanded_embeddings).to(device_);
+  llm_input_mut.input_embedding = torch::stack(expanded_embeddings).to(device_);
 
   // update dp_global_token_nums for dp/ep parallel
   constexpr int32_t num_extend_tokens = 2;
-  for (auto& it : input_params.dp_global_token_nums) {
+  for (auto& it : llm_input_mut.dp_global_token_nums) {
     it *= num_extend_tokens;
   }
+  extend_input.input = std::move(typed_extend_input);
+  extend_input.sync_legacy_from_input();
 
   auto& params = extend_input.sampling_params;
   torch::TensorOptions idx_options = params.selected_token_idxes.options();
@@ -648,7 +707,7 @@ void MTPWorkerImpl::prepare_draft_extend_inputs(
 
 void MTPWorkerImpl::run_draft_extend(const ForwardInput& input,
                                      const SampleOutput& validate_output) {
-  CHECK(!input.input_params.embedding_ids.empty())
+  CHECK(!get_embedding_ids(input).empty())
       << "draft extend requires non-empty embedding_ids";
   CHECK(validate_output.next_tokens.defined())
       << "draft extend requires validate next_tokens";
@@ -663,7 +722,7 @@ void MTPWorkerImpl::run_draft_extend(const ForwardInput& input,
   ForwardOutput extend_output = std::move(extend_output_opt.value());
   process_draft_sample_output(extend_output.sample_output);
   auto& sample_output = extend_output.sample_output;
-  embedding_cache_->write(input.input_params.embedding_ids,
+  embedding_cache_->write(get_embedding_ids(input),
                           sample_output.next_tokens,
                           sample_output.embeddings,
                           sample_output.probs,
@@ -677,15 +736,18 @@ void MTPWorkerImpl::prepare_draft_inputs(const ForwardInput& input,
   // prepare input for MTP in decoding phase (Like Eagle).
   draft_input = input.to(device, dtype_);
 
-  auto& input_params = draft_input.input_params;
-  const int32_t num_sequences = input_params.num_sequences;
+  model_input::ModelInput typed_input = draft_input.get_typed_input();
+  CHECK(typed_input.llm.has_value()) << "MTP draft input requires llm input";
+  const model_input::LLMModelInputParams& llm_input = *typed_input.llm;
+
+  const int32_t num_sequences = llm_input.num_sequences;
   int32_t block_size = options_.block_size();
   torch::TensorOptions int_options = input.token_ids.options();
 
   torch::Tensor positions = safe_to(input.positions, torch::kCPU);
-  torch::Tensor block_tables = safe_to(input_params.block_tables, torch::kCPU);
+  torch::Tensor block_tables = safe_to(llm_input.block_tables, torch::kCPU);
   auto view = specBuilder::make_decode_cpu_view(
-      torch::Tensor(), positions, block_tables, input_params.kv_seq_lens_vec);
+      torch::Tensor(), positions, block_tables, llm_input.kv_seq_lens_vec);
   specBuilder::DecodeBuildBuffers buf;
   buf.out_positions.reserve(num_sequences);
   buf.out_kv_seq_lens.reserve(num_sequences);
@@ -696,22 +758,27 @@ void MTPWorkerImpl::prepare_draft_inputs(const ForwardInput& input,
     row.seq_id = seq_id;
     row.position_offset = static_cast<int32_t>(offset);
     row.append_token = false;
-    specBuilder::append_decode_row(input_params, view, row, block_size, buf);
+    specBuilder::append_decode_row(num_sequences, view, row, block_size, buf);
   }
 
   CHECK_EQ(buf.out_new_cache_slots.size(), buf.out_positions.size())
       << "draft kv slots/positions mismatch";
 
   draft_input.positions = torch::tensor(buf.out_positions, int_options);
-  // update the input_params
-  input_params.kv_max_seq_len = buf.kv_max_seq_len;
-  input_params.kv_seq_lens_vec = std::move(buf.out_kv_seq_lens);
-  input_params.kv_seq_lens =
-      torch::tensor(input_params.kv_seq_lens_vec, int_options);
-  input_params.new_cache_slots =
+  model_input::ModelInput typed_draft_input = draft_input.get_typed_input();
+  CHECK(typed_draft_input.llm.has_value())
+      << "MTP draft input requires llm input";
+  model_input::LLMModelInputParams& llm_input_mut = *typed_draft_input.llm;
+  llm_input_mut.kv_max_seq_len = buf.kv_max_seq_len;
+  llm_input_mut.kv_seq_lens_vec = std::move(buf.out_kv_seq_lens);
+  llm_input_mut.kv_seq_lens =
+      torch::tensor(llm_input_mut.kv_seq_lens_vec, int_options);
+  llm_input_mut.new_cache_slots =
       torch::tensor(buf.out_new_cache_slots, int_options);
-  input_params.q_cu_seq_lens =
-      specBuilder::build_q_cu_seq_lens_tensor(input_params);
+  llm_input_mut.q_cu_seq_lens = specBuilder::build_q_cu_seq_lens_tensor(
+      llm_input_mut.q_seq_lens_vec, llm_input_mut.num_sequences);
+  draft_input.input = std::move(typed_draft_input);
+  draft_input.sync_legacy_from_input();
 }
 
 SampleOutput MTPWorkerImpl::validate(

@@ -116,7 +116,7 @@ class WorkerImpl {
                                            ForwardInput& processed_inputs);
 
   // Internal helper shared by worker pipelines before model execution.
-  virtual void apply_kv_block_swaps(const ModelInputParams& input_params);
+  virtual void apply_kv_block_swaps(const model_input::ModelInput& input);
 
   virtual std::optional<ForwardOutput> step(const ForwardInput& inputs) = 0;
 
@@ -197,7 +197,8 @@ class WorkerImpl {
  protected:
   void update_last_step_output(const std::optional<ForwardOutput>& output);
   // Only used for deepseek chunked prefill ops on npu device
-  void prepare_mla_prefixcache_inputs(ModelInputParams& input_params);
+  void prepare_mla_prefixcache_inputs(
+      model_input::LLMModelInputParams& llm_input);
 
   void init_hierarchy_kv_cache_transfer();
 
@@ -210,8 +211,9 @@ class WorkerImpl {
 #if defined(USE_CUDA)
   void refresh_cuda_block_copy_runtime_state();
   bool can_use_cuda_block_copy_kernel(
-      const ModelInputParams& input_params) const;
-  void execute_cuda_block_copy_kernel(const ModelInputParams& input_params);
+      const model_input::LLMModelInputParams& llm_input) const;
+  void execute_cuda_block_copy_kernel(
+      const model_input::LLMModelInputParams& llm_input);
 
   struct CudaBlockCopyRuntimeState {
     torch::Tensor k_cache_ptrs_device;

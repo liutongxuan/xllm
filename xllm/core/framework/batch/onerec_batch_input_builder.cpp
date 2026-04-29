@@ -22,6 +22,7 @@ limitations under the License.
 #include <thread>
 #include <vector>
 
+#include "framework/model/model_input.h"
 #include "framework/model/model_input_params.h"
 #include "framework/request/sequence.h"
 #include "framework/sampling/sampling_params.h"
@@ -946,6 +947,9 @@ ForwardInput OneRecBatchInputBuilder::build_rec_forward_input(
       onerec_params.decoder_context_embedding = std::move(result_embedding);
     }
   }
+
+  forward_input.input =
+      model_input::make_model_input_from_legacy(forward_input.input_params);
 
   return forward_input;
 }

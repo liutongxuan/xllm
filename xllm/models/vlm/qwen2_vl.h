@@ -414,10 +414,12 @@ class Qwen2_VLForConditionalGenerationImpl : public torch::nn::Module {
         register_module("language_model", QWen2ForCausalLM(context));
   }
 
-  void prepare_encoder_input(const ModelInputParams& input_params,
+  void prepare_encoder_input(const model_input::ModelInput& input,
                              std::optional<Qwen2_VLImageInputs>& image_inputs,
                              std::optional<Qwen2_VLVideoInputs>& video_inputs) {
-    const auto& mm_data = input_params.mm_data;
+    CHECK(input.vlm.has_value())
+        << "Qwen2 VLM requires the vlm partition in ModelInput";
+    const MMBatchData& mm_data = input.vlm->mm_data;
     torch::Tensor pixel_values;
     if (const auto& res = mm_data.get<torch::Tensor>("pixel_values"))
       pixel_values = res.value();
@@ -447,10 +449,12 @@ class Qwen2_VLForConditionalGenerationImpl : public torch::nn::Module {
           pixel_values_videos, video_grid_thw, second_per_grid_ts};
   }
 
-  MMDict get_multimodal_embeddings(const ModelInputParams& input_params) {
+  MMDict get_multimodal_embeddings(const model_input::ModelInput& input) {
+    ModelInputParams input_params;
+    model_input::apply_model_input_to_legacy(input, &input_params);
     std::optional<Qwen2_VLImageInputs> image_input;
     std::optional<Qwen2_VLVideoInputs> video_input;
-    prepare_encoder_input(input_params, image_input, video_input);
+    prepare_encoder_input(input, image_input, video_input);
     auto merge_size = model_args_.mm_image_merge_size();
     MMDict multimodal_embeds;
     if (image_input) {
@@ -490,8 +494,10 @@ class Qwen2_VLForConditionalGenerationImpl : public torch::nn::Module {
   }
 
   torch::Tensor get_input_embeddings(const torch::Tensor input_ids,
-                                     const ModelInputParams& input_params) {
-    const auto& mm_data = input_params.mm_data;
+                                     const model_input::ModelInput& input) {
+    CHECK(input.vlm.has_value())
+        << "Qwen2 VLM requires the vlm partition in ModelInput";
+    const MMBatchData& mm_data = input.vlm->mm_data;
     torch::Tensor multimodal_embeds;
     if (const auto& emb = mm_data.get<torch::Tensor>("embedding")) {
       multimodal_embeds = emb.value();
@@ -504,13 +510,6 @@ class Qwen2_VLForConditionalGenerationImpl : public torch::nn::Module {
     inputs_embeds = merge_multimodal_embeddings(
         inputs_embeds, multimodal_embeds, is_multimodal);
     return inputs_embeds;
-  }
-
-  ModelOutput forward(const torch::Tensor& tokens,
-                      const torch::Tensor& positions,
-                      std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) {
-    return language_model_(tokens, positions, kv_caches, input_params);
   }
 
   // Step 3 typed forward: VLM consumes the llm + vlm partitions and delegates

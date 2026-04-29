@@ -45,43 +45,44 @@ ForwardInput VlmExecutorImpl::prepare_inputs(Batch& batch) {
       options_.num_decoding_tokens(), 0, args_, options_.cp_size());
 }
 
-MMDict VlmExecutorImpl::encode(const ModelInputParams& params) {
-  return dynamic_cast<CausalVLM*>(model_)->encode(params);
+MMDict VlmExecutorImpl::encode(const model_input::ModelInput& input) {
+  return model_->encode(input);
+}
+
+MMDict VlmExecutorImpl::encode(model_input::ModelInput&& input) {
+  return model_->encode(std::move(input));
 }
 
 ModelOutput VlmExecutorImpl::run(const torch::Tensor& tokens,
                                  const torch::Tensor& positions,
                                  std::vector<KVCache>& kv_caches,
                                  const model_input::ModelInput& input) {
-  ModelInputParams params;
-  model_input::apply_model_input_to_legacy(input, &params);
-  return run_with_legacy_params(
-      tokens, positions, kv_caches, std::move(params));
+  return run_with_typed_input(tokens, positions, kv_caches, input);
 }
 
 ModelOutput VlmExecutorImpl::run(const torch::Tensor& tokens,
                                  const torch::Tensor& positions,
                                  std::vector<KVCache>& kv_caches,
                                  model_input::ModelInput&& input) {
-  ModelInputParams params;
-  model_input::apply_model_input_to_legacy(std::move(input), &params);
-  return run_with_legacy_params(
-      tokens, positions, kv_caches, std::move(params));
+  return run_with_typed_input(tokens, positions, kv_caches, std::move(input));
 }
 
-ModelOutput VlmExecutorImpl::run_with_legacy_params(
+ModelOutput VlmExecutorImpl::run_with_typed_input(
     const torch::Tensor& tokens,
     const torch::Tensor& positions,
     std::vector<KVCache>& kv_caches,
-    ModelInputParams params) {
+    model_input::ModelInput input) {
   torch::NoGradGuard no_grad;
-  auto& mm_data = params.mm_data;
+  CHECK(input.llm.has_value())
+      << "VlmExecutorImpl::run requires llm partition in ModelInput";
+  CHECK(input.vlm.has_value())
+      << "VlmExecutorImpl::run requires vlm partition in ModelInput";
+  MMBatchData& mm_data = input.vlm->mm_data;
   EncoderInputGatherVisitor input_gather;
   mm_data.foreach (input_gather);
   CHECK(input_gather.finish(mm_data));
   mm_data.to(device_);
-
-  auto embedding = encode(params);
+  MMDict embedding = encode(input);
   EncoderOutputScatterVisitor scatter(embedding);
   mm_data.foreach (scatter);
   CHECK(scatter.finish());
@@ -90,15 +91,13 @@ ModelOutput VlmExecutorImpl::run_with_legacy_params(
   mm_data.foreach (gather);
   CHECK(gather.finish(mm_data));
 
-  params.input_embedding = model_->get_input_embeddings(tokens, params);
+  input.llm->input_embedding = model_->get_input_embeddings(tokens, input);
 
   if (llm_executor_) {
-    return llm_executor_->run(tokens, positions, kv_caches, params);
+    return llm_executor_->run(tokens, positions, kv_caches, std::move(input));
   }
 
-  const model_input::ModelInput processed_input =
-      model_->create_model_input(std::move(params));
-  return model_->forward(tokens, positions, kv_caches, processed_input);
+  return model_->forward(tokens, positions, kv_caches, std::move(input));
 }
 
 }  // namespace xllm

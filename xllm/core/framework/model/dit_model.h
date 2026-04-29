@@ -37,20 +37,21 @@ class DiTModel : public torch::nn::Module {
 
   virtual model_input::ModelInput create_model_input(
       const ModelInputParams& parameters) const {
-    model_input::ModelInput input;
-    model_input::ModelInputParamBundle bundle =
-        model_input::make_model_input_param_bundle_from_legacy(parameters);
-    input.dit = bundle.dit;
+    model_input::ModelInput input =
+        model_input::make_model_input_from_legacy(parameters);
+    input.llm.reset();
+    input.vlm.reset();
+    input.rec.reset();
     return input;
   }
 
   virtual model_input::ModelInput create_model_input(
       ModelInputParams&& parameters) const {
-    model_input::ModelInput input;
-    model_input::ModelInputParamBundle bundle =
-        model_input::make_model_input_param_bundle_from_legacy(
-            std::move(parameters));
-    input.dit = bundle.dit;
+    model_input::ModelInput input =
+        model_input::make_model_input_from_legacy(std::move(parameters));
+    input.llm.reset();
+    input.vlm.reset();
+    input.rec.reset();
     return input;
   }
 };

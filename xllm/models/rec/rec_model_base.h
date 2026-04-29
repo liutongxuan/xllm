@@ -47,13 +47,6 @@ class RecForCausalLMImplBase : public torch::nn::Module {
     lm_head_ = register_module("lm_head", layer::LmHead(context));
   }
 
-  virtual ModelOutput forward(const torch::Tensor& tokens,
-                              const torch::Tensor& positions,
-                              std::vector<KVCache>& kv_caches,
-                              const ModelInputParams& input_params) {
-    return model_->forward(tokens, positions, kv_caches, input_params);
-  }
-
   // Typed-input entry for Step 3 migration: unwraps the LLM/Rec partitions into
   // a legacy ModelInputParams and dispatches through the legacy forward. VLM
   // and DiT partitions are not consumed by Rec models.
@@ -63,12 +56,15 @@ class RecForCausalLMImplBase : public torch::nn::Module {
                               const model_input::ModelInput& input) {
     CHECK(input.llm.has_value())
         << "Rec forward requires the llm partition in ModelInput";
-    ModelInputParams params;
-    model_input::apply_llm_model_input_params_to_legacy(*input.llm, &params);
+    model_input::LLMModelInputParams llm_input_params = *input.llm;
     if (input.rec.has_value()) {
-      model_input::apply_rec_model_input_params_to_legacy(*input.rec, &params);
+      llm_input_params.rec_params = input.rec->rec_params;
     }
-    return forward(tokens, positions, kv_caches, params);
+    ModelInputParams params;
+    model_input::ModelInput typed_input;
+    typed_input.llm = llm_input_params;
+    model_input::apply_model_input_to_legacy(typed_input, &params);
+    return model_->forward(tokens, positions, kv_caches, params);
   }
 
   virtual ModelOutput forward(const torch::Tensor& tokens,
@@ -77,14 +73,15 @@ class RecForCausalLMImplBase : public torch::nn::Module {
                               model_input::ModelInput&& input) {
     CHECK(input.llm.has_value())
         << "Rec forward requires the llm partition in ModelInput";
-    ModelInputParams params;
-    model_input::apply_llm_model_input_params_to_legacy(std::move(*input.llm),
-                                                        &params);
+    model_input::LLMModelInputParams llm_input_params = std::move(*input.llm);
     if (input.rec.has_value()) {
-      model_input::apply_rec_model_input_params_to_legacy(std::move(*input.rec),
-                                                          &params);
+      llm_input_params.rec_params = std::move(input.rec->rec_params);
     }
-    return forward(tokens, positions, kv_caches, params);
+    ModelInputParams params;
+    model_input::ModelInput typed_input;
+    typed_input.llm = std::move(llm_input_params);
+    model_input::apply_model_input_to_legacy(std::move(typed_input), &params);
+    return model_->forward(tokens, positions, kv_caches, params);
   }
 
   virtual torch::Tensor logits(const torch::Tensor& hidden_states,

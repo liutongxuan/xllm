@@ -28,6 +28,7 @@ limitations under the License.
 
 #include "common/types.h"
 #include "framework/kv_cache/kv_cache.h"
+#include "framework/model/model_input.h"
 #include "framework/model/model_input_params.h"
 #include "platform/device.h"
 #include "util/blockingconcurrentqueue.h"
@@ -60,7 +61,7 @@ class HierarchyKVCacheTransfer {
   uint32_t transfer_kv_blocks(const uint64_t batch_id,
                               Slice<BlockTransferInfo>& block_transfer_info);
 
-  void set_layer_synchronizer(ModelInputParams& params);
+  void set_layer_synchronizer(model_input::LLMModelInputParams& llm_input);
 
  private:
   void create_page_aligned_host_cache();

@@ -21,7 +21,7 @@ limitations under the License.
 #include "attention_metadata.h"
 #include "core/common/global_flags.h"
 #include "framework/model/model_args.h"
-#include "framework/model/model_input_param_groups.h"
+#include "framework/model/model_input.h"
 #include "framework/model/model_input_params.h"
 
 namespace xllm::layer {
@@ -224,8 +224,11 @@ AttentionMetadata AttentionMetadataBuilder::build(
     const ModelInputParams& params,
     bool enable_mla,
     const std::optional<torch::Tensor>& attn_mask) {
-  const model_input::LLMModelInputParams llm_params =
-      model_input::make_llm_model_input_params_from_legacy(params);
+  model_input::ModelInput typed_input =
+      model_input::make_model_input_from_legacy(params);
+  CHECK(typed_input.llm.has_value())
+      << "AttentionMetadataBuilder requires llm input";
+  const model_input::LLMModelInputParams llm_params = *typed_input.llm;
   return build(llm_params, enable_mla, attn_mask);
 }
 
@@ -234,8 +237,11 @@ AttentionMetadata AttentionMetadataBuilder::build(
     bool enable_mla,
     const std::string& compute_dtype,
     const std::optional<torch::Tensor>& attn_mask) {
-  const model_input::LLMModelInputParams llm_params =
-      model_input::make_llm_model_input_params_from_legacy(params);
+  model_input::ModelInput typed_input =
+      model_input::make_model_input_from_legacy(params);
+  CHECK(typed_input.llm.has_value())
+      << "AttentionMetadataBuilder requires llm input";
+  const model_input::LLMModelInputParams llm_params = *typed_input.llm;
   return build(llm_params, enable_mla, compute_dtype, attn_mask);
 }
 

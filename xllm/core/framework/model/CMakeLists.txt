@@ -16,7 +16,6 @@ cc_library(
     model_input_params.h
   SRCS
     model_input.cpp
-    model_input_param_groups.cpp
   DEPS
     :common
     :common_layers

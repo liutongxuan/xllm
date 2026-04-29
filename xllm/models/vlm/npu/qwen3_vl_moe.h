@@ -75,6 +75,14 @@ class Qwen3_VLMoeForConditionalGenerationImpl : public torch::nn::Module {
       video_inputs = Qwen3_VLVideoInputs{pixel_values_videos, video_grid_thw};
   }
 
+  void prepare_encoder_input(const model_input::ModelInput& input,
+                             std::optional<Qwen3_VLImageInputs>& image_inputs,
+                             std::optional<Qwen3_VLVideoInputs>& video_inputs) {
+    ModelInputParams input_params;
+    model_input::apply_model_input_to_legacy(input, &input_params);
+    prepare_encoder_input(input_params, image_inputs, video_inputs);
+  }
+
   MMDict get_multimodal_embeddings(const ModelInputParams& input_params) {
     std::optional<Qwen3_VLImageInputs> image_input;
     std::optional<Qwen3_VLVideoInputs> video_input;
@@ -107,6 +115,12 @@ class Qwen3_VLMoeForConditionalGenerationImpl : public torch::nn::Module {
       }
     }
     return multimodal_embeds;
+  }
+
+  MMDict get_multimodal_embeddings(const model_input::ModelInput& input) {
+    ModelInputParams input_params;
+    model_input::apply_model_input_to_legacy(input, &input_params);
+    return get_multimodal_embeddings(input_params);
   }
 
   torch::Tensor generate_multimodal_mask(torch::Tensor input_ids) {
@@ -157,12 +171,11 @@ class Qwen3_VLMoeForConditionalGenerationImpl : public torch::nn::Module {
     return inputs_embeds;
   }
 
-  ModelOutput forward(const torch::Tensor& tokens,
-                      const torch::Tensor& positions,
-                      std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) {
-    input_params.deep_stacks = std::move(get_deep_stacks(input_params));
-    return language_model_(tokens, positions, kv_caches, input_params);
+  torch::Tensor get_input_embeddings(const torch::Tensor input_ids,
+                                     const model_input::ModelInput& input) {
+    ModelInputParams input_params;
+    model_input::apply_model_input_to_legacy(input, &input_params);
+    return get_input_embeddings(input_ids, input_params);
   }
 
   // Step 3 typed forward: VLM consumes the llm + vlm partitions; lower into
@@ -175,14 +188,9 @@ class Qwen3_VLMoeForConditionalGenerationImpl : public torch::nn::Module {
     CHECK(input.llm.has_value())
         << "VLM forward requires the llm partition in ModelInput";
     ModelInputParams params;
-    model_input::apply_llm_model_input_params_to_legacy(*input.llm, &params);
-    if (input.vlm.has_value()) {
-      model_input::apply_vlm_model_input_params_to_legacy(*input.vlm, &params);
-    }
-    if (input.rec.has_value()) {
-      model_input::apply_rec_model_input_params_to_legacy(*input.rec, &params);
-    }
-    return forward(tokens, positions, kv_caches, params);
+    model_input::apply_model_input_to_legacy(input, &params);
+    params.deep_stacks = std::move(get_deep_stacks(params));
+    return language_model_(tokens, positions, kv_caches, params);
   }
 
   ModelOutput forward(const torch::Tensor& tokens,
@@ -192,17 +200,9 @@ class Qwen3_VLMoeForConditionalGenerationImpl : public torch::nn::Module {
     CHECK(input.llm.has_value())
         << "VLM forward requires the llm partition in ModelInput";
     ModelInputParams params;
-    model_input::apply_llm_model_input_params_to_legacy(std::move(*input.llm),
-                                                        &params);
-    if (input.vlm.has_value()) {
-      model_input::apply_vlm_model_input_params_to_legacy(std::move(*input.vlm),
-                                                          &params);
-    }
-    if (input.rec.has_value()) {
-      model_input::apply_rec_model_input_params_to_legacy(std::move(*input.rec),
-                                                          &params);
-    }
-    return forward(tokens, positions, kv_caches, params);
+    model_input::apply_model_input_to_legacy(std::move(input), &params);
+    params.deep_stacks = std::move(get_deep_stacks(params));
+    return language_model_(tokens, positions, kv_caches, params);
   }
 
   torch::Tensor logits(const torch::Tensor& hidden_states,

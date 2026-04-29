@@ -128,6 +128,7 @@ class MluGraphExecutorImpl : public ExecutorImpl {
   ModelOutput run_eager(const torch::Tensor& tokens,
                         const torch::Tensor& positions,
                         std::vector<KVCache>& kv_caches,
+                        const model_input::ModelInput& input,
                         const ModelInputParams& params);
   void init_param_once();
 

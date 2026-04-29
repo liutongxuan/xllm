@@ -19,8 +19,6 @@ limitations under the License.
 
 #include <limits>
 
-#include "framework/model/model_input_params.h"
-
 namespace xllm::specBuilder {
 
 namespace {
@@ -123,13 +121,15 @@ void update_kv_seq_lens_and_max(std::vector<int32_t>& kv_seq_lens_vec,
   append_seq_len_by_layout(kv_seq_lens_vec, kv_len);
 }
 
-void append_decode_row(const ModelInputParams& params,
-                       const DecodeCpuView& view,
-                       const RowSpec& row,
-                       int32_t block_size,
-                       DecodeBuildBuffers& buf) {
+namespace {
+
+void append_decode_row_with_num_sequences(int32_t num_sequences,
+                                          const DecodeCpuView& view,
+                                          const RowSpec& row,
+                                          int32_t block_size,
+                                          DecodeBuildBuffers& buf) {
   CHECK_GE(row.seq_id, 0);
-  CHECK_LT(row.seq_id, params.num_sequences);
+  CHECK_LT(row.seq_id, num_sequences);
   CHECK_LT(static_cast<size_t>(row.seq_id), view.positions.size());
   CHECK_LT(static_cast<size_t>(row.seq_id), view.block_table_slices.size());
   const int32_t new_position = view.positions[row.seq_id] + row.position_offset;
@@ -158,6 +158,17 @@ void append_decode_row(const ModelInputParams& params,
     buf.out_block_tables.emplace_back(block_table_slice.begin(),
                                       block_table_slice.end());
   }
+}
+
+}  // namespace
+
+void append_decode_row(int32_t num_sequences,
+                       const DecodeCpuView& view,
+                       const RowSpec& row,
+                       int32_t block_size,
+                       DecodeBuildBuffers& buf) {
+  append_decode_row_with_num_sequences(
+      num_sequences, view, row, block_size, buf);
 }
 
 TokenWithOffset resolve_token_with_position_offset(
@@ -202,7 +213,7 @@ TokenWithOffset resolve_token_with_position_offset(
   return resolved;
 }
 
-void append_decode_row_from_last_step(const ModelInputParams& params,
+void append_decode_row_from_last_step(int32_t num_sequences,
                                       const DecodeCpuView& view,
                                       int32_t seq_id,
                                       int32_t input_token_id,
@@ -219,16 +230,30 @@ void append_decode_row_from_last_step(const ModelInputParams& params,
   row.seq_id = seq_id;
   row.token_id = resolved.token_id;
   row.position_offset = resolved.position_offset;
-  append_decode_row(params, view, row, block_size, buf);
+  append_decode_row(num_sequences, view, row, block_size, buf);
 }
 
-torch::Tensor build_q_cu_seq_lens_tensor(const ModelInputParams& params,
-                                         torch::Device device) {
+torch::Tensor build_q_cu_seq_lens_tensor(
+    const std::vector<int32_t>& q_seq_lens_vec,
+    int32_t num_sequences,
+    torch::Device device) {
+  CHECK_GE(num_sequences, 0) << "num_sequences must be >= 0";
+  CHECK_GE(static_cast<int32_t>(q_seq_lens_vec.size()), num_sequences)
+      << "q_seq_lens_vec size mismatch, size=" << q_seq_lens_vec.size()
+      << ", num_sequences=" << num_sequences;
   std::vector<int32_t> q_cu_seq_lens_vec;
-  q_cu_seq_lens_vec.reserve(params.num_sequences);
+  q_cu_seq_lens_vec.reserve(num_sequences);
   int32_t cum_seq_len = 0;
-  for (int32_t i = 0; i < params.num_sequences; ++i) {
-    cum_seq_len += params.get_q_seq_len(i);
+  for (int32_t i = 0; i < num_sequences; ++i) {
+#if defined(USE_NPU)
+    const int32_t q_seq_len = q_seq_lens_vec[i];
+#else
+    CHECK_GT(q_seq_lens_vec.size(), static_cast<size_t>(i + 1))
+        << "q_seq_lens_vec cumulative layout requires num_sequences + 1 "
+           "entries";
+    const int32_t q_seq_len = q_seq_lens_vec[i + 1] - q_seq_lens_vec[i];
+#endif
+    cum_seq_len += q_seq_len;
     q_cu_seq_lens_vec.emplace_back(cum_seq_len);
   }
   return torch::tensor(q_cu_seq_lens_vec,

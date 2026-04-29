@@ -718,6 +718,14 @@ class Glm4vForConditionalGenerationImpl : public torch::nn::Module {
       video_inputs = Glm4VVideoInputs{pixel_values_videos, video_grid_thw};
   }
 
+  void prepare_encoder_input(const model_input::ModelInput& input,
+                             std::optional<Glm4VImageInputs>& image_inputs,
+                             std::optional<Glm4VVideoInputs>& video_inputs) {
+    ModelInputParams input_params;
+    model_input::apply_model_input_to_legacy(input, &input_params);
+    prepare_encoder_input(input_params, image_inputs, video_inputs);
+  }
+
   MMDict get_multimodal_embeddings(const ModelInputParams& input_params) {
     std::optional<Glm4VImageInputs> image_input;
     std::optional<Glm4VVideoInputs> video_input;
@@ -773,6 +781,12 @@ class Glm4vForConditionalGenerationImpl : public torch::nn::Module {
     return multimodal_embeds;
   }
 
+  MMDict get_multimodal_embeddings(const model_input::ModelInput& input) {
+    ModelInputParams input_params;
+    model_input::apply_model_input_to_legacy(input, &input_params);
+    return get_multimodal_embeddings(input_params);
+  }
+
   torch::Tensor generate_multimodal_mask(torch::Tensor input_ids) {
     auto special_token_ids =
         torch::tensor({model_args_.image_token_id()},
@@ -806,11 +820,11 @@ class Glm4vForConditionalGenerationImpl : public torch::nn::Module {
     return inputs_embeds;
   }
 
-  ModelOutput forward(const torch::Tensor& tokens,
-                      const torch::Tensor& positions,
-                      std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) {
-    return language_model_(tokens, positions, kv_caches, input_params);
+  torch::Tensor get_input_embeddings(const torch::Tensor input_ids,
+                                     const model_input::ModelInput& input) {
+    ModelInputParams input_params;
+    model_input::apply_model_input_to_legacy(input, &input_params);
+    return get_input_embeddings(input_ids, input_params);
   }
 
   // Step 3 typed forward: VLM consumes the llm + vlm partitions and delegates

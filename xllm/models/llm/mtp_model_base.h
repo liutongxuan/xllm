@@ -153,6 +153,43 @@ class MtpModelImplBase : public torch::nn::Module {
     return embed_tokens_(input_ids);
   }
 
+  ModelOutput forward(torch::Tensor tokens,
+                      torch::Tensor positions,
+                      std::vector<KVCache>& kv_caches,
+                      const model_input::ModelInput& input) {
+    CHECK(input.llm.has_value())
+        << "MTP model forward requires the llm partition in ModelInput";
+    model_input::LLMModelInputParams llm_input_params = *input.llm;
+    if (input.rec.has_value()) {
+      llm_input_params.rec_params = input.rec->rec_params;
+    }
+    return forward(tokens, positions, kv_caches, llm_input_params);
+  }
+
+  ModelOutput forward(torch::Tensor tokens,
+                      torch::Tensor positions,
+                      std::vector<KVCache>& kv_caches,
+                      model_input::ModelInput&& input) {
+    CHECK(input.llm.has_value())
+        << "MTP model forward requires the llm partition in ModelInput";
+    model_input::LLMModelInputParams llm_input_params = std::move(*input.llm);
+    if (input.rec.has_value()) {
+      llm_input_params.rec_params = std::move(input.rec->rec_params);
+    }
+    return forward(tokens, positions, kv_caches, llm_input_params);
+  }
+
+  ModelOutput forward(torch::Tensor tokens,
+                      torch::Tensor positions,
+                      std::vector<KVCache>& kv_caches,
+                      const model_input::LLMModelInputParams& input_params) {
+    model_input::ModelInput input;
+    input.llm = input_params;
+    ModelInputParams params;
+    model_input::apply_model_input_to_legacy(input, &params);
+    return forward(tokens, positions, kv_caches, params);
+  }
+
   // Provide batched signature to satisfy callers that pass vectors
   ModelOutput forward(torch::Tensor tokens,
                       torch::Tensor positions,

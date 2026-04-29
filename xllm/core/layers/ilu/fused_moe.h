@@ -18,7 +18,7 @@ limitations under the License.
 #include <torch/torch.h>
 
 #include "framework/model/model_args.h"
-#include "framework/model/model_input_param_groups.h"
+#include "framework/model/model_input.h"
 #include "framework/model/model_input_params.h"
 #include "framework/parallel_state/parallel_args.h"
 #include "framework/quant_args.h"

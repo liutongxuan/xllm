@@ -987,15 +987,18 @@ ModelOutput AclGraphExecutorImpl::run(const torch::Tensor& tokens,
                                       const torch::Tensor& positions,
                                       std::vector<KVCache>& kv_caches,
                                       const model_input::ModelInput& input) {
+  CHECK(input.llm.has_value())
+      << "AclGraphExecutorImpl::run requires llm partition in ModelInput";
+  const model_input::LLMModelInputParams& llm_input = *input.llm;
   ModelInputParams params;
   model_input::apply_model_input_to_legacy(input, &params);
   // no mirco batch in decode phase
   const torch::Tensor& tokens_tensor = tokens;
   const torch::Tensor& positions_tensor = positions;
   const ModelInputParams& params_single = params;
-  const bool in_decoding_phase = params_single.batch_forward_type.is_decode();
+  const bool in_decoding_phase = llm_input.batch_forward_type.is_decode();
   VLOG(50) << "in_decoding_phase: " << in_decoding_phase
-           << " q_max_seq_len: " << params_single.q_max_seq_len
+           << " q_max_seq_len: " << llm_input.q_max_seq_len
            << " n_layers: " << args_.n_layers();
   // If not in decode phase, use eager mode directly without acl graph
   // TODO: fix mtp model support.
@@ -1003,7 +1006,7 @@ ModelOutput AclGraphExecutorImpl::run(const torch::Tensor& tokens,
     VLOG(kGraphExecutorLogVerboseLevel)
         << "AclGraphExecutorImpl::run() in eager mode";
     COUNTER_INC(num_model_execution_total_eager);
-    return model_->forward(tokens, positions, kv_caches, params);
+    return model_->forward(tokens, positions, kv_caches, input);
   }
 
   // Only use acl graph in decode phase for performance optimization
@@ -1014,7 +1017,7 @@ ModelOutput AclGraphExecutorImpl::run(const torch::Tensor& tokens,
 
   // Check if conditions are suitable for graph execution (replay or capture)
   const auto max_seq_len = args_.max_position_embeddings();
-  const bool seq_len_supported = params_single.kv_max_seq_len <= max_seq_len;
+  const bool seq_len_supported = llm_input.kv_max_seq_len <= max_seq_len;
 
   // Combined condition for graph capture support
   // ACL graph executor only supports single tensor inputs (no micro-batching)
@@ -1024,11 +1027,11 @@ ModelOutput AclGraphExecutorImpl::run(const torch::Tensor& tokens,
   if (!capture_supported) {
     LOG_FIRST_N(WARNING, 1)
         << "Falling back to eager mode because kv_max_seq_len ("
-        << params_single.kv_max_seq_len << ") > max_seq_len (" << max_seq_len
+        << llm_input.kv_max_seq_len << ") > max_seq_len (" << max_seq_len
         << "). This message is logged only once. "
         << "Monitor counter 'num_model_execution_total_eager' for frequency.";
     COUNTER_INC(num_model_execution_total_eager);
-    return model_->forward(tokens, positions, kv_caches, params);
+    return model_->forward(tokens, positions, kv_caches, input);
   }
 
   // Check if captured graph exists for this bucket num_tokens
@@ -1088,16 +1091,17 @@ ModelOutput AclGraphExecutorImpl::run(const torch::Tensor& tokens,
   LOG(ERROR) << "Failed to capture ACL graph for bucket num_tokens: "
              << bucket_num_tokens;
   COUNTER_INC(num_model_execution_total_eager);
-  return model_->forward(tokens, positions, kv_caches, params);
+  return model_->forward(tokens, positions, kv_caches, input);
 }
 
 ModelOutput AclGraphExecutorImpl::run(const torch::Tensor& tokens,
                                       const torch::Tensor& positions,
                                       std::vector<KVCache>& kv_caches,
                                       model_input::ModelInput&& input) {
-  ModelInputParams params;
-  model_input::apply_model_input_to_legacy(std::move(input), &params);
-  return run(tokens, positions, kv_caches, params);
+  return run(tokens,
+             positions,
+             kv_caches,
+             static_cast<const model_input::ModelInput&>(input));
 }
 
 void AclGraph::print_graph_tensors() const {

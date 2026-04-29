@@ -59,7 +59,9 @@ struct LLMModelInputParams {
   torch::Tensor dst_block_indices;
   torch::Tensor cum_sum;
 
-#if defined(USE_NPU)
+#if defined(USE_MLU)
+  std::shared_ptr<MLULayerSynchronizerImpl> layer_synchronizer = nullptr;
+#elif defined(USE_NPU)
   std::shared_ptr<NPULayerSynchronizerImpl> layer_synchronizer = nullptr;
   uint32_t layers_per_bacth_copy = std::numeric_limits<uint32_t>::max();
   std::shared_ptr<NPULayerSynchronizerImpl> layer_wise_load_synchronizer =
@@ -99,58 +101,6 @@ struct DitModelInputParams {
 struct RecModelInputParams {
   xllm::RecModelInputParams rec_params;
 };
-
-struct ModelInputParamBundle {
-  std::optional<LLMModelInputParams> llm;
-  std::optional<VLMModelInputParams> vlm;
-  std::optional<DitModelInputParams> dit;
-  std::optional<RecModelInputParams> rec;
-};
-
-LLMModelInputParams make_llm_model_input_params_from_legacy(
-    const xllm::ModelInputParams& src);
-LLMModelInputParams make_llm_model_input_params_from_legacy(
-    xllm::ModelInputParams&& src);
-void apply_llm_model_input_params_to_legacy(const LLMModelInputParams& src,
-                                            xllm::ModelInputParams* dst);
-void apply_llm_model_input_params_to_legacy(LLMModelInputParams&& src,
-                                            xllm::ModelInputParams* dst);
-
-VLMModelInputParams make_vlm_model_input_params_from_legacy(
-    const xllm::ModelInputParams& src);
-VLMModelInputParams make_vlm_model_input_params_from_legacy(
-    xllm::ModelInputParams&& src);
-void apply_vlm_model_input_params_to_legacy(const VLMModelInputParams& src,
-                                            xllm::ModelInputParams* dst);
-void apply_vlm_model_input_params_to_legacy(VLMModelInputParams&& src,
-                                            xllm::ModelInputParams* dst);
-
-DitModelInputParams make_dit_model_input_params_from_legacy(
-    const xllm::ModelInputParams& src);
-DitModelInputParams make_dit_model_input_params_from_legacy(
-    xllm::ModelInputParams&& src);
-void apply_dit_model_input_params_to_legacy(const DitModelInputParams& src,
-                                            xllm::ModelInputParams* dst);
-void apply_dit_model_input_params_to_legacy(DitModelInputParams&& src,
-                                            xllm::ModelInputParams* dst);
-
-RecModelInputParams make_rec_model_input_params_from_legacy(
-    const xllm::ModelInputParams& src);
-RecModelInputParams make_rec_model_input_params_from_legacy(
-    xllm::ModelInputParams&& src);
-void apply_rec_model_input_params_to_legacy(const RecModelInputParams& src,
-                                            xllm::ModelInputParams* dst);
-void apply_rec_model_input_params_to_legacy(RecModelInputParams&& src,
-                                            xllm::ModelInputParams* dst);
-
-ModelInputParamBundle make_model_input_param_bundle_from_legacy(
-    const xllm::ModelInputParams& src);
-ModelInputParamBundle make_model_input_param_bundle_from_legacy(
-    xllm::ModelInputParams&& src);
-void apply_model_input_param_bundle_to_legacy(const ModelInputParamBundle& src,
-                                              xllm::ModelInputParams* dst);
-void apply_model_input_param_bundle_to_legacy(ModelInputParamBundle&& src,
-                                              xllm::ModelInputParams* dst);
 
 }  // namespace model_input
 }  // namespace xllm

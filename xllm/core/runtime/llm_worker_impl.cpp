@@ -31,7 +31,6 @@ limitations under the License.
 #include "core/common/global_flags.h"
 #include "framework/kv_cache/kv_cache.h"
 #include "framework/model/model_input.h"
-#include "framework/model/model_input_params.h"
 #include "framework/state_dict/state_dict.h"
 #if defined(USE_CUDA) || defined(USE_ILU) || defined(USE_MUSA)
 #include "layers/cuda/flashinfer_workspace.h"
@@ -41,6 +40,15 @@ limitations under the License.
 #include "util/timer.h"
 
 namespace xllm {
+namespace {
+
+bool is_decode_batch_input(const model_input::ModelInput& input) {
+  CHECK(input.llm.has_value())
+      << "LLMWorker requires the llm partition in ModelInput";
+  return input.llm->batch_forward_type.is_decode();
+}
+
+}  // namespace
 
 LLMWorkerImpl::LLMWorkerImpl(const ParallelArgs& parallel_args,
                              const torch::Device& device,
@@ -101,6 +109,7 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_internal(
 
   Timer timer;
   auto& sampling_params = input.sampling_params;
+  model_input::ModelInput typed_input = input.get_typed_input();
 
   std::vector<folly::SemiFuture<bool>> futures;
 
@@ -116,8 +125,9 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_internal(
             context_.get_model_args().n_layers());
 #endif
 #if defined(USE_NPU) || defined(USE_MLU)
-    const_cast<ModelInputParams*>(&(input.input_params))->layer_synchronizer =
-        layer_synchronizer;
+    CHECK(typed_input.llm.has_value())
+        << "LLMWorker KV transfer requires llm partition in ModelInput";
+    typed_input.llm->layer_synchronizer = layer_synchronizer;
 
     futures.emplace_back(
         kv_cache_transfer_->push_kv_blocks_async(input.transfer_kv_infos,
@@ -132,8 +142,7 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_internal(
   }
 
   // call model executor forward to get hidden states
-  auto typed_input =
-      model_input::make_model_input_from_legacy(input.input_params);
+  const bool is_decode_batch = is_decode_batch_input(typed_input);
   auto model_output = model_executor_->forward(
       input.token_ids, input.positions, kv_caches_, std::move(typed_input));
   if (!model_output.hidden_states.defined()) {
@@ -212,7 +221,7 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_internal(
     } else {
       embeddings = model_output.hidden_states;
     }
-    if (!input.input_params.batch_forward_type.is_decode() && !is_spec_draft_) {
+    if (!is_decode_batch && !is_spec_draft_) {
       output.sample_output.embeddings = embeddings;
     } else if (sampling_params.selected_token_idxes.defined()) {
       output.sample_output.embeddings = embeddings.index_select(

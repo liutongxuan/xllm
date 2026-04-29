@@ -698,14 +698,6 @@ class Qwen3_VLForConditionalGenerationImpl : public torch::nn::Module {
     return inputs_embeds;
   }
 
-  ModelOutput forward(const torch::Tensor& tokens,
-                      const torch::Tensor& positions,
-                      std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) {
-    input_params.deep_stacks = std::move(get_deep_stacks(input_params));
-    return language_model_(tokens, positions, kv_caches, input_params);
-  }
-
   // Step 3 typed forward: VLM consumes the llm + vlm partitions; lower into
   // the legacy ModelInputParams and reuse the legacy forward so the
   // get_deep_stacks pre-processing keeps running unchanged.
@@ -716,14 +708,9 @@ class Qwen3_VLForConditionalGenerationImpl : public torch::nn::Module {
     CHECK(input.llm.has_value())
         << "VLM forward requires the llm partition in ModelInput";
     ModelInputParams params;
-    model_input::apply_llm_model_input_params_to_legacy(*input.llm, &params);
-    if (input.vlm.has_value()) {
-      model_input::apply_vlm_model_input_params_to_legacy(*input.vlm, &params);
-    }
-    if (input.rec.has_value()) {
-      model_input::apply_rec_model_input_params_to_legacy(*input.rec, &params);
-    }
-    return forward(tokens, positions, kv_caches, params);
+    model_input::apply_model_input_to_legacy(input, &params);
+    params.deep_stacks = std::move(get_deep_stacks(params));
+    return language_model_(tokens, positions, kv_caches, params);
   }
 
   ModelOutput forward(const torch::Tensor& tokens,
@@ -733,17 +720,9 @@ class Qwen3_VLForConditionalGenerationImpl : public torch::nn::Module {
     CHECK(input.llm.has_value())
         << "VLM forward requires the llm partition in ModelInput";
     ModelInputParams params;
-    model_input::apply_llm_model_input_params_to_legacy(std::move(*input.llm),
-                                                        &params);
-    if (input.vlm.has_value()) {
-      model_input::apply_vlm_model_input_params_to_legacy(std::move(*input.vlm),
-                                                          &params);
-    }
-    if (input.rec.has_value()) {
-      model_input::apply_rec_model_input_params_to_legacy(std::move(*input.rec),
-                                                          &params);
-    }
-    return forward(tokens, positions, kv_caches, params);
+    model_input::apply_model_input_to_legacy(std::move(input), &params);
+    params.deep_stacks = std::move(get_deep_stacks(params));
+    return language_model_(tokens, positions, kv_caches, params);
   }
 
   torch::Tensor pooler(const torch::Tensor& hidden_states,

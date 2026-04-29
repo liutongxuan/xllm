@@ -18,6 +18,7 @@ limitations under the License.
 #include <algorithm>
 #include <numeric>
 
+#include "framework/model/model_input.h"
 #include "framework/parallel_state/parallel_state.h"
 
 namespace xllm {
@@ -223,22 +224,29 @@ bool all_dp_ranks_are_decode(const model_input::LLMModelInputParams& params) {
 torch::Tensor gather_dp_tokens(const torch::Tensor& input,
                                const ModelInputParams& params,
                                const ParallelArgs& args) {
-  const model_input::LLMModelInputParams llm_params =
-      model_input::make_llm_model_input_params_from_legacy(params);
+  model_input::ModelInput typed_input =
+      model_input::make_model_input_from_legacy(params);
+  CHECK(typed_input.llm.has_value()) << "gather_dp_tokens requires llm input";
+  const model_input::LLMModelInputParams llm_params = *typed_input.llm;
   return gather_dp_tokens(input, llm_params, args);
 }
 
 torch::Tensor get_dp_local_slice(const torch::Tensor& input,
                                  const ModelInputParams& params,
                                  const ParallelArgs& args) {
-  const model_input::LLMModelInputParams llm_params =
-      model_input::make_llm_model_input_params_from_legacy(params);
+  model_input::ModelInput typed_input =
+      model_input::make_model_input_from_legacy(params);
+  CHECK(typed_input.llm.has_value()) << "get_dp_local_slice requires llm input";
+  const model_input::LLMModelInputParams llm_params = *typed_input.llm;
   return get_dp_local_slice(input, llm_params, args);
 }
 
 bool all_dp_ranks_are_decode(const ModelInputParams& params) {
-  const model_input::LLMModelInputParams llm_params =
-      model_input::make_llm_model_input_params_from_legacy(params);
+  model_input::ModelInput typed_input =
+      model_input::make_model_input_from_legacy(params);
+  CHECK(typed_input.llm.has_value())
+      << "all_dp_ranks_are_decode requires llm input";
+  const model_input::LLMModelInputParams llm_params = *typed_input.llm;
   return all_dp_ranks_are_decode(llm_params);
 }
 
