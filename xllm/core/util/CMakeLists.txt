@@ -30,6 +30,7 @@ cc_library(
     suffix_decoding_cache.h
     suffix_tree.h
     tensor_helper.h
+    tensor_io.h
     threadpool.h
     timer.h
     type_traits.h

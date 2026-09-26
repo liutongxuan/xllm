@@ -16,8 +16,9 @@ limitations under the License.
 
 #pragma once
 
-#include <torch/torch.h>
+#include <torch/types.h>
 
+#include <iostream>
 #include <nlohmann/json.hpp>
 #include <optional>
 
@@ -33,11 +34,6 @@ struct DiTForwardInput {
            !images_list.empty();
   }
 
-  void save_with_prefix(std::string prefix) const {
-    torch::save(images, prefix + "images_cpp.pt");
-    torch::save(prompt_embeds, prefix + "prompt_embeds_cpp.pt");
-    torch::save(negative_prompt_embeds, prefix + "neg_prompt_embeds_cpp.pt");
-  }
   void debug_print(std::ostream& os = std::cout) const {
     os << "=== DiTForwardInput Debug Info ===" << std::endl;
 
@@ -280,11 +276,6 @@ struct DiTForwardInput {
 
 // dit related forward output params
 struct DiTForwardOutput {
-  void save_with_prefix(std::string prefix) const {
-    if (!tensors.empty()) {
-      torch::save(tensors[0], prefix + "dit_images_cpp.pt");
-    }
-  }
   // generated tensor (for image/audio models)
   std::vector<torch::Tensor> tensors;
   // generated text (for text diffusion models like Cola-DLM)

@@ -16,6 +16,7 @@ limitations under the License.
 #include "glm4_moe_lite_decoder_loader.h"
 
 #include <glog/logging.h>
+#include <torch/nn/functional/padding.h>
 #include <torch_npu/csrc/core/npu/NPUFormat.h>
 
 #include <cctype>

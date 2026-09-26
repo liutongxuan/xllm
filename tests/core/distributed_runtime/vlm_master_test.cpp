@@ -28,6 +28,7 @@ limitations under the License.
 #include <iostream>
 #include <string>
 
+#include "core/util/tensor_io.h"
 #include "distributed_runtime/vlm_master.h"
 #include "framework/request/sequence.h"
 #include "framework/sampling/sampling_params.h"

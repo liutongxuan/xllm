@@ -14,6 +14,7 @@ limitations under the License.
 ==============================================================================*/
 
 #ifdef TORCH_HIGHER_THAN_PTA6
+#include <torch/nn/functional/padding.h>
 #include <torch_npu/csrc/core/npu/NPUFormat.h>
 #include <torch_npu/csrc/framework/OpCommand.h>
 #else

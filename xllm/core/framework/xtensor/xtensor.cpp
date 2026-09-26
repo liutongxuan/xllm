@@ -305,7 +305,7 @@ bool XTensor::allocate(void*& ptr, size_t size) {
 }
 
 torch::Tensor XTensor::to_torch_tensor() const {
-  auto num_elems = static_cast<int64_t>(size_ / torch::elementSize(dtype_));
+  auto num_elems = static_cast<int64_t>(size_ / c10::elementSize(dtype_));
   return to_torch_tensor(0, {num_elems});
 }
 
@@ -334,7 +334,7 @@ torch::Tensor XTensor::to_torch_tensor(size_t offset,
 
   auto tensor = torch::empty({0}, option);
   auto address = reinterpret_cast<void*>(addr);
-  torch::DataPtr c10_data_ptr(address, address, [](void*) {}, tensor.device());
+  c10::DataPtr c10_data_ptr(address, address, [](void*) {}, tensor.device());
 
   size_t tensor_nbytes = at::detail::computeStorageNbytesContiguous(
       dims, tensor.dtype().itemsize());

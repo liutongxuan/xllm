@@ -374,7 +374,7 @@ Status SlotBuffer::create(const SlotBufferCapacity& capacity,
   for (const auto& field : kFields) {
     const uint64_t elements = capacity_elements(field, capacity);
     const uint64_t element_bytes =
-        torch::elementSize(storage_dtype(field, capacity.parameter_dtype));
+        c10::elementSize(storage_dtype(field, capacity.parameter_dtype));
     if (elements > (kMaxBytes - bytes) / element_bytes) {
       return invalid_input();
     }
@@ -384,7 +384,7 @@ Status SlotBuffer::create(const SlotBufferCapacity& capacity,
     const uint64_t elements =
         static_cast<uint64_t>(capacity.model.max_sequences) *
         (field.is_top_token ? capacity.max_top_logprobs : 1);
-    const uint64_t element_bytes = torch::elementSize(field.dtype);
+    const uint64_t element_bytes = c10::elementSize(field.dtype);
     if (elements > (kMaxBytes - bytes) / element_bytes) {
       return invalid_input();
     }

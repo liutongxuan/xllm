@@ -5,6 +5,8 @@ you may not use this file except in compliance with the License.
 
 #include "processors/kimi25_image_processor.h"
 
+#include <torch/nn/functional/padding.h>
+
 #include <algorithm>
 #include <cassert>
 #include <cmath>

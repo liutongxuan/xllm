@@ -15,6 +15,8 @@ limitations under the License.
 
 #include "processors/minicpmv_image_processor.h"
 
+#include <torch/nn/functional/fold.h>
+
 #include "processors/transforms.h"
 
 namespace xllm {

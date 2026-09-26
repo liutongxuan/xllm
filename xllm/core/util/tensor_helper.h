@@ -15,9 +15,14 @@ limitations under the License.
 
 #pragma once
 
+#include <ATen/EmptyTensor.h>
+#include <c10/core/Allocator.h>
+#include <c10/core/ScalarType.h>
+#include <c10/core/Storage.h>
+#include <c10/core/StorageImpl.h>
 #include <c10/core/TensorOptions.h>
 #include <glog/logging.h>
-#include <torch/torch.h>
+#include <torch/types.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -91,22 +96,6 @@ inline torch::Tensor clone_contiguous_detached_tensor(
     const torch::Tensor& tensor) {
   return tensor.contiguous().clone().detach();
 };
-
-inline std::vector<char> get_the_bytes(std::string filename) {
-  std::ifstream input(filename, std::ios::binary);
-  std::vector<char> bytes((std::istreambuf_iterator<char>(input)),
-                          (std::istreambuf_iterator<char>()));
-
-  input.close();
-  return bytes;
-}
-
-inline torch::Tensor load_tensor(std::string filename) {
-  std::vector<char> f = get_the_bytes(filename);
-  torch::IValue x = torch::pickle_load(f);
-  torch::Tensor my_tensor = x.toTensor();
-  return my_tensor;
-}
 
 inline void print_tensor(
     const torch::Tensor& tensor,
@@ -234,18 +223,6 @@ inline bool safe_concat(const std::vector<torch::Tensor>& vec,
   }
 }
 
-// save torch tensor to .pt file as pickle format, which is same as torch.save
-// in python. .pt file can be loaded by torch.load in python. file_path must end
-// with ".pt".
-inline void save_tensor_as_pickle(const torch::Tensor& tensor,
-                                  const std::string& file_path) {
-  std::vector<char> pickled = torch::pickle_save(tensor);
-  std::ofstream ofs(file_path, std::ios::binary);
-  CHECK(ofs.good()) << "Cannot open file: " << file_path;
-  ofs.write(pickled.data(), static_cast<std::streamsize>(pickled.size()));
-  CHECK(ofs.good()) << "Write failed to: " << file_path;
-}
-
 // Computes the new shape for tensor view casting between dtypes by bytes, for
 // use with from_blob.
 inline std::vector<int64_t> compute_view_shape(const torch::Tensor& src,
@@ -306,7 +283,7 @@ inline torch::Tensor view_as_dtype(const torch::Tensor& src,
 
   // calculate the source and target element sizes in bytes.
   int64_t src_element_size = src.element_size();
-  int64_t target_element_size = torch::elementSize(target_dtype);
+  int64_t target_element_size = c10::elementSize(target_dtype);
   std::vector<int64_t> new_shape =
       compute_view_shape(src, src_element_size, target_element_size);
 
@@ -383,7 +360,9 @@ inline torch::Tensor get_tensor_from_blob(const std::vector<int64_t>& dims,
 
   auto tensor = torch::empty({0}, option);
   auto address = const_cast<void*>(dev_addr);
-  torch::DataPtr c10_data_ptr(address, address, [](void*) {}, tensor.device());
+  // c10:: rather than torch:: keeps this file on <torch/types.h>; the torch::
+  // spelling of elementSize and DataPtr comes from the heavier torch surface.
+  c10::DataPtr c10_data_ptr(address, address, [](void*) {}, tensor.device());
 
   size_t tensor_nbytes = at::detail::computeStorageNbytesContiguous(
       dims, tensor.dtype().itemsize());
@@ -449,7 +428,7 @@ inline torch::Tensor get_tensor_from_blob(const std::vector<int64_t>& dims,
 }
 
 inline int32_t get_dtype_size(torch::ScalarType dtype) {
-  return static_cast<int32_t>(torch::elementSize(dtype));
+  return static_cast<int32_t>(c10::elementSize(dtype));
 }
 
 inline torch::ScalarType resolve_ssm_dtype(

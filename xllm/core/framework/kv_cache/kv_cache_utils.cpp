@@ -56,7 +56,7 @@ size_t get_tensor_nbytes(const std::vector<int64_t>& dims,
     }
     count *= dim_size;
   }
-  const size_t elem_size = static_cast<size_t>(torch::elementSize(dtype));
+  const size_t elem_size = static_cast<size_t>(c10::elementSize(dtype));
   CHECK_GT(elem_size, static_cast<size_t>(0)) << "tensor dtype size is zero";
   CHECK_LE(count, std::numeric_limits<size_t>::max() / elem_size)
       << "tensor byte size overflow";
@@ -111,7 +111,7 @@ torch::Tensor alloc_npu_huge_page_tensor(const std::vector<int64_t>& dims,
   constexpr c10::DeviceType device_type = c10::DeviceType::PrivateUse1;
   auto tensor = torch::empty(
       {0}, torch::TensorOptions().dtype(dtype).device(device_type));
-  torch::DataPtr data_ptr(buffer, buffer, free_acl_tensor, tensor.device());
+  c10::DataPtr data_ptr(buffer, buffer, free_acl_tensor, tensor.device());
 
   auto* storage_create = c10::GetStorageImplCreate(device_type);
   auto* allocator = c10::GetAllocator(device_type);
