@@ -116,7 +116,21 @@ function(cc_test)
     target_sources(${CC_TEST_NAME} PRIVATE
       "${PROJECT_SOURCE_DIR}/tests/npu_test_environment.cpp"
     )
-    set(COMMON_LIBS ascendcl Python::Python torch_npu torch_python)
+    # libhccl.so resolves strcpy_s from libc_sec.so, but libc_sec.so is already
+    # in libhccl.so's DT_NEEDED list, and ld only keeps a library on the command
+    # line under --as-needed when nothing else already depends on it. It drops
+    # -lc_sec again and then refuses the dependency with "DSO missing from
+    # command line". Keeping the flag around it is the same treatment the MLU
+    # targets give their runtime.
+    set(COMMON_LIBS
+        ascendcl
+        Python::Python
+        torch_npu
+        torch_python
+        -Wl,--no-as-needed
+        c_sec
+        -Wl,--as-needed
+    )
     target_link_libraries(${CC_TEST_NAME} PRIVATE ${COMMON_LIBS})
   endif()
 
