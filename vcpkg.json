@@ -7,10 +7,6 @@
       "version>=": "20230125.3"
     },
     {
-      "name": "boost-beast",
-      "version>=": "1.84.0"
-    },
-    {
       "name": "boost-serialization",
       "version>=": "1.84.0"
     },
