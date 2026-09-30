@@ -24,18 +24,18 @@ limitations under the License.
 
 #include "core/framework/request/onerec_sequence.h"
 #include "core/framework/request/rec_sequence.h"
-#include "core/util/rec_model_utils.h"
 
 namespace xllm {
 
 void RecBatchOutputHandler::prepare(const BatchInputData& data) {
+  CHECK(config_.valid()) << "Unsupported Rec execution configuration";
   // Multi-round device execution returns beam results, not per-token rows.
-  if (input_type_ == BatchInputType::REC_MULTI_ROUND) {
+  if (config_.input_type() == BatchInputType::REC_MULTI_ROUND) {
     clear();
     return;
   }
-  if (input_type_ == BatchInputType::SEQUENCE ||
-      !use_legacy_onerec_prefill_only_contract()) {
+  if (config_.input_type() == BatchInputType::SEQUENCE ||
+      !config_.use_legacy_onerec_prefill_only_contract()) {
     sequence_handler_.prepare(data);
     return;
   }

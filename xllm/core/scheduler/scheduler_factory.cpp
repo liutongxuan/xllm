@@ -81,7 +81,9 @@ std::unique_ptr<DiTScheduler> create_dit_scheduler(
 std::unique_ptr<RecScheduler> create_rec_scheduler(
     RecEngine* engine,
     RecScheduler::Options options) {
-  return std::make_unique<RecScheduler>(engine, std::move(options));
+  CHECK(engine != nullptr);
+  return std::make_unique<RecScheduler>(
+      engine, std::move(options), engine->execution_config());
 }
 
 }  // namespace xllm

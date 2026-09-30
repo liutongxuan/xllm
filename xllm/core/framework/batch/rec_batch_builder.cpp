@@ -26,12 +26,14 @@ limitations under the License.
 
 namespace xllm {
 
-RecBatchBuilder::RecBatchBuilder(int32_t dp_size, BatchInputType input_type)
-    : dp_size_(dp_size),
-      input_type_(input_type),
-      uses_group_input_(RecBatch(input_type).uses_group_input()) {
+RecBatchBuilder::RecBatchBuilder(int32_t dp_size, RecExecutionConfig config)
+    : dp_size_(dp_size), config_(std::move(config)) {
   CHECK_GT(dp_size_, 0);
+  CHECK(config_.valid()) << "Unsupported batch input type";
 }
+
+RecBatchBuilder::RecBatchBuilder(int32_t dp_size, BatchInputType input_type)
+    : RecBatchBuilder(dp_size, RecExecutionConfig(input_type)) {}
 
 RecBatchGroup RecBatchBuilder::build(
     const std::vector<std::shared_ptr<Request>>& requests,
@@ -56,7 +58,7 @@ RecBatchGroup RecBatchBuilder::build(
     CHECK(!sequence->finished());
     CHECK_GE(sequence->dp_rank(), 0);
     CHECK_LT(sequence->dp_rank(), dp_size_);
-    if (!uses_group_input_) {
+    if (!config_.uses_group_input()) {
       CHECK_GT(budgets[i], 0);
       CHECK_LE(budgets[i], std::numeric_limits<uint32_t>::max());
     }
@@ -71,7 +73,7 @@ RecBatchGroup RecBatchBuilder::build(
     num_generated_tokens += budgets[i] - prompt_tokens;
   }
 
-  bool retain_request_groups = uses_group_input_;
+  bool retain_request_groups = config_.uses_group_input();
   for (const auto& request : requests) {
     CHECK(request != nullptr);
     retain_request_groups |= request->check_beam_search();
@@ -87,14 +89,15 @@ RecBatchGroup RecBatchBuilder::build(
     }
   }
 
-  RecBatchGroup batches(static_cast<size_t>(dp_size_), input_type_);
+  RecBatchGroup batches(static_cast<size_t>(dp_size_), config_);
   for (int32_t rank = 0; rank < dp_size_; ++rank) {
-    batches[rank].reserve(uses_group_input_ ? 0 : sequence_counts[rank],
-                          group_counts[rank]);
+    batches[rank].reserve(
+        config_.uses_group_input() ? 0 : sequence_counts[rank],
+        group_counts[rank]);
   }
   for (size_t i = 0; i < sequences.size(); ++i) {
     auto& batch = batches[sequences[i]->dp_rank()];
-    if (uses_group_input_) {
+    if (config_.uses_group_input()) {
       batch.set_batch_id();
       continue;
     }

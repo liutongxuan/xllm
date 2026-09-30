@@ -15,13 +15,14 @@ limitations under the License.
 
 #include "core/framework/batch/onerec_xattention_forward_input_builder.h"
 
+#include <glog/logging.h>
+
 #include <algorithm>
 #include <vector>
 
 #include "core/framework/batch/sampling_input_builder.h"
 #include "core/framework/config/scheduler_config.h"
 #include "core/framework/request/onerec_sequence.h"
-#include "core/util/rec_model_utils.h"
 #include "core/util/tensor_helper.h"
 #include "core/util/utils.h"
 
@@ -40,6 +41,7 @@ int32_t get_onerec_xattention_decode_position(const Sequence& sequence) {
 ForwardInput OneRecXAttentionForwardInputBuilder::build_rec_forward_input(
     uint32_t num_decoding_tokens,
     uint32_t min_decoding_batch_size) {
+  CHECK(config_.input_type() == BatchInputType::ONEREC_XATTENTION);
   auto input = OneRecForwardInputBuilder::build_rec_forward_input(
       num_decoding_tokens, min_decoding_batch_size);
   if (const auto* onerec = input.input_params.onerec_params()) {
@@ -116,7 +118,7 @@ ForwardInput OneRecXAttentionForwardInputBuilder::build_rec_forward_input(
   step_meta.batch_size = batch_size;
   step_meta.beam_width = beam_width;
   step_meta.current_round = 0;
-  step_meta.total_round = std::max(1, get_rec_multi_round_decode_rounds());
+  step_meta.total_round = std::max(1, config_.decode_rounds());
   step_meta.decode_positions_vec = std::move(decode_positions_vec);
 
   if (args_ != nullptr) {

@@ -22,6 +22,7 @@ limitations under the License.
 
 #include "core/framework/batch/batch_state.h"
 #include "core/framework/batch/rec_batch_output_handler.h"
+#include "core/framework/config/rec_execution_config.h"
 
 namespace xllm {
 
@@ -29,9 +30,11 @@ namespace xllm {
 // Shared batch state remains a private implementation detail.
 class RecBatchState final {
  public:
+  explicit RecBatchState(RecExecutionConfig config);
   explicit RecBatchState(BatchInputType input_type);
 
-  BatchInputType input_type() const { return input_type_; }
+  BatchInputType input_type() const { return config_.input_type(); }
+  const RecExecutionConfig& execution_config() const { return config_; }
   void reserve(size_t sequence_count, size_t group_count) {
     sequence_state_.reserve(sequence_count, group_count);
   }
@@ -90,7 +93,7 @@ class RecBatchState final {
 
  private:
   BatchState sequence_state_;
-  BatchInputType input_type_;
+  RecExecutionConfig config_;
   RecBatchOutputHandler output_handler_;
 };
 

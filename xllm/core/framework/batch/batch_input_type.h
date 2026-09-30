@@ -15,31 +15,15 @@ limitations under the License.
 
 #pragma once
 
-#include <cstddef>
 #include <cstdint>
-#include <memory>
-#include <vector>
-
-#include "core/framework/batch/rec_batch_group.h"
-#include "core/framework/request/request.h"
 
 namespace xllm {
 
-// Builds Rec batches while preserving the selected Rec input contract.
-class RecBatchBuilder final {
- public:
-  RecBatchBuilder(int32_t dp_size, RecExecutionConfig config);
-  RecBatchBuilder(int32_t dp_size, BatchInputType input_type);
-
-  RecBatchGroup build(
-      const std::vector<std::shared_ptr<Request>>& requests,
-      const std::vector<Sequence*>& sequences,
-      const std::vector<size_t>& budgets,
-      std::vector<std::vector<BlockTransferInfo>>* swap_infos) const;
-
- private:
-  int32_t dp_size_;
-  RecExecutionConfig config_;
+enum class BatchInputType : int8_t {
+  SEQUENCE,
+  ONEREC,
+  ONEREC_XATTENTION,
+  REC_MULTI_ROUND,
 };
 
 }  // namespace xllm

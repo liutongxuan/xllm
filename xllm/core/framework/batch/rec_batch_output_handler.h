@@ -15,7 +15,10 @@ limitations under the License.
 
 #pragma once
 
+#include <utility>
+
 #include "core/framework/batch/batch_output_handler.h"
+#include "core/framework/config/rec_execution_config.h"
 
 namespace xllm {
 
@@ -23,8 +26,10 @@ namespace xllm {
 // targets and device-side multi-round beam results.
 class RecBatchOutputHandler final {
  public:
+  explicit RecBatchOutputHandler(RecExecutionConfig config)
+      : config_(std::move(config)) {}
   explicit RecBatchOutputHandler(BatchInputType input_type)
-      : input_type_(input_type) {}
+      : RecBatchOutputHandler(RecExecutionConfig(input_type)) {}
 
   void clear() { sequence_handler_.clear(); }
   void prepare(const BatchInputData& data);
@@ -42,7 +47,7 @@ class RecBatchOutputHandler final {
                                    const ForwardOutput& output);
 
  private:
-  BatchInputType input_type_;
+  RecExecutionConfig config_;
   BatchOutputHandler sequence_handler_;
 };
 

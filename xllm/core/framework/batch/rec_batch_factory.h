@@ -31,6 +31,7 @@ namespace xllm {
 // The input contract is selected once together with the scheduler pipeline.
 class RecBatchFactory final {
  public:
+  RecBatchFactory(int32_t dp_size, RecExecutionConfig config);
   RecBatchFactory(int32_t dp_size, BatchInputType input_type);
 
   RecBatchGroup create_batches(

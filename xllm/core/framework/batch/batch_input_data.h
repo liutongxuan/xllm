@@ -21,20 +21,13 @@ limitations under the License.
 #include <vector>
 
 #include "core/framework/batch/batch_forward_type.h"
+#include "core/framework/batch/batch_input_type.h"
 #include "core/framework/model/model_input_params.h"
 #include "core/framework/multimodal/mm_data.h"
 #include "core/framework/request/sequence.h"
 #include "core/framework/request/sequences_group.h"
 
 namespace xllm {
-
-// Selected by the scheduler's factory, independent of mutable sequence views.
-enum class BatchInputType : int8_t {
-  SEQUENCE,
-  ONEREC,
-  ONEREC_XATTENTION,
-  REC_MULTI_ROUND,
-};
 
 // Non-owning per-forward view. Its sequence plan, owning batch and requests
 // must outlive the builder. Builders may advance sequence execution state.

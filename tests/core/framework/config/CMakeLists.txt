@@ -23,3 +23,12 @@ cc_test(
     GTest::gtest_main
     glog::glog
 )
+
+cc_test(
+  NAME
+    rec_execution_config_test
+  SRCS
+    rec_execution_config_test.cpp
+  DEPS
+    GTest::gtest_main
+)

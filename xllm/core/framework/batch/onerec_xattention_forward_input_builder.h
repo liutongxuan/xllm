@@ -15,6 +15,8 @@ limitations under the License.
 
 #pragma once
 
+#include <utility>
+
 #include "core/framework/batch/onerec_forward_input_builder.h"
 
 namespace xllm {
@@ -25,16 +27,28 @@ class OneRecXAttentionForwardInputBuilder final
  public:
   OneRecXAttentionForwardInputBuilder(const BatchInputData& data,
                                       const ModelArgs* args,
+                                      RecExecutionConfig config,
                                       MPMCThreadPool* thread_pool = nullptr)
       : OneRecForwardInputBuilder(data, args, thread_pool),
+        config_(std::move(config)),
         sequence_groups_(data.sequence_groups),
         args_(args) {}
+
+  OneRecXAttentionForwardInputBuilder(const BatchInputData& data,
+                                      const ModelArgs* args,
+                                      MPMCThreadPool* thread_pool = nullptr)
+      : OneRecXAttentionForwardInputBuilder(
+            data,
+            args,
+            RecExecutionConfig(BatchInputType::ONEREC_XATTENTION),
+            thread_pool) {}
 
   ForwardInput build_rec_forward_input(
       uint32_t num_decoding_tokens,
       uint32_t min_decoding_batch_size) override;
 
  private:
+  RecExecutionConfig config_;
   const std::vector<SequencesGroup*>& sequence_groups_;
   const ModelArgs* args_ = nullptr;
 };

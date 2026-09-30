@@ -36,6 +36,11 @@ struct ModelArgs;
 
 class RecMultiRoundForwardInputBuilder final : public RecForwardInputBuilder {
  public:
+  RecMultiRoundForwardInputBuilder(const BatchInputData& data,
+                                   const ModelArgs* args,
+                                   RecExecutionConfig config,
+                                   MPMCThreadPool* thread_pool = nullptr);
+
   explicit RecMultiRoundForwardInputBuilder(
       const BatchInputData& data,
       const ModelArgs* args,
@@ -49,6 +54,8 @@ class RecMultiRoundForwardInputBuilder final : public RecForwardInputBuilder {
       uint32_t min_decoding_batch_size) override;
 
  private:
+  RecExecutionConfig config_;
+
   // Build Rec multi-round forward input for the whole batch (internal
   // implementation).
   ForwardInput build_forward_input();

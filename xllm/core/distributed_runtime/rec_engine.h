@@ -20,6 +20,7 @@ limitations under the License.
 #include <memory>
 
 #include "common/macros.h"
+#include "core/framework/config/rec_execution_config.h"
 #include "core/framework/model/model_args.h"
 #include "core/runtime/options.h"
 #include "distributed_runtime/dist_manager.h"
@@ -30,7 +31,6 @@ limitations under the License.
 #include "framework/tokenizer/tokenizer.h"
 #include "framework/tokenizer/tokenizer_args.h"
 #include "runtime/worker.h"
-#include "util/rec_model_utils.h"
 #include "util/threadpool.h"
 
 namespace xllm {
@@ -47,6 +47,9 @@ class RecEngine final {
   ForwardOutput step(RecBatchGroup& batch);
 
   const runtime::Options& options() const { return options_; }
+  const RecExecutionConfig& execution_config() const {
+    return options_.rec_execution_config().value();
+  }
 
   const ModelArgs& model_args() const { return args_; }
   const TokenizerArgs& tokenizer_args() const { return tokenizer_args_; }
@@ -196,10 +199,9 @@ class RecEngine final {
   bool init_model();
   // Reject REC configurations that cannot run across multiple nodes. Only the
   // single-round LlmRec pipeline coordinates workers through DistManager;
-  // OneRec and LlmRec multi-round pipelines are local-only. This runs in
-  // common initialization (before pipeline selection) so the leader rejects
-  // the configuration too, not just secondary ranks. No-op when nnodes <= 1.
-  void validate_multi_node_support() const;
+  // Reject unsupported DP and multi-node execution before worker setup and
+  // pipeline selection on both leader and secondary ranks.
+  void validate_execution_topology() const;
   KVCacheCapacity estimate_kv_cache_capacity();
   bool allocate_kv_cache(const KVCacheCapacity& kv_cache_cap);
 

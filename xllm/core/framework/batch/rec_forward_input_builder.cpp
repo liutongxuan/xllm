@@ -19,6 +19,7 @@ limitations under the License.
 
 #include <cstdint>
 #include <memory>
+#include <utility>
 
 #include "core/framework/batch/onerec_forward_input_builder.h"
 #include "core/framework/batch/onerec_xattention_forward_input_builder.h"
@@ -27,25 +28,25 @@ limitations under the License.
 namespace xllm {
 
 std::unique_ptr<RecForwardInputBuilder> RecForwardInputBuilder::create(
-    BatchInputType input_type,
+    RecExecutionConfig config,
     const BatchInputData& data,
     const ModelArgs* args,
     MPMCThreadPool* thread_pool) {
-  switch (input_type) {
+  switch (config.input_type()) {
     case BatchInputType::ONEREC:
       return std::make_unique<OneRecForwardInputBuilder>(
           data, args, thread_pool);
     case BatchInputType::ONEREC_XATTENTION:
       return std::make_unique<OneRecXAttentionForwardInputBuilder>(
-          data, args, thread_pool);
+          data, args, std::move(config), thread_pool);
     case BatchInputType::REC_MULTI_ROUND:
       return std::make_unique<RecMultiRoundForwardInputBuilder>(
-          data, args, thread_pool);
+          data, args, std::move(config), thread_pool);
     case BatchInputType::SEQUENCE:
       break;
   }
   LOG(FATAL) << "Unsupported Rec batch input type: "
-             << static_cast<int32_t>(input_type);
+             << static_cast<int32_t>(config.input_type());
   return nullptr;
 }
 

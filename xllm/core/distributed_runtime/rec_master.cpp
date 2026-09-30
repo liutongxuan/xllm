@@ -26,37 +26,33 @@ limitations under the License.
 #include "common/macros.h"
 #include "common/metrics.h"
 #include "common/types.h"
+#include "core/framework/config/rec_config.h"
+#include "core/framework/config/rec_execution_config.h"
 #include "core/framework/multimodal/mm_data.h"
+#include "core/util/model_config_utils.h"
 #include "models/model_registry.h"
 #include "rec_engine.h"
 #include "runtime/xservice_client.h"
 #include "scheduler/scheduler_factory.h"
-#include "util/rec_model_utils.h"
 #include "util/scope_guard.h"
 #include "util/threadpool.h"
 #include "util/timer.h"
 
 namespace xllm {
 
-namespace {
-
-RecType get_rec_type(const ModelArgs& model_args) {
-  const auto kind = get_rec_model_kind(model_args.model_type());
-  switch (kind) {
-    case RecModelKind::kOneRec:
-      return RecType::kOneRec;
-    case RecModelKind::kLlmRec:
-      return RecType::kLlmRec;
-    case RecModelKind::kNone:
-      return RecType::kNone;
-  }
-  return RecType::kNone;
-}
-
-}  // namespace
-
 RecMaster::RecMaster(const Options& options)
     : Master(options, EngineType::REC) {
+  const RecConfig& rec_config = RecConfig::get_instance();
+  const auto execution_config = RecExecutionConfig::resolve(
+      util::get_model_type(options_.model_path(), options_.backend()),
+      rec_config.max_decode_rounds(),
+      rec_config.enable_rec_prefill_only());
+  CHECK(execution_config.has_value())
+      << "Unsupported Rec model or execution configuration";
+  const auto topology_error = execution_config->validate_topology(
+      options_.dp_size(), options_.nnodes());
+  CHECK(!topology_error.has_value()) << topology_error.value();
+  engine_options_.rec_execution_config(execution_config);
   engine_ = std::make_unique<RecEngine>(engine_options_);
   if (!is_leader()) {
     // RecEngine does not create DistManager in its constructor. LlmRec
@@ -71,10 +67,7 @@ RecMaster::RecMaster(const Options& options)
   CHECK(engine_->init());
 
   model_args_ = engine_->model_args();
-  rec_type_ = get_rec_type(model_args_);
-  if (rec_type_ == RecType::kNone) {
-    LOG(ERROR) << "Unsupported rec model_type: " << model_args_.model_type();
-  }
+  rec_type_ = engine_->execution_config().rec_type();
 
   if (options_.enable_service_routing()) {
     XServiceClient* xservice_client = XServiceClient::get_instance();
@@ -114,17 +107,12 @@ RecMaster::RecMaster(const Options& options)
       /*cpu_binding=*/false,
       /*pool_name=*/"RecMaster.request");
 
-  // Create the request factory with the pipeline selected from the model kind.
-  auto rec_model_kind = get_rec_model_kind(model_args_.model_type());
-  CHECK(rec_model_kind != RecModelKind::kNone)
-      << "Unsupported rec model_type: " << model_args_.model_type();
-  auto pipeline_type = get_rec_pipeline_type(rec_model_kind);
-  request_factory_ = std::make_unique<RecRequestFactory>(&model_args_,
-                                                         tokenizer_.get(),
-                                                         &options_,
-                                                         get_rate_limiter(),
-                                                         rec_type_,
-                                                         pipeline_type);
+  request_factory_ =
+      std::make_unique<RecRequestFactory>(&model_args_,
+                                          tokenizer_.get(),
+                                          &options_,
+                                          get_rate_limiter(),
+                                          engine_->execution_config());
 }
 
 void RecMaster::run() {

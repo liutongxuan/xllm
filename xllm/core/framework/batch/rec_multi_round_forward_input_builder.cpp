@@ -23,6 +23,7 @@ limitations under the License.
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "core/common/global_flags.h"
@@ -36,7 +37,6 @@ limitations under the License.
 #include "core/framework/sampling/sampling_params.h"
 #include "core/runtime/params_utils.h"
 #include "core/util/blocking_counter.h"
-#include "core/util/rec_model_utils.h"
 #include "core/util/slice.h"
 #include "core/util/tensor_helper.h"
 #include "core/util/threadpool.h"
@@ -71,8 +71,10 @@ std::vector<int32_t> build_q_cu_seq_lens_vec(
 RecMultiRoundForwardInputBuilder::RecMultiRoundForwardInputBuilder(
     const BatchInputData& data,
     const ModelArgs* args,
+    RecExecutionConfig config,
     MPMCThreadPool* thread_pool)
-    : sequences_(data.sequences),
+    : config_(std::move(config)),
+      sequences_(data.sequences),
       allowed_max_tokens_(data.allowed_max_tokens),
       input_embeddings_vec_(data.input_embeddings),
       mm_data_vec_(data.mm_data),
@@ -81,6 +83,7 @@ RecMultiRoundForwardInputBuilder::RecMultiRoundForwardInputBuilder(
       swap_block_transfer_infos_(data.swap_block_transfer_infos),
       thread_pool_(thread_pool),
       batch_id_(data.batch_id) {
+  CHECK(config_.input_type() == BatchInputType::REC_MULTI_ROUND);
   // Groups own the sequences, but only the scheduled view has matching budgets.
   CHECK_EQ(sequences_.size(), allowed_max_tokens_.size());
 
@@ -97,9 +100,19 @@ RecMultiRoundForwardInputBuilder::RecMultiRoundForwardInputBuilder(
   }
 
   // Initialize RecMultiRound specific state
-  rec_multi_round_state_.total_steps = get_rec_multi_round_decode_rounds();
+  rec_multi_round_state_.total_steps = config_.decode_rounds();
   rec_multi_round_state_.base_state.batch_forward_type = batch_forward_type_;
 }
+
+RecMultiRoundForwardInputBuilder::RecMultiRoundForwardInputBuilder(
+    const BatchInputData& data,
+    const ModelArgs* args,
+    MPMCThreadPool* thread_pool)
+    : RecMultiRoundForwardInputBuilder(
+          data,
+          args,
+          RecExecutionConfig(BatchInputType::REC_MULTI_ROUND),
+          thread_pool) {}
 
 void RecMultiRoundForwardInputBuilder::process_single_sequence(
     int32_t seq_index,
@@ -174,7 +187,7 @@ ForwardInput RecMultiRoundForwardInputBuilder::build_rec_forward_input(
 
 ForwardInput RecMultiRoundForwardInputBuilder::build_forward_input() {
   // Reset Rec multi-round state for this build.
-  rec_multi_round_state_.total_steps = get_rec_multi_round_decode_rounds();
+  rec_multi_round_state_.total_steps = config_.decode_rounds();
 
   is_mtp_decode_ = false;
   // Single-threaded processing for now; can be extended to use thread_pool_
@@ -369,7 +382,7 @@ ForwardInput RecMultiRoundForwardInputBuilder::state_to_forward_input() {
   forward_input.sampling_params = state.sampling.build();
 
   // Rec multi-round specific metadata.
-  rec_multi_round_state_.total_steps = get_rec_multi_round_decode_rounds();
+  rec_multi_round_state_.total_steps = config_.decode_rounds();
   const int32_t beam_width =
       ::xllm::BeamSearchConfig::get_instance().beam_width();
   const int32_t total_round = rec_multi_round_state_.total_steps;
@@ -381,13 +394,13 @@ ForwardInput RecMultiRoundForwardInputBuilder::state_to_forward_input() {
       rec_multi_round_state_.decode_sampling.build();
 
   // Set full_kv_shape if we have Rec multi-round decode data.
-  if (is_rec_multi_round_mode() && !sequences_.empty()) {
+  if (config_.is_multi_round() && !sequences_.empty()) {
     int64_t batch_size = static_cast<int64_t>(sequences_.size());
     int64_t n_kv_heads =
         args_ ? args_->n_kv_heads().value_or(args_->n_heads()) : 0;
     int64_t head_dim = args_ ? args_->head_dim() : 0;
 
-    int32_t decode_rounds = get_rec_multi_round_decode_rounds();
+    int32_t decode_rounds = config_.decode_rounds();
     full_kv_shape = {
         ::xllm::SchedulerConfig::get_instance().max_tokens_per_batch() +
             ::xllm::SchedulerConfig::get_instance().max_seqs_per_batch() *
@@ -402,7 +415,7 @@ ForwardInput RecMultiRoundForwardInputBuilder::state_to_forward_input() {
     decode_positions_vec = rec_multi_round_state_.decode_positions_vec;
   }
 
-  if (is_rec_multi_round_mode()) {
+  if (config_.is_multi_round()) {
     StepDecodeMeta step_meta;
     step_meta.batch_size = static_cast<int32_t>(sequences_.size());
     step_meta.beam_width = beam_width;

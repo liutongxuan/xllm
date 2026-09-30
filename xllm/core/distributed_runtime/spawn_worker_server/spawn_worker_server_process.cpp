@@ -62,6 +62,9 @@ limitations under the License.
 // @enable_mtp_draft_body_tp1
 // @text_encoder_tp_size
 // @draft_sampling_mode
+// @rec_model_kind
+// @rec_decode_rounds
+// @rec_legacy_prefill_only
 int main(int argc, char* argv[]) {
   const std::optional<std::string> parsed_indexer_cache_dtype =
       xllm::spawn_worker_protocol::parse_indexer_cache_dtype(argc, argv);
@@ -91,6 +94,13 @@ int main(int argc, char* argv[]) {
   int32_t is_local = static_cast<int32_t>(atoi(argv[11]));
   std::string task_type = std::string(argv[12]);
   std::string worker_type = std::string(argv[13]);
+  const auto rec_execution_config =
+      xllm::spawn_worker_protocol::parse_rec_execution_config(argc, argv);
+  if (worker_type == "REC" && !rec_execution_config.has_value()) {
+    LOG(ERROR)
+        << "Rec spawn worker requires a valid resolved execution configuration";
+    return 1;
+  }
   int32_t enable_speculative_decode = static_cast<int32_t>(atoi(argv[14]));
   int32_t num_speculative_tokens = static_cast<int32_t>(atoi(argv[15]));
   std::string speculative_algorithm = std::string(argv[16]);
@@ -210,7 +220,8 @@ int main(int argc, char* argv[]) {
                                  ep_size,
                                  instance_role,
                                  enable_mtp_draft_body_tp1,
-                                 draft_sampling_mode);
+                                 draft_sampling_mode,
+                                 rec_execution_config);
 
   worker.run();
 

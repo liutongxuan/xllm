@@ -23,22 +23,16 @@ limitations under the License.
 
 namespace xllm {
 
-RecBatchState::RecBatchState(BatchInputType input_type)
-    : input_type_(input_type), output_handler_(input_type) {
-  switch (input_type_) {
-    case BatchInputType::SEQUENCE:
-    case BatchInputType::ONEREC:
-    case BatchInputType::ONEREC_XATTENTION:
-    case BatchInputType::REC_MULTI_ROUND:
-      return;
-  }
-  LOG(FATAL) << "Unsupported batch input type: "
-             << static_cast<int32_t>(input_type_);
+RecBatchState::RecBatchState(RecExecutionConfig config)
+    : config_(std::move(config)), output_handler_(config_) {
+  CHECK(config_.valid()) << "Unsupported batch input type";
 }
 
+RecBatchState::RecBatchState(BatchInputType input_type)
+    : RecBatchState(RecExecutionConfig(input_type)) {}
+
 bool RecBatchState::uses_group_input() const {
-  return input_type_ == BatchInputType::ONEREC ||
-         input_type_ == BatchInputType::ONEREC_XATTENTION;
+  return config_.uses_group_input();
 }
 
 size_t RecBatchState::size() const {
@@ -73,7 +67,7 @@ ForwardInput RecBatchState::prepare_forward_input(
     uint32_t min_decoding_batch_size,
     const ModelArgs& args,
     int32_t cp_size) {
-  if (input_type_ == BatchInputType::SEQUENCE) {
+  if (config_.input_type() == BatchInputType::SEQUENCE) {
     const auto data = sequence_state_.prepare_sequence_input_data();
     output_handler_.prepare(data);
     return sequence_state_.build_sequence_input(
@@ -88,7 +82,7 @@ ForwardInput RecBatchState::prepare_forward_input(
 ForwardInput RecBatchState::prepare_forward_input(const ModelArgs& args,
                                                   ThreadPool* thread_pool,
                                                   int32_t cp_size) {
-  CHECK(input_type_ == BatchInputType::SEQUENCE)
+  CHECK(config_.input_type() == BatchInputType::SEQUENCE)
       << "Distributed input transport requires a sequence batch";
   const auto data = sequence_state_.prepare_distributed_input_data();
   output_handler_.prepare(data);
@@ -101,7 +95,7 @@ ForwardInput RecBatchState::prepare_rec_forward_input(
     uint32_t min_decoding_batch_size,
     const ModelArgs& args,
     MPMCThreadPool* thread_pool) {
-  CHECK(input_type_ != BatchInputType::SEQUENCE)
+  CHECK(config_.input_type() != BatchInputType::SEQUENCE)
       << "Rec input requires an explicit Rec batch input type";
   output_handler_.clear();
   if (sequence_state_.empty()) {
@@ -124,7 +118,7 @@ ForwardInput RecBatchState::prepare_rec_forward_input(
   auto data = sequence_state_.input_data(*plan);
   output_handler_.prepare(data);
   auto builder =
-      RecForwardInputBuilder::create(input_type_, data, &args, thread_pool);
+      RecForwardInputBuilder::create(config_, data, &args, thread_pool);
   return builder->build_rec_forward_input(num_decoding_tokens,
                                           min_decoding_batch_size);
 }

@@ -19,6 +19,7 @@ limitations under the License.
 #include <memory>
 
 #include "core/framework/batch/batch_input_data.h"
+#include "core/framework/config/rec_execution_config.h"
 #include "core/framework/model/model_args.h"
 #include "core/runtime/forward_params.h"
 #include "core/util/threadpool.h"
@@ -34,7 +35,7 @@ class RecForwardInputBuilder {
       uint32_t min_decoding_batch_size) = 0;
 
   static std::unique_ptr<RecForwardInputBuilder> create(
-      BatchInputType input_type,
+      RecExecutionConfig config,
       const BatchInputData& data,
       const ModelArgs* args,
       MPMCThreadPool* thread_pool = nullptr);

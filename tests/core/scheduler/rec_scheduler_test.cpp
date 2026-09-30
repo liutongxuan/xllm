@@ -106,9 +106,12 @@ class ControllablePrefetchPool final : public BlockManagerPool {
 
 class FakeRecEngine final {
  public:
-  explicit FakeRecEngine(int32_t num_blocks,
-                         int32_t block_size,
-                         int32_t dp_size = 1) {
+  explicit FakeRecEngine(
+      int32_t num_blocks,
+      int32_t block_size,
+      int32_t dp_size = 1,
+      RecExecutionConfig config = RecExecutionConfig(BatchInputType::ONEREC))
+      : config_(std::move(config)) {
     BlockManagerPool::Options opt;
     opt.num_blocks_ = num_blocks;
     opt.block_size_ = block_size;
@@ -130,6 +133,7 @@ class FakeRecEngine final {
     return ForwardOutput();
   }
   const Tokenizer* tokenizer() const { return fake_tokenizer_.get(); }
+  const RecExecutionConfig& execution_config() const { return config_; }
   BlockManagerPool* block_manager_pool() const {
     return fake_block_manager_.get();
   }
@@ -158,6 +162,7 @@ class FakeRecEngine final {
   }
 
  private:
+  const RecExecutionConfig config_;
   std::atomic<int32_t> step_calls_{0};
   bool finish_batches_ = false;
   std::function<void(RecBatchGroup&)> step_callback_;
@@ -375,6 +380,89 @@ TEST(RecSchedulerTest, RejectsRequestsWithoutRecDomain) {
   EXPECT_EQ(scheduler.get_waiting_requests_num(), 0u);
 }
 
+TEST(RecSchedulerTest, RejectsRequestsForAnotherRecModelKind) {
+  const RecExecutionConfig contracts[] = {
+      RecExecutionConfig(BatchInputType::SEQUENCE),
+      RecExecutionConfig(BatchInputType::ONEREC),
+  };
+  for (const auto& config : contracts) {
+    FakeRecEngine engine(
+        /*num_blocks=*/32, /*block_size=*/4, /*dp_size=*/1, config);
+    RecScheduler scheduler(&engine, CreateOptions());
+    const RecType other_kind = config.rec_type() == RecType::kOneRec
+                                   ? RecType::kLlmRec
+                                   : RecType::kOneRec;
+    auto requests = GenRequests({8}, {4}, other_kind);
+    EXPECT_FALSE(scheduler.add_request(requests.front()));
+    EXPECT_EQ(scheduler.get_waiting_requests_num(), 0u);
+    EXPECT_FALSE(scheduler.has_pending_prefetch());
+    EXPECT_EQ(engine.prefetch_calls(), 0u);
+  }
+}
+
+TEST(RecSchedulerTest, SelectsContractBeforeRequestsAndKeepsItsSnapshot) {
+  ScopedConfigValue<int32_t> decode_rounds(
+      RecConfig::get_instance().max_decode_rounds(), 0);
+  ScopedConfigValue<bool> prefix_cache(
+      KVCacheConfig::get_instance().enable_prefix_cache(), false);
+  ScopedConfigValue<double> memory_threshold(
+      SchedulerConfig::get_instance()
+          .prefill_scheduling_memory_usage_threshold(),
+      1.0);
+  const RecExecutionConfig contracts[] = {
+      RecExecutionConfig(BatchInputType::SEQUENCE),
+      RecExecutionConfig(BatchInputType::ONEREC),
+      *RecExecutionConfig::resolve(
+          "qwen3", /*decode_rounds=*/3, /*enable_prefill_only=*/false),
+      *RecExecutionConfig::resolve(
+          "onerec", /*decode_rounds=*/4, /*enable_prefill_only=*/false),
+  };
+  for (const auto& config : contracts) {
+    FakeRecEngine engine(
+        /*num_blocks=*/64, /*block_size=*/4, /*dp_size=*/1, config);
+    TestableRecScheduler scheduler(&engine, CreateOptions());
+    RecBatchGroup empty = scheduler.prepare_batch_test();
+    ASSERT_EQ(empty.size(), 1u);
+    EXPECT_TRUE(empty.front().empty());
+    EXPECT_EQ(empty.front().execution_config(), config);
+    RecConfig::get_instance().max_decode_rounds(config.is_multi_round() ? 0
+                                                                        : 9);
+    auto requests = GenRequests({8}, {2}, config.rec_type());
+    ASSERT_TRUE(scheduler.add_request(requests.front()));
+    RecBatchGroup batches = scheduler.prepare_batch_test();
+    ASSERT_EQ(batches.front().size(), 1u);
+    EXPECT_EQ(batches.front().execution_config(), config);
+    EXPECT_EQ(batches.front().input_type(), config.input_type());
+    EXPECT_EQ(batches.front().uses_group_input(), config.uses_group_input());
+  }
+}
+
+TEST(RecSchedulerTest, XAttentionKvAllocationUsesConfiguredRoundsSnapshot) {
+  ScopedConfigValue<int32_t> decode_rounds(
+      RecConfig::get_instance().max_decode_rounds(), 0);
+  ScopedConfigValue<bool> prefix_cache(
+      KVCacheConfig::get_instance().enable_prefix_cache(), false);
+  ScopedConfigValue<double> memory_threshold(
+      SchedulerConfig::get_instance()
+          .prefill_scheduling_memory_usage_threshold(),
+      1.0);
+  const auto config = RecExecutionConfig::resolve(
+      "onerec", /*decode_rounds=*/6, /*enable_prefill_only=*/false);
+  ASSERT_TRUE(config.has_value());
+  FakeRecEngine engine(
+      /*num_blocks=*/64, /*block_size=*/4, /*dp_size=*/1, config.value());
+  TestableRecScheduler scheduler(&engine, CreateOptions());
+  RecConfig::get_instance().max_decode_rounds(100);
+  auto requests = GenRequests({8}, {2}, RecType::kOneRec);
+  Sequence* sequence = requests.front()->sequences().front().get();
+  ASSERT_TRUE(scheduler.add_request(requests.front()));
+  RecBatchGroup batches = scheduler.prepare_batch_test();
+  ASSERT_EQ(batches.front().size(), 1u);
+  EXPECT_EQ(batches.front().input_type(), BatchInputType::ONEREC_XATTENTION);
+  // One decoder BOS + six rounds require two blocks of four tokens.
+  EXPECT_EQ(sequence->kv_state().num_blocks(BlockType::KV), 2u);
+}
+
 TEST(RecSchedulerTest, CachedLlmRecRequestsPreserveRemainingComputeBudget) {
   ScopedConfigValue<int32_t> decode_rounds(
       RecConfig::get_instance().max_decode_rounds(), 0);
@@ -384,7 +472,10 @@ TEST(RecSchedulerTest, CachedLlmRecRequestsPreserveRemainingComputeBudget) {
       SchedulerConfig::get_instance()
           .prefill_scheduling_memory_usage_threshold(),
       1.0);
-  FakeRecEngine engine(/*num_blocks=*/64, /*block_size=*/4);
+  FakeRecEngine engine(/*num_blocks=*/64,
+                       /*block_size=*/4,
+                       /*dp_size=*/1,
+                       RecExecutionConfig(BatchInputType::SEQUENCE));
   TestableRecScheduler scheduler(&engine,
                                  CreateOptions(/*max_tokens_per_batch=*/2));
   auto requests = GenRequests({8}, {4}, RecType::kLlmRec);
@@ -416,7 +507,10 @@ TEST(RecSchedulerTest, LlmRecSchedulesAcrossConfiguredDataParallelRanks) {
       SchedulerConfig::get_instance()
           .prefill_scheduling_memory_usage_threshold(),
       1.0);
-  FakeRecEngine engine(/*num_blocks=*/64, /*block_size=*/4, /*dp_size=*/2);
+  FakeRecEngine engine(/*num_blocks=*/64,
+                       /*block_size=*/4,
+                       /*dp_size=*/2,
+                       RecExecutionConfig(BatchInputType::SEQUENCE));
   TestableRecScheduler scheduler(&engine,
                                  CreateOptions(/*max_tokens_per_batch=*/64,
                                                /*max_seqs_per_batch=*/4,

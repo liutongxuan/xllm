@@ -33,6 +33,7 @@ limitations under the License.
 #include "core/distributed_runtime/engine_resources.h"
 #include "core/framework/batch/rec_batch_factory.h"
 #include "core/framework/batch/rec_batch_group.h"
+#include "core/framework/config/rec_execution_config.h"
 #include "core/framework/request/request.h"
 #include "core/framework/request/sequence.h"
 #include "core/scheduler/async_response_processor.h"
@@ -73,14 +74,27 @@ class RecScheduler : public Scheduler {
       EngineResources::bind(engine);
       { engine.step(batches) } -> std::same_as<ForwardOutput>;
     }
-  RecScheduler(TargetEngine* engine, Options options)
+  RecScheduler(TargetEngine* engine, Options options, RecExecutionConfig config)
       : RecScheduler(
             [engine] {
               CHECK(engine != nullptr);
               return EngineResources::bind(*engine);
             }(),
             [engine](RecBatchGroup& batches) { return engine->step(batches); },
-            std::move(options)) {}
+            std::move(options),
+            std::move(config)) {}
+  template <typename TargetEngine>
+    requires requires(TargetEngine& engine, RecBatchGroup& batches) {
+      EngineResources::bind(engine);
+      { engine.step(batches) } -> std::same_as<ForwardOutput>;
+      { engine.execution_config() } -> std::same_as<const RecExecutionConfig&>;
+    }
+  RecScheduler(TargetEngine* engine, Options options)
+      : RecScheduler(engine, std::move(options), [engine] {
+          CHECK(engine != nullptr);
+          return engine->execution_config();
+        }()) {}
+
   ~RecScheduler() override;
 
   bool add_request(std::shared_ptr<Request>& request) override;
@@ -117,11 +131,15 @@ class RecScheduler : public Scheduler {
  private:
   using RecStep = std::function<ForwardOutput(RecBatchGroup&)>;
 
-  RecScheduler(EngineResources resources, RecStep rec_step, Options options);
+  RecScheduler(EngineResources resources,
+               RecStep rec_step,
+               Options options,
+               RecExecutionConfig config);
 
   void apply_cancel_requests();
 
   const Options options_;
+  const RecExecutionConfig config_;
   EngineResources resources_;
   RecStep rec_step_;
   KVCacheManager* kv_cache_manager_;
@@ -173,12 +191,17 @@ class RecScheduler : public Scheduler {
 
   class OneRecXAttentionSchedulerPipeline final : public SchedulerPipeline {
    public:
+    explicit OneRecXAttentionSchedulerPipeline(int32_t decode_rounds)
+        : decode_rounds_(decode_rounds) {}
     BatchInputType input_type() const override {
       return BatchInputType::ONEREC_XATTENTION;
     }
     bool requires_kv_cache() const override { return true; }
     bool allocate_kv_cache(KVCacheManager* kv_cache_manager,
                            Sequence* sequence) override;
+
+   private:
+    const int32_t decode_rounds_;
   };
 
   class RecMultiRoundSchedulerPipeline final : public SchedulerPipeline {
@@ -195,8 +218,7 @@ class RecScheduler : public Scheduler {
 
   // Factory method to create scheduler pipeline
   static std::unique_ptr<SchedulerPipeline> create_scheduler_pipeline(
-      RecType rec_type,
-      bool is_rec_multi_round);
+      const RecExecutionConfig& config);
 
   RecScheduleResult schedule_request(const absl::Duration& timeout);
 
@@ -207,7 +229,7 @@ class RecScheduler : public Scheduler {
       size_t& remaining_seq_budget,
       std::vector<std::shared_ptr<Request>>& finished_requests);
 
-  // Lazy-initialized pipeline
+  // Selected at construction from the resolved execution contract
   std::unique_ptr<SchedulerPipeline> scheduler_pipeline_;
   std::unique_ptr<RecBatchFactory> rec_batch_factory_;
 

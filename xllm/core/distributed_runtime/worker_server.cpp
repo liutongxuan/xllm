@@ -342,6 +342,9 @@ void WorkerServer::create_spawn_server(int32_t local_rank,
             << ", ep_size=" << parallel_args.ep_size()
             << ", cp_sharding_stage=" << cp_sharding_stage
             << ", instance_role=" << options.instance_role().to_string();
+  const auto rec_execution_arguments =
+      spawn_worker_protocol::encode_rec_execution_config(
+          options.rec_execution_config());
   const char* argv[] = {spawn_worker_bin_path.c_str(),
                         master_node_addr.c_str(),
                         local_rank_ptr,
@@ -380,6 +383,9 @@ void WorkerServer::create_spawn_server(int32_t local_rank,
                         enable_mtp_draft_body_tp1_ptr,
                         text_encoder_tp_size_ptr,
                         draft_sampling_mode_ptr,
+                        rec_execution_arguments[0].c_str(),
+                        rec_execution_arguments[1].c_str(),
+                        rec_execution_arguments[2].c_str(),
                         nullptr};
   static_assert(std::size(argv) == spawn_worker_protocol::kArgumentCount + 1);
   pid_t pid;

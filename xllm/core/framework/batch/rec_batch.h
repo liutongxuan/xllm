@@ -19,14 +19,19 @@ limitations under the License.
 #include <utility>
 
 #include "core/framework/batch/rec_batch_state.h"
+#include "core/framework/config/rec_execution_config.h"
 
 namespace xllm {
 
 // Rec engine-facing batch, backed by RecBatchState.
 class RecBatch final {
  public:
+  explicit RecBatch(RecExecutionConfig config);
   explicit RecBatch(BatchInputType input_type);
   BatchInputType input_type() const { return state_.input_type(); }
+  const RecExecutionConfig& execution_config() const {
+    return state_.execution_config();
+  }
   RecBatchState& state() { return state_; }
   const RecBatchState& state() const { return state_; }
   void reserve(size_t sequence_count, size_t group_count) {

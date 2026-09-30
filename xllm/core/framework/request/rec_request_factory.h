@@ -23,6 +23,7 @@ limitations under the License.
 
 #include "common/options.h"
 #include "common/rate_limiter.h"
+#include "core/framework/config/rec_execution_config.h"
 #include "core/framework/multimodal/mm_data.h"
 #include "framework/model/model_args.h"
 #include "framework/request/rec_type.h"
@@ -30,7 +31,6 @@ limitations under the License.
 #include "framework/request/request_output.h"
 #include "framework/request/request_params.h"
 #include "rec.pb.h"
-#include "util/rec_model_utils.h"
 
 namespace xllm {
 
@@ -56,8 +56,7 @@ class RecRequestFactory final {
                     Tokenizer* tokenizer,
                     const Options* options,
                     RateLimiter* rate_limiter,
-                    RecType rec_type,
-                    RecPipelineType pipeline_type);
+                    RecExecutionConfig config);
 
   // prompt / prompt_tokens / input_tensors (OneRec and LlmRec without mm_data).
   std::shared_ptr<Request> create(
@@ -179,6 +178,7 @@ class RecRequestFactory final {
   Tokenizer* tokenizer_ = nullptr;
   const Options* options_ = nullptr;
   RateLimiter* rate_limiter_ = nullptr;
+  RecExecutionConfig config_;
   RecType rec_type_ = RecType::kNone;
 
   // Request builder strategies (created from the model kind at construction

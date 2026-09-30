@@ -22,6 +22,7 @@ limitations under the License.
 #include <limits>
 #include <string>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "common/macros.h"
@@ -297,18 +298,19 @@ RecRequestFactory::RecRequestFactory(const ModelArgs* model_args,
                                      Tokenizer* tokenizer,
                                      const Options* options,
                                      RateLimiter* rate_limiter,
-                                     RecType rec_type,
-                                     RecPipelineType pipeline_type)
+                                     RecExecutionConfig config)
     : model_args_(model_args),
       tokenizer_(tokenizer),
       options_(options),
       rate_limiter_(rate_limiter),
-      rec_type_(rec_type) {
+      config_(std::move(config)),
+      rec_type_(config_.rec_type()) {
+  CHECK(config_.valid()) << "Unsupported Rec execution configuration";
   CHECK(model_args_ != nullptr);
   CHECK(options_ != nullptr);
   CHECK(rate_limiter_ != nullptr);
 
-  request_builder_ = create_request_builder(pipeline_type, *this);
+  request_builder_ = create_request_builder(config_.pipeline_type(), *this);
 
   // For LlmRec, also create the mm_data request builder for the raw input
   // interface.
@@ -566,7 +568,7 @@ std::shared_ptr<Request> RecRequestFactory::build_request_common(
   int32_t max_context_len = model_args_->max_position_embeddings();
   if (!options_->enable_chunked_prefill()) {
     int32_t max_tokens_per_req = options_->max_tokens_per_batch();
-    if (rec_type_ == RecType::kLlmRec && is_rec_multi_round_mode()) {
+    if (rec_type_ == RecType::kLlmRec && config_.is_multi_round()) {
       CHECK_GT(options_->max_seqs_per_batch(), 0)
           << "max_seqs_per_batch must be greater than 0 in multi-round mode";
       max_tokens_per_req /= options_->max_seqs_per_batch();

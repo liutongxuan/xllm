@@ -17,6 +17,7 @@ limitations under the License.
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <optional>
 #include <string>
 #include <vector>
@@ -86,6 +87,58 @@ TEST(SpawnWorkerProtocolTest, PreservesExplicitEmptyDtype) {
 
   ASSERT_TRUE(indexer_cache_dtype.has_value());
   EXPECT_TRUE(indexer_cache_dtype->empty());
+}
+
+TEST(SpawnWorkerProtocolTest, PreservesRecExecutionContractsAcrossSpawn) {
+  const RecExecutionConfig configurations[] = {
+      RecExecutionConfig(BatchInputType::SEQUENCE),
+      RecExecutionConfig(BatchInputType::ONEREC),
+      *RecExecutionConfig::resolve(
+          "onerec", /*decode_rounds=*/0, /*enable_prefill_only=*/true),
+      *RecExecutionConfig::resolve(
+          "onerec", /*decode_rounds=*/4, /*enable_prefill_only=*/false),
+      *RecExecutionConfig::resolve(
+          "qwen3", /*decode_rounds=*/3, /*enable_prefill_only=*/false),
+  };
+  for (const auto& config : configurations) {
+    std::vector<std::string> arguments(kArgumentCount, "unused");
+    const auto encoded = encode_rec_execution_config(config);
+    for (size_t i = 0; i < encoded.size(); ++i) {
+      arguments[kRecModelKindArgumentIndex + i] = encoded[i];
+    }
+    auto argv = mutable_argv(&arguments);
+    const auto parsed = parse_rec_execution_config(kArgumentCount, argv.data());
+    ASSERT_TRUE(parsed.has_value());
+    EXPECT_EQ(parsed.value(), config);
+  }
+}
+
+TEST(SpawnWorkerProtocolTest, RejectsMissingAndMalformedRecContracts) {
+  std::vector<std::string> legacy_arguments(kRecModelKindArgumentIndex,
+                                            "unused");
+  auto legacy_argv = mutable_argv(&legacy_arguments);
+  EXPECT_FALSE(
+      parse_rec_execution_config(kRecModelKindArgumentIndex, legacy_argv.data())
+          .has_value());
+  const std::array<std::string, 3> invalid_contracts[] = {
+      {"0", "0", "0"},
+      {"256", "0", "0"},
+      {"1", "-1", "0"},
+      {"1", "2", "1"},
+      {"2", "0", "1"},
+      {"1", "0", "2"},
+      {"1", "2bad", "0"},
+      {"1", "2147483648", "0"},
+  };
+  for (const auto& contract : invalid_contracts) {
+    std::vector<std::string> arguments(kArgumentCount, "unused");
+    for (size_t i = 0; i < contract.size(); ++i) {
+      arguments[kRecModelKindArgumentIndex + i] = contract[i];
+    }
+    auto argv = mutable_argv(&arguments);
+    EXPECT_FALSE(
+        parse_rec_execution_config(kArgumentCount, argv.data()).has_value());
+  }
 }
 
 }  // namespace

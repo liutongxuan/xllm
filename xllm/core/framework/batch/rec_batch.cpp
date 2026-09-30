@@ -15,9 +15,14 @@ limitations under the License.
 
 #include "core/framework/batch/rec_batch.h"
 
+#include <utility>
+
 namespace xllm {
 
-RecBatch::RecBatch(BatchInputType input_type) : state_(input_type) {}
+RecBatch::RecBatch(RecExecutionConfig config) : state_(std::move(config)) {}
+
+RecBatch::RecBatch(BatchInputType input_type)
+    : RecBatch(RecExecutionConfig(input_type)) {}
 
 bool RecBatch::uses_group_input() const { return state_.uses_group_input(); }
 

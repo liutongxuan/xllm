@@ -279,7 +279,13 @@ TEST(RecBatchOutputHandlerTest,
   state.add(bos_sequence, /*token_budget=*/1);
   const auto data = state.input_data(state.sequence_plan());
   const BatchOutputData output_data{data.sequences, data.sequence_groups};
-  RecBatchOutputHandler handler(BatchInputType::ONEREC);
+  const auto execution_config = RecExecutionConfig::resolve(
+      RecModelKind::kOneRec, /*decode_rounds=*/0, /*enable_prefill_only=*/true);
+  ASSERT_TRUE(execution_config.has_value());
+  RecBatchOutputHandler handler(execution_config.value());
+  // Selection remains tied to the handler's snapshot, even if globals change.
+  RecConfig::get_instance().enable_rec_prefill_only(false);
+  RecConfig::get_instance().max_decode_rounds(4);
   handler.prepare(data);
 
   // Input builders advance KV after the output targets have been captured.
@@ -348,7 +354,12 @@ TEST(RecBatchOutputHandlerTest, ContextTargetsRequireLegacyGroupContract) {
     state.add(context_sequence, /*token_budget=*/1);
     state.add(bos_sequence, /*token_budget=*/1);
     const auto data = state.input_data(state.sequence_plan());
-    RecBatchOutputHandler handler(contract.input_type);
+    const auto execution_config = RecExecutionConfig::resolve(
+        RecExecutionConfig(contract.input_type).model_kind(),
+        contract.decode_rounds,
+        contract.prefill_only);
+    ASSERT_TRUE(execution_config.has_value());
+    RecBatchOutputHandler handler(execution_config.value());
     handler.prepare(data);
     bos_sequence->kv_state().set_kv_cache_tokens_num(/*num=*/1);
     RawForwardOutput output;
@@ -481,7 +492,13 @@ TEST(BatchFactoryTest, RecMultiRoundBuilderUsesScheduledSequencesAndBudgets) {
       RecConfig::get_instance().max_decode_rounds(), 3);
   ScopedConfigValue<int32_t> beam_width(
       BeamSearchConfig::get_instance().beam_width(), 2);
-  RecBatchFactory factory(/*dp_size=*/1, BatchInputType::REC_MULTI_ROUND);
+  const auto execution_config =
+      RecExecutionConfig::resolve(RecModelKind::kLlmRec,
+                                  /*decode_rounds=*/3,
+                                  /*enable_prefill_only=*/false);
+  ASSERT_TRUE(execution_config.has_value());
+  RecBatchFactory factory(/*dp_size=*/1, execution_config.value());
+  RecConfig::get_instance().max_decode_rounds(7);
   auto first = make_request(/*rank=*/0, RecType::kLlmRec, /*beam_width=*/2);
   auto second = make_request(/*rank=*/0, RecType::kLlmRec, /*beam_width=*/2);
   // A group may own sequences that were not scheduled. Their tokens must not

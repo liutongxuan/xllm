@@ -19,12 +19,15 @@ limitations under the License.
 
 namespace xllm {
 
-RecBatchGroup::RecBatchGroup(size_t dp_size, BatchInputType input_type) {
+RecBatchGroup::RecBatchGroup(size_t dp_size, RecExecutionConfig config) {
   CHECK_GT(dp_size, 0);
   batches_.reserve(dp_size);
   for (size_t rank = 0; rank < dp_size; ++rank) {
-    batches_.emplace_back(input_type);
+    batches_.emplace_back(config);
   }
 }
+
+RecBatchGroup::RecBatchGroup(size_t dp_size, BatchInputType input_type)
+    : RecBatchGroup(dp_size, RecExecutionConfig(input_type)) {}
 
 }  // namespace xllm

@@ -15,10 +15,15 @@ limitations under the License.
 
 #include "core/framework/batch/rec_batch_factory.h"
 
+#include <utility>
+
 namespace xllm {
 
+RecBatchFactory::RecBatchFactory(int32_t dp_size, RecExecutionConfig config)
+    : builder_(dp_size, std::move(config)) {}
+
 RecBatchFactory::RecBatchFactory(int32_t dp_size, BatchInputType input_type)
-    : builder_(dp_size, input_type) {}
+    : RecBatchFactory(dp_size, RecExecutionConfig(input_type)) {}
 
 RecBatchGroup RecBatchFactory::create_batches(
     const std::vector<std::shared_ptr<Request>>& running_requests,

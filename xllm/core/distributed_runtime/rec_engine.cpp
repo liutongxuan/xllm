@@ -34,10 +34,8 @@ limitations under the License.
 #include "master.h"  // For MasterStatus::WAKEUP constant
 #include "runtime/params_utils.h"
 #include "util/env_var.h"
-#include "util/model_config_utils.h"
 #include "util/net.h"
 #include "util/pretty_print.h"
-#include "util/rec_model_utils.h"
 #include "util/timer.h"
 #include "util/utils.h"
 
@@ -55,6 +53,9 @@ constexpr int64_t kMinimalOneRecMetadataKVBlocks = 2;
 RecEngine::RecEngine(const runtime::Options& options,
                      std::shared_ptr<DistManager> dist_manager)
     : options_(options), dist_manager_(dist_manager) {
+  CHECK(options_.rec_execution_config().has_value())
+      << "RecEngine requires a resolved Rec execution configuration";
+  validate_execution_topology();
   const auto& devices = options_.devices();
   CHECK_GT(devices.size(), 0) << "At least one device is required";
 
@@ -66,32 +67,14 @@ RecEngine::RecEngine(const runtime::Options& options,
   }
 }
 
-void RecEngine::validate_multi_node_support() const {
-  // Single-node runs are always local; every REC pipeline is supported.
-  if (options_.nnodes() <= 1) {
-    return;
-  }
-
-  // Only the single-round LlmRec pipeline drives workers through DistManager.
-  // OneRec runs on local workers, and LlmRec multi-round mode selects
-  // RecMultiRoundEnginePipeline whose setup_workers() is local-only. For those
-  // kinds secondary ranks would spawn workers that rank 0 never collects, so
-  // fail fast instead of serving from an incomplete cluster.
-  const std::string model_type =
-      util::get_model_type(options_.model_path(), options_.backend());
-  const RecModelKind rec_model_kind = get_rec_model_kind(model_type);
-  CHECK(rec_model_kind == RecModelKind::kLlmRec)
-      << "Multi-node REC serving is only supported for LlmRec models, "
-         "got model_type: "
-      << model_type;
-  CHECK(!is_rec_multi_round_mode())
-      << "Multi-node REC serving is not supported in multi-round mode "
-         "(--max_decode_rounds > 0); RecMultiRoundEnginePipeline runs on "
-         "local workers only.";
+void RecEngine::validate_execution_topology() const {
+  const auto error = execution_config().validate_topology(options_.dp_size(),
+                                                          options_.nnodes());
+  CHECK(!error.has_value()) << error.value();
 }
 
 void RecEngine::setup_distributed_workers() {
-  validate_multi_node_support();
+  validate_execution_topology();
 
 #if defined(USE_NPU)
   FLAGS_enable_atb_comm_multiprocess =
@@ -129,13 +112,12 @@ bool RecEngine::init_model() {
   quant_args_ = model_loader->quant_args();
   tokenizer_args_ = model_loader->tokenizer_args();
   // Determine rec model kind and create pipeline via factory
-  rec_model_kind_ = get_rec_model_kind(args_.model_type());
-  CHECK(rec_model_kind_ != RecModelKind::kNone)
-      << "Unsupported rec model_type: " << args_.model_type();
-  // Reject unsupported multi-node REC configurations before selecting a
-  // pipeline, so the leader fails fast too (not only secondary ranks).
-  validate_multi_node_support();
-  auto pipeline_type = get_rec_pipeline_type(rec_model_kind_);
+  rec_model_kind_ = execution_config().model_kind();
+  CHECK(get_rec_model_kind(args_.model_type()) == rec_model_kind_)
+      << "Loaded model does not match the resolved Rec execution configuration";
+  // Validate the execution topology before selecting a worker pipeline.
+  validate_execution_topology();
+  const RecPipelineType pipeline_type = execution_config().pipeline_type();
   pipeline_ = create_pipeline(pipeline_type, *this);
   // LlmRec-specific initialization
   if (rec_model_kind_ == RecModelKind::kLlmRec) {
@@ -728,7 +710,7 @@ RecEngine::OneRecPrefillOnlyEnginePipeline::OneRecPrefillOnlyEnginePipeline(
 
 int64_t RecEngine::OneRecPrefillOnlyEnginePipeline::minimal_kv_cache_blocks()
     const {
-  return use_legacy_onerec_prefill_only_contract()
+  return engine_.execution_config().use_legacy_onerec_prefill_only_contract()
              ? kMinimalOneRecMetadataKVBlocks
              : 0;
 }

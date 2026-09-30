@@ -20,6 +20,7 @@ limitations under the License.
 #include <algorithm>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <tuple>
 #include <vector>
@@ -31,6 +32,7 @@ limitations under the License.
 #include "core/framework/config/eplb_config.h"
 #include "core/framework/config/execution_config.h"
 #include "core/framework/config/rec_config.h"
+#include "core/framework/config/rec_execution_config_binding.h"
 #include "framework/model/model_input_params.h"
 #include "util/rec_model_utils.h"
 #include "util/tensor_helper.h"
@@ -56,8 +58,39 @@ limitations under the License.
 #include "util/timer.h"
 
 namespace xllm {
-
 namespace {
+
+const runtime::Options& initialize_rec_worker_options(
+    const runtime::Options& options) {
+  CHECK(options.rec_execution_config().has_value())
+      << "Rec worker requires a resolved execution configuration";
+  const RecExecutionConfig& config = options.rec_execution_config().value();
+  const auto error =
+      config.validate_topology(options.dp_size(), options.nnodes());
+  CHECK(!error.has_value()) << error.value();
+
+  // Legacy model/layer implementations still consume process-wide RecConfig.
+  // Install the transported snapshot before constructing any executor/model.
+  // A process cannot safely host different legacy execution contracts.
+  static std::mutex mutex;
+  static RecExecutionConfigBinding binding;
+  const std::lock_guard<std::mutex> lock(mutex);
+  const RecExecutionBindingResult result = binding.bind(config);
+  CHECK(result != RecExecutionBindingResult::CONFLICT)
+      << "Rec workers in one process require the same execution configuration";
+  if (result == RecExecutionBindingResult::UNCHANGED) {
+    CHECK(RecConfig::get_instance().max_decode_rounds() ==
+              config.decode_rounds() &&
+          use_legacy_onerec_prefill_only_contract() ==
+              config.use_legacy_onerec_prefill_only_contract())
+        << "Legacy Rec execution configuration changed after worker startup";
+    return options;
+  }
+  RecConfig::get_instance().max_decode_rounds(config.decode_rounds());
+  RecConfig::get_instance().enable_rec_prefill_only(
+      config.use_legacy_onerec_prefill_only_contract());
+  return options;
+}
 
 RecVocabDict* get_onerec_vocab_dict(const std::string& model_weights_path) {
   if (model_weights_path.empty()) {
@@ -856,8 +889,8 @@ RecWorkerImpl::OneRecXAttentionWorkPipeline::OneRecXAttentionWorkPipeline(
           /*pool_name=*/"OneRecXAttentionWorkPipeline.filter_mask")) {
   max_seqs_per_batch_ = runtime_.worker.options_.max_seqs_per_batch();
   beam_width_ = std::max<int32_t>(1, runtime_.worker.options_.beam_width());
-  max_decode_step_ =
-      std::max<int32_t>(0, get_rec_multi_round_decode_rounds() - 1);
+  max_decode_step_ = std::max<int32_t>(
+      0, runtime_.worker.options_.rec_execution_config()->decode_rounds() - 1);
   allocate_unshared_kv_caches();
 
   if (!::xllm::RecConfig::get_instance().enable_constrained_decoding()) {
@@ -1969,8 +2002,10 @@ void RecWorkerImpl::LlmRecMultiRoundPipeline::allocate_kv_caches_related() {
   int32_t num_layers = runtime_.context->get_model_args().n_layers();
 
   int32_t full_kv_len =
-      max_tokens_per_batch_ + max_seqs_per_batch_ * beam_width_ *
-                                  (get_rec_multi_round_decode_rounds() - 1);
+      max_tokens_per_batch_ +
+      max_seqs_per_batch_ * beam_width_ *
+          (runtime_.worker.options_.rec_execution_config()->decode_rounds() -
+           1);
   int64_t num_kv_heads =
       runtime_.context->get_model_args().n_kv_heads().value_or(
           runtime_.context->get_model_args().n_heads());
@@ -2831,7 +2866,10 @@ RecWorkerImpl::LlmRecMultiRoundPipeline::FullKvCacheOffsets::FullKvCacheOffsets(
   auto device = multi_round_pipeline->runtime().worker.device();
   auto int32_device_options =
       torch::TensorOptions().dtype(torch::kInt32).device(device);
-  int32_t max_decode_step = get_rec_multi_round_decode_rounds() - 1;
+  int32_t max_decode_step = multi_round_pipeline->runtime()
+                                .worker.options_.rec_execution_config()
+                                ->decode_rounds() -
+                            1;
   full_kv_offsets =
       torch::arange(0,
                     multi_round_pipeline->max_token_per_req_ + max_decode_step,
@@ -2892,7 +2930,9 @@ void RecWorkerImpl::initialize_xattention_workspace() {
 RecWorkerImpl::RecWorkerImpl(const ParallelArgs& parallel_args,
                              const torch::Device& device,
                              const runtime::Options& options)
-    : LLMWorkerImpl(parallel_args, device, options) {
+    : LLMWorkerImpl(parallel_args,
+                    device,
+                    initialize_rec_worker_options(options)) {
   initialize_xattention_workspace();
 
   if (!is_driver()) {
@@ -2956,12 +2996,14 @@ bool RecWorkerImpl::init_model(ModelContext& context) {
 
   // Determine rec model kind and pipeline type
   const auto& model_type = context.get_model_args().model_type();
-  rec_model_kind_ = get_rec_model_kind(model_type);
-  CHECK(rec_model_kind_ != RecModelKind::kNone)
-      << "Unsupported rec model_type: " << model_type;
+  rec_model_kind_ = options_.rec_execution_config()->model_kind();
+  CHECK(get_rec_model_kind(model_type) == rec_model_kind_)
+      << "Worker model does not match the transported Rec execution "
+         "configuration";
 
   // Create concurrent pipeline (not base class pipeline)
-  auto pipeline_type = get_rec_pipeline_type(rec_model_kind_);
+  const RecPipelineType pipeline_type =
+      options_.rec_execution_config()->pipeline_type();
 
   // Reserve space for model instances
   work_pipelines_.reserve(options_.rec_worker_max_concurrency());

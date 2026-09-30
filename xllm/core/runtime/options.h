@@ -24,6 +24,7 @@ limitations under the License.
 
 #include "common/macros.h"
 #include "common/types.h"
+#include "core/framework/config/rec_execution_config.h"
 
 namespace xllm {
 namespace runtime {
@@ -277,6 +278,10 @@ struct Options {
 
   // max concurrency for rec worker
   PROPERTY(int32_t, rec_worker_max_concurrency) = 1;
+
+  // Resolved once by the Rec master and transported to every worker.
+  PROPERTY(std::optional<RecExecutionConfig>,
+           rec_execution_config) = std::nullopt;
 };
 
 }  // namespace runtime

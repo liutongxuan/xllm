@@ -30,6 +30,7 @@ class RecBatchGroup final {
   using const_iterator = Container::const_iterator;
 
   RecBatchGroup() = default;
+  RecBatchGroup(size_t dp_size, RecExecutionConfig config);
   RecBatchGroup(size_t dp_size, BatchInputType input_type);
 
   RecBatchGroup(const RecBatchGroup&) = delete;

@@ -21,6 +21,8 @@ cc_library(
     parallel_config.h
     profile_config.h
     rec_config.h
+    rec_execution_config.h
+    rec_execution_config_binding.h
     scheduler_config.h
     service_config.h
     speculative_config.h

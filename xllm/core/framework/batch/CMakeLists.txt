@@ -9,6 +9,7 @@ cc_library(
     dit_batch_factory.h
     dit_forward_input_builder.h
     batch_input_data.h
+    batch_input_type.h
     batch.h
     batch_group.h
     batch_state.h

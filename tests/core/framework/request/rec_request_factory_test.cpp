@@ -26,13 +26,14 @@ limitations under the License.
 #include "common/options.h"
 #include "common/rate_limiter.h"
 #include "core/common/types.h"
+#include "core/framework/config/rec_config.h"
+#include "core/util/scope_guard.h"
 #include "framework/model/model_args.h"
 #include "framework/request/rec_type.h"
 #include "framework/request/request_output.h"
 #include "framework/request/request_params.h"
 #include "framework/tokenizer/tokenizer.h"
 #include "rec.pb.h"
-#include "util/rec_model_utils.h"
 
 namespace xllm {
 namespace {
@@ -108,27 +109,25 @@ class RecRequestFactoryTest : public ::testing::Test {
 
   std::unique_ptr<RecRequestFactory> make_llmrec_factory(
       int32_t vocab_size = 1000,
-      int32_t max_position = 2048) {
+      int32_t max_position = 2048,
+      RecExecutionConfig config =
+          RecExecutionConfig(BatchInputType::SEQUENCE)) {
     configure_model(vocab_size, max_position);
     tokenizer_ = std::make_unique<FakeTokenizer>(vocab_size);
-    return std::make_unique<RecRequestFactory>(&model_args_,
-                                               tokenizer_.get(),
-                                               &options_,
-                                               &rate_limiter_,
-                                               RecType::kLlmRec,
-                                               RecPipelineType::kLlmRecDefault);
+    return std::make_unique<RecRequestFactory>(
+        &model_args_, tokenizer_.get(), &options_, &rate_limiter_, config);
   }
 
   std::unique_ptr<RecRequestFactory> make_onerec_factory(
       int32_t max_position = 2048) {
     configure_model(/*vocab_size=*/1000, max_position);
     // OneRec models do not require a tokenizer for the input paths tested here.
-    return std::make_unique<RecRequestFactory>(&model_args_,
-                                               /*tokenizer=*/nullptr,
-                                               &options_,
-                                               &rate_limiter_,
-                                               RecType::kOneRec,
-                                               RecPipelineType::kOneRecDefault);
+    return std::make_unique<RecRequestFactory>(
+        &model_args_,
+        /*tokenizer=*/nullptr,
+        &options_,
+        &rate_limiter_,
+        RecExecutionConfig(BatchInputType::ONEREC));
   }
 
   std::unique_ptr<FakeTokenizer> tokenizer_;
@@ -138,6 +137,35 @@ class RecRequestFactoryTest : public ::testing::Test {
 };
 
 // -------------------------- LlmRec: prompt overload -------------------------
+
+TEST_F(RecRequestFactoryTest, MultiRoundPromptLimitUsesConstructionSnapshot) {
+  const int32_t original_rounds = RecConfig::get_instance().max_decode_rounds();
+  ScopeGuard restore_rounds([original_rounds] {
+    RecConfig::get_instance().max_decode_rounds(original_rounds);
+  });
+  const auto config = RecExecutionConfig::resolve(
+      "qwen3", /*decode_rounds=*/3, /*enable_prefill_only=*/false);
+  ASSERT_TRUE(config.has_value());
+  auto factory = make_llmrec_factory(
+      /*vocab_size=*/1000, /*max_position=*/2048, config.value());
+  options_.enable_chunked_prefill(false)
+      .max_tokens_per_batch(8)
+      .max_seqs_per_batch(2);
+  RecConfig::get_instance().max_decode_rounds(0);
+  CallbackCapture capture;
+  RequestParams sp;
+  const auto request = factory->create(
+      /*prompt=*/"",
+      std::vector<int>{1, 2, 3, 4},
+      /*input_tensors=*/std::nullopt,
+      sp,
+      make_capture_callback(&capture));
+  EXPECT_EQ(request, nullptr);
+  ASSERT_TRUE(capture.called);
+  ASSERT_TRUE(capture.status.has_value());
+  EXPECT_EQ(capture.status->message(), "Prompt is too long");
+  EXPECT_EQ(rate_limiter_.get_num_concurrent_requests(), 0);
+}
 
 TEST_F(RecRequestFactoryTest, LlmRecRejectsEmptyInputReleasesRateLimitSlot) {
   auto factory = make_llmrec_factory();

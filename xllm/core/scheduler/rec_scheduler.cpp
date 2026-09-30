@@ -32,13 +32,11 @@ limitations under the License.
 #include "core/framework/batch/rec_batch_factory.h"
 #include "core/framework/config/kv_cache_config.h"
 #include "core/framework/config/parallel_config.h"
-#include "core/framework/config/rec_config.h"
 #include "core/framework/config/scheduler_config.h"
 #include "core/framework/request/rec_type.h"
 #include "core/framework/request/request.h"
 #include "core/framework/request/sequence.h"
 #include "core/runtime/xservice_client.h"
-#include "core/util/rec_model_utils.h"
 #include "core/util/timer.h"
 
 namespace xllm {
@@ -60,8 +58,10 @@ std::ptrdiff_t checked_concurrency(int32_t concurrency) {
 
 RecScheduler::RecScheduler(EngineResources resources,
                            RecStep rec_step,
-                           Options options)
+                           Options options,
+                           RecExecutionConfig config)
     : options_(std::move(options)),
+      config_(std::move(config)),
       resources_(std::move(resources)),
       rec_step_(std::move(rec_step)),
       kv_cache_manager_(resources_.block_manager_pool()),
@@ -70,7 +70,12 @@ RecScheduler::RecScheduler(EngineResources resources,
           checked_concurrency(options_.rec_worker_max_concurrency())) {
   CHECK(kv_cache_manager_ != nullptr);
   CHECK(resources_.tokenizer() != nullptr);
-  CHECK_GT(options_.dp_size(), 0);
+  const auto topology_error =
+      config_.validate_topology(options_.dp_size(), /*nnodes=*/1);
+  CHECK(!topology_error.has_value()) << topology_error.value();
+  scheduler_pipeline_ = create_scheduler_pipeline(config_);
+  rec_batch_factory_ =
+      std::make_unique<RecBatchFactory>(options_.dp_size(), config_);
   CHECK_GT(options_.max_tokens_per_batch(), 0);
   CHECK_GT(options_.max_seqs_per_batch(), 0);
   request_admission_ = std::make_unique<SchedulerRequestAdmission>(
@@ -129,7 +134,7 @@ RecScheduler::~RecScheduler() {
 
 bool RecScheduler::add_request(std::shared_ptr<Request>& request) {
   CHECK(request != nullptr);
-  if (request->state().rec_type == RecType::kNone) {
+  if (request->state().rec_type != config_.rec_type()) {
     return false;
   }
   return request_admission_->add_request(request);
@@ -156,8 +161,7 @@ void RecScheduler::handle_prefill_requests(
     std::vector<std::shared_ptr<Request>>& finished_requests) {
   // Admit one fixed execution window, reserving every scheduled sequence's
   // complete KV capacity before handing ownership to the Rec engine.
-  const bool requires_kv_cache =
-      scheduler_pipeline_ && scheduler_pipeline_->requires_kv_cache();
+  const bool requires_kv_cache = scheduler_pipeline_->requires_kv_cache();
   while (!prefill_queue_->empty() && remaining_seq_budget > 0 &&
          remaining_token_budget > 0 &&
          kv_cache_manager_->kv_cache_utilization() <
@@ -300,17 +304,6 @@ RecBatchGroup RecScheduler::prepare_rec_batch() {
     propagate_request(request);
   }
 
-  // Select the Rec pipeline once from the first admitted request.
-  if (!scheduler_pipeline_ && !prefill_queue_->empty()) {
-    const RecType rec_type = prefill_queue_->top()->state().rec_type;
-    const bool is_rec_multi_round =
-        (rec_type == RecType::kLlmRec) && is_rec_multi_round_mode();
-    scheduler_pipeline_ =
-        create_scheduler_pipeline(rec_type, is_rec_multi_round);
-    rec_batch_factory_ = std::make_unique<RecBatchFactory>(
-        options_.dp_size(), scheduler_pipeline_->input_type());
-  }
-
   std::vector<std::shared_ptr<Request>> finished_requests;
   finished_requests.reserve(
       std::min(prefill_queue_->size(),
@@ -327,20 +320,11 @@ RecBatchGroup RecScheduler::prepare_rec_batch() {
     response_processor_->process_completed_requests(finished_requests);
   }
 
-  RecBatchGroup batches;
-  if (rec_batch_factory_) {
-    batches = rec_batch_factory_->create_batches(
-        running_requests_,
-        running_sequences_,
-        running_sequences_budgets_,
-        kv_cache_manager_->get_swap_block_transfer_infos());
-  } else {
-    // No pipeline has been selected before the first request arrives.
-    CHECK(running_requests_.empty());
-    CHECK(running_sequences_.empty());
-    batches = RecBatchGroup(static_cast<size_t>(options_.dp_size()),
-                            BatchInputType::SEQUENCE);
-  }
+  RecBatchGroup batches = rec_batch_factory_->create_batches(
+      running_requests_,
+      running_sequences_,
+      running_sequences_budgets_,
+      kv_cache_manager_->get_swap_block_transfer_infos());
 
   // update metrics before returning
   if (std::any_of(batches.begin(), batches.end(), [](const RecBatch& batch) {
@@ -507,11 +491,7 @@ bool RecScheduler::OneRecXAttentionSchedulerPipeline::allocate_kv_cache(
     KVCacheManager* kv_cache_manager,
     Sequence* sequence) {
   const size_t num_tokens = sequence->num_tokens();
-  size_t max_generated_tokens =
-      ::xllm::RecConfig::get_instance().max_decode_rounds() > 0
-          ? static_cast<size_t>(
-                ::xllm::RecConfig::get_instance().max_decode_rounds())
-          : kRecDecodeSteps;
+  size_t max_generated_tokens = static_cast<size_t>(decode_rounds_);
   if (const auto* stopping_checker = sequence->stopping_checker()) {
     max_generated_tokens = std::max(
         max_generated_tokens, stopping_checker->get_max_generated_tokens());
@@ -526,18 +506,20 @@ bool RecScheduler::OneRecXAttentionSchedulerPipeline::allocate_kv_cache(
 }
 
 std::unique_ptr<RecScheduler::SchedulerPipeline>
-RecScheduler::create_scheduler_pipeline(RecType rec_type,
-                                        bool is_rec_multi_round) {
-  if (is_rec_multi_round) {
-    return std::make_unique<RecMultiRoundSchedulerPipeline>();
+RecScheduler::create_scheduler_pipeline(const RecExecutionConfig& config) {
+  switch (config.input_type()) {
+    case BatchInputType::SEQUENCE:
+      return std::make_unique<LlmRecSchedulerPipeline>();
+    case BatchInputType::ONEREC:
+      return std::make_unique<OneRecSchedulerPipeline>();
+    case BatchInputType::ONEREC_XATTENTION:
+      return std::make_unique<OneRecXAttentionSchedulerPipeline>(
+          config.decode_rounds());
+    case BatchInputType::REC_MULTI_ROUND:
+      return std::make_unique<RecMultiRoundSchedulerPipeline>();
   }
-  if (rec_type == RecType::kOneRec && is_onerec_xattention_mode()) {
-    return std::make_unique<OneRecXAttentionSchedulerPipeline>();
-  }
-  if (rec_type == RecType::kLlmRec) {
-    return std::make_unique<LlmRecSchedulerPipeline>();
-  }
-  return std::make_unique<OneRecSchedulerPipeline>();
+  LOG(FATAL) << "Unsupported Rec execution configuration";
+  return nullptr;
 }
 
 }  // namespace xllm
