@@ -32,13 +32,6 @@ limitations under the License.
 namespace xllm {
 namespace {
 
-uint32_t get_sample_source_position(const SampleSlot& sample_slot) {
-  if (sample_slot.token_position == 0) {
-    return 0;
-  }
-  return static_cast<uint32_t>(sample_slot.token_position - 1);
-}
-
 Token make_token(const RawToken& raw_token) {
   Token token(raw_token.id);
   if (raw_token.logprob.has_value()) {
@@ -116,17 +109,30 @@ std::unordered_set<std::string> fail_json_object_requests(
 }  // namespace
 
 void BatchOutputHandler::prepare(const BatchInputData& data) {
+  prepare(BatchSamplingPlan::create(data));
+}
+
+void BatchOutputHandler::prepare(BatchSamplingPlan plan) {
   clear();
-  reserve(data.sequences.size());
-  for (size_t seq_index = 0; seq_index < data.sequences.size(); ++seq_index) {
-    add_sequence_targets(data.sequences[seq_index],
-                         data.allowed_max_tokens[seq_index]);
+  sampling_plan_.emplace(std::move(plan));
+}
+
+size_t BatchOutputHandler::target_count() const {
+  return sampling_plan_ ? sampling_plan_->sample_rows().size()
+                        : output_targets_.size();
+}
+
+const BatchSamplingRow& BatchOutputHandler::target(size_t output_index) const {
+  if (sampling_plan_) {
+    return sampling_plan_->rows()[sampling_plan_->sample_rows()[output_index]];
   }
+  return output_targets_[output_index];
 }
 
 void BatchOutputHandler::add_sequence_target(Sequence* sequence) {
   CHECK(sequence != nullptr);
-  output_targets_.emplace_back(OutputTarget{sequence, /*sample_id=*/0, false});
+  CHECK(!sampling_plan_) << "Explicit domain targets require clear() first";
+  output_targets_.emplace_back(BatchSamplingRow{sequence});
 }
 
 void BatchOutputHandler::add_sequence_targets(Sequence* sequence,
@@ -134,35 +140,11 @@ void BatchOutputHandler::add_sequence_targets(Sequence* sequence,
   if (sequence == nullptr) {
     return;
   }
-
-  const uint32_t n_tokens = static_cast<uint32_t>(sequence->tokens().size());
-  const uint32_t n_kv_cache_tokens = sequence->kv_state().kv_cache_tokens_num();
-  if (n_tokens <= n_kv_cache_tokens) {
-    return;
-  }
-
-  CHECK_GT(token_budget, 0);
-  const uint32_t q_seq_len =
-      std::min(n_tokens - n_kv_cache_tokens, token_budget);
-  const uint32_t seq_len = q_seq_len + n_kv_cache_tokens;
-  const auto& sample_slots = sequence->sample_slots();
-
-  if (sample_slots.empty()) {
-    if (seq_len == n_tokens) {
-      add_sequence_target(sequence);
-    }
-    return;
-  }
-
-  for (const auto& sample_slot : sample_slots) {
-    const uint32_t sample_source_position =
-        get_sample_source_position(sample_slot);
-    if (sample_source_position < n_kv_cache_tokens ||
-        sample_source_position >= seq_len) {
-      continue;
-    }
-    output_targets_.emplace_back(OutputTarget{
-        sequence, sample_slot.sample_id, /*from_sample_slot=*/true});
+  CHECK(!sampling_plan_) << "Explicit domain targets require clear() first";
+  const BatchSamplingPlan plan =
+      BatchSamplingPlan::create(sequence, token_budget);
+  for (const size_t row_index : plan.sample_rows()) {
+    output_targets_.emplace_back(plan.rows()[row_index]);
   }
 }
 
@@ -174,10 +156,9 @@ void BatchOutputHandler::process_sample_output(
   const std::unordered_set<std::string> failed_request_ids =
       fail_json_object_requests(sequences, raw_output.json_object_errors);
 
-  for (size_t output_idx = 0; output_idx < output_targets_.size();
-       ++output_idx) {
-    const auto& target = output_targets_[output_idx];
-    auto* seq = target.sequence;
+  for (size_t output_idx = 0; output_idx < target_count(); ++output_idx) {
+    const auto& output_target = target(output_idx);
+    auto* seq = output_target.sequence;
     CHECK(seq != nullptr);
 
     if (failed_request_ids.contains(seq->request_id()) ||
@@ -195,7 +176,7 @@ void BatchOutputHandler::process_sample_output(
       }
     }
 
-    if (!target.from_sample_slot) {
+    if (!output_target.from_sample_slot) {
       if (seq->finished()) {
         continue;
       }
@@ -208,7 +189,7 @@ void BatchOutputHandler::process_sample_output(
     const bool empty_output =
         !missing_output && raw_output.outputs[output_idx].tokens.empty();
     if (missing_output || empty_output) {
-      if (target.from_sample_slot) {
+      if (output_target.from_sample_slot) {
         append_token_for_sequence(
             seq, make_empty_logprob_placeholder(*seq), 0, replace_fake_token);
       }
@@ -232,13 +213,13 @@ void BatchOutputHandler::process_sample_output(
       }
       // Speculative decoding may append an EOS token at the beginning,
       // followed by bonus tokens, causing the sequence stopping check to fail.
-      if (!target.from_sample_slot && seq->finished()) {
+      if (!output_target.from_sample_slot && seq->finished()) {
         break;
       }
     }
   }
   if (replace_fake_token) {
-    output_targets_.clear();
+    clear();
   }
 
   if (!::xllm::SchedulerConfig::get_instance().enable_schedule_overlap() ||
@@ -301,10 +282,9 @@ void BatchOutputHandler::process_sample_output(
   // sample_output.next_tokens.size(0) value is 0,
   // this means all sequences are in prefill stage status.
   const int64_t num_outputs = sample_output.next_tokens.size(0);
-  for (size_t output_idx = 0; output_idx < output_targets_.size();
-       ++output_idx) {
-    const auto& target = output_targets_[output_idx];
-    auto* seq = target.sequence;
+  for (size_t output_idx = 0; output_idx < target_count(); ++output_idx) {
+    const auto& output_target = target(output_idx);
+    auto* seq = output_target.sequence;
     CHECK(seq != nullptr);
     if (seq->error_status().has_value()) {
       continue;
@@ -315,7 +295,7 @@ void BatchOutputHandler::process_sample_output(
           sample_output.speculative_token_stats[output_idx]);
     }
 
-    if (!target.from_sample_slot) {
+    if (!output_target.from_sample_slot) {
       if (seq->finished()) {
         continue;
       }
@@ -325,7 +305,7 @@ void BatchOutputHandler::process_sample_output(
     }
 
     if (output_idx >= static_cast<size_t>(num_outputs)) {
-      if (target.from_sample_slot) {
+      if (output_target.from_sample_slot) {
         append_token_for_sequence(
             seq, make_empty_logprob_placeholder(*seq), 0, replace_fake_token);
       }
@@ -360,12 +340,12 @@ void BatchOutputHandler::process_sample_output(
         append_token_for_sequence(
             seq, token, static_cast<int32_t>(token_idx), replace_fake_token);
         appended_token = true;
-        if (!target.from_sample_slot && seq->finished()) {
+        if (!output_target.from_sample_slot && seq->finished()) {
           break;
         }
       }
 
-      if (!appended_token && target.from_sample_slot) {
+      if (!appended_token && output_target.from_sample_slot) {
         append_token_for_sequence(
             seq, make_empty_logprob_placeholder(*seq), 0, replace_fake_token);
       }
@@ -382,7 +362,7 @@ void BatchOutputHandler::process_sample_output(
     append_token_for_sequence(seq, token, 0, replace_fake_token);
   }
   if (replace_fake_token) {
-    output_targets_.clear();
+    clear();
   }
 
   if (!::xllm::SchedulerConfig::get_instance().enable_schedule_overlap() ||

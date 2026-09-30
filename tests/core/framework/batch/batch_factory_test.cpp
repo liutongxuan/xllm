@@ -193,8 +193,10 @@ TEST(BatchFactoryTest, RecOutputsRefreshSamplingTargetsAcrossForwards) {
   ModelArgs args;
 
   // Only the second sequence completes prefill and owns an output row.
-  (void)batch.prepare_forward_input(
+  const auto first_input = batch.prepare_forward_input(
       /*num_decoding_tokens=*/1, /*min_decoding_batch_size=*/0, args);
+  EXPECT_TRUE(torch::equal(first_input.sampling_params.selected_token_idxes,
+                           torch::tensor({4}, torch::kInt32)));
   SampleOutput sample_output;
   sample_output.next_tokens = torch::tensor({42}, torch::kInt);
   batch.process_sample_output(sample_output,
@@ -210,6 +212,8 @@ TEST(BatchFactoryTest, RecOutputsRefreshSamplingTargetsAcrossForwards) {
       /*num_decoding_tokens=*/1, /*min_decoding_batch_size=*/0, args);
   EXPECT_TRUE(
       torch::equal(input.token_ids, torch::tensor({3, 42}, torch::kInt32)));
+  EXPECT_TRUE(torch::equal(input.sampling_params.selected_token_idxes,
+                           torch::tensor({0, 1}, torch::kInt32)));
   RawForwardOutput raw_output;
   raw_output.outputs.resize(2);
   raw_output.outputs[0].tokens = {RawToken{.id = 51}};

@@ -61,13 +61,6 @@ namespace {
 // so decode always stays single-threaded while large prefill still fans out.
 constexpr size_t kMultithreadTokenThreshold = 65536;
 
-uint32_t get_sample_source_position(const SampleSlot& sample_slot) {
-  if (sample_slot.token_position == 0) {
-    return 0;
-  }
-  return static_cast<uint32_t>(sample_slot.token_position - 1);
-}
-
 void append_xtensor_offsets(TransferKVInfo* info,
                             const TransferKVInfo& full_info,
                             size_t remote_id_count,
@@ -208,7 +201,8 @@ bool should_save_linear_checkpoint(Sequence* sequence,
 ForwardInputBuilder::ForwardInputBuilder(const BatchInputData& data,
                                          const ModelArgs* args,
                                          int32_t cp_size,
-                                         ThreadPool* thread_pool)
+                                         ThreadPool* thread_pool,
+                                         const BatchSamplingPlan* sampling_plan)
     : ForwardInputBuilder(data.sequences,
                           data.allowed_max_tokens,
                           data.input_embeddings,
@@ -218,7 +212,8 @@ ForwardInputBuilder::ForwardInputBuilder(const BatchInputData& data,
                           args,
                           data.forward_type,
                           cp_size,
-                          thread_pool) {}
+                          thread_pool,
+                          sampling_plan) {}
 
 ForwardInputBuilder::ForwardInputBuilder(
     const std::vector<Sequence*>& sequences,
@@ -230,7 +225,8 @@ ForwardInputBuilder::ForwardInputBuilder(
     const ModelArgs* args,
     BatchForwardType batch_forward_type,
     int32_t cp_size,
-    ThreadPool* thread_pool)
+    ThreadPool* thread_pool,
+    const BatchSamplingPlan* sampling_plan)
     : sequences_(sequences),
       allowed_max_tokens_(allowed_max_tokens),
       input_embeddings_vec_(input_embeddings_vec),
@@ -244,6 +240,14 @@ ForwardInputBuilder::ForwardInputBuilder(
       batch_id_(batch_id),
       cp_size_(cp_size) {
   CHECK_GT(cp_size_, 0);
+  if (sampling_plan != nullptr) {
+    sampling_plan_ = sampling_plan;
+  } else {
+    owned_sampling_plan_.emplace(
+        BatchSamplingPlan::create(sequences_, allowed_max_tokens_));
+    sampling_plan_ = &owned_sampling_plan_.value();
+  }
+  CHECK_EQ(sampling_plan_->sequence_count(), sequences_.size());
   // Reserve space for better performance
   const size_t reserve_size = 1024;
   state_.flatten_tokens_vec.reserve(reserve_size);
@@ -454,10 +458,9 @@ void ForwardInputBuilder::process_sequences() {
   if (use_multithread) {
     size_t total_query_tokens = 0;
     for (int32_t i = 0; i < num_sequences_; ++i) {
-      const Sequence* sequence = sequences_[i];
-      const size_t need_compute = sequence->num_need_compute_tokens();
-      total_query_tokens +=
-          std::min(need_compute, static_cast<size_t>(allowed_max_tokens_[i]));
+      const BatchSamplingWindow& window =
+          sampling_plan_->window(static_cast<size_t>(i));
+      total_query_tokens += window.token_end - window.token_begin;
     }
     use_multithread = total_query_tokens >= kMultithreadTokenThreshold;
   }
@@ -731,18 +734,17 @@ void ForwardInputBuilder::process_single_sequence(
     std::unordered_set<int32_t>* write_block_ids_ptr) {
   BuilderState& state = state_ptr ? *state_ptr : state_;
 
-  auto* sequence = sequences_[seq_index];
-  const auto token_ids = sequence->tokens();
-  const uint32_t n_tokens = token_ids.size();
-  const uint32_t n_kv_cache_tokens = sequence->kv_state().kv_cache_tokens_num();
-
-  // Validate and calculate sequence lengths
-  CHECK(allowed_max_tokens_[seq_index] > 0);
-  const uint32_t q_seq_len =
-      std::min(n_tokens - n_kv_cache_tokens, allowed_max_tokens_[seq_index]);
+  const BatchSamplingWindow& window =
+      sampling_plan_->window(static_cast<size_t>(seq_index));
+  Sequence* sequence = window.sequence;
+  CHECK_EQ(sequence, sequences_[seq_index]);
+  CHECK_EQ(sequence->kv_state().kv_cache_tokens_num(), window.token_begin)
+      << "Sampling snapshot must precede KV advancement";
+  const uint32_t n_tokens = window.token_count;
+  const uint32_t n_kv_cache_tokens = window.token_begin;
+  const uint32_t q_seq_len = window.token_end - window.token_begin;
   const uint32_t padded_q_seq_len = q_seq_len;
-  const uint32_t logical_seq_len = q_seq_len + n_kv_cache_tokens;
-  const uint32_t seq_len = padded_q_seq_len + n_kv_cache_tokens;
+  const uint32_t seq_len = window.token_end;
 
   // Validation
   CHECK_GE(sequence->kv_state().current_max_tokens_capacity(), seq_len);
@@ -770,8 +772,7 @@ void ForwardInputBuilder::process_single_sequence(
   process_multi_modal_inputs(
       sequence, n_kv_cache_tokens, q_seq_len, seq_index, state_ptr);
   // Process tokens and positions
-  extract_tokens_and_positions(
-      sequence, n_kv_cache_tokens, logical_seq_len, state_ptr);
+  extract_tokens_and_positions(sequence, window, state_ptr);
   if (build_eplb_decode_token_mask_) {
     state.eplb_decode_token_mask.insert(
         state.eplb_decode_token_mask.end(),
@@ -796,53 +797,34 @@ void ForwardInputBuilder::process_single_sequence(
 
 void ForwardInputBuilder::extract_tokens_and_positions(
     Sequence* sequence,
-    uint32_t n_kv_cache_tokens,
-    uint32_t seq_len,
+    const BatchSamplingWindow& window,
     BuilderState* state_ptr) {
   BuilderState& state = state_ptr ? *state_ptr : state_;
   const size_t seq_token_begin = state.flatten_tokens_vec.size();
-
+  const uint32_t n_kv_cache_tokens = window.token_begin;
+  const uint32_t seq_len = window.token_end;
+  const uint32_t n_tokens = window.token_count;
   const auto& token_ids = sequence->tokens();
-  const uint32_t n_tokens = token_ids.size();
-  const auto& sample_slots = sequence->sample_slots();
-  size_t sample_slot_idx = 0;
 
-  // Handle MRope positions
   if (use_mrope_) {
     state.mrope_positions_vec.emplace_back(
         get_mrope_positions(sequence, n_kv_cache_tokens, seq_len));
   }
-
-  // Process real tokens
-  for (uint32_t j = n_kv_cache_tokens; j < seq_len; ++j) {
-    state.flatten_tokens_vec.emplace_back(token_ids[j]);
-
+  for (uint32_t position = n_kv_cache_tokens; position < seq_len; ++position) {
+    state.flatten_tokens_vec.emplace_back(token_ids[position]);
     if (!use_mrope_) {
-      state.flatten_positions_vec.push_back(static_cast<int32_t>(j));
+      state.flatten_positions_vec.emplace_back(static_cast<int32_t>(position));
     }
-
-    if (sample_slots.empty()) {
-      // Non-sample requests only select the last prompt token.
-      if (j + 1 < n_tokens) continue;
-      handle_sampling_parameters(sequence, state_ptr);
-      continue;
-    }
-
-    // Sample requests need one sampling entry per selector hit. The logits for
-    // selector start position come from the preceding token's hidden state.
-    while (sample_slot_idx < sample_slots.size()) {
-      const uint32_t sample_source_position =
-          get_sample_source_position(sample_slots[sample_slot_idx]);
-      if (sample_source_position < j) {
-        ++sample_slot_idx;
-        continue;
-      }
-      if (sample_source_position > j) {
-        break;
-      }
-      handle_sampling_parameters(sequence, state_ptr);
-      ++sample_slot_idx;
-    }
+  }
+  for (size_t row_index = window.row_begin; row_index < window.row_end;
+       ++row_index) {
+    const BatchSamplingRow& row = sampling_plan_->rows()[row_index];
+    const size_t token_index =
+        seq_token_begin + row.source_position - window.token_begin;
+    CHECK_LE(token_index,
+             static_cast<size_t>(std::numeric_limits<int32_t>::max()));
+    handle_sampling_parameters(
+        row, static_cast<int32_t>(token_index), state_ptr);
   }
 
   append_linear_state_row(sequence, n_kv_cache_tokens, seq_len, state);
@@ -974,20 +956,22 @@ void ForwardInputBuilder::append_linear_state_row(Sequence* sequence,
   state.linear_state_cache_ops.emplace_back(std::move(linear_state_cache_op));
 }
 
-void ForwardInputBuilder::handle_sampling_parameters(Sequence* sequence,
-                                                     BuilderState* state_ptr) {
+void ForwardInputBuilder::handle_sampling_parameters(
+    const BatchSamplingRow& row,
+    int32_t token_index,
+    BuilderState* state_ptr) {
   BuilderState& state = state_ptr ? *state_ptr : state_;
-
+  Sequence* sequence = row.sequence;
   state.sampling.append(
-      sequence->sampling_param(),
-      static_cast<int32_t>(state.flatten_tokens_vec.size() - 1),
+      row,
+      token_index,
       need_unique_tokens_ ? &sequence->token_to_count_map() : nullptr);
   if (enable_json_object_output_) {
     const JsonObjectGrammarState* json_state = sequence->json_object_state();
-    state.json_object_states.push_back(
+    state.json_object_states.emplace_back(
         json_state == nullptr ? JsonObjectGrammarState() : *json_state);
     state.sample_sequence_ids.emplace_back(sequence->sample_sequence_id());
-    const int32_t sampled_input_token = state.flatten_tokens_vec.back();
+    const int32_t sampled_input_token = state.flatten_tokens_vec[token_index];
     state.sample_prior_output_rows.emplace_back(
         sampled_input_token < 0 ? -sampled_input_token - 1 : -1);
   }

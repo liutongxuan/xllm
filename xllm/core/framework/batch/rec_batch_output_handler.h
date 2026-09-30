@@ -33,6 +33,10 @@ class RecBatchOutputHandler final {
 
   void clear() { sequence_handler_.clear(); }
   void prepare(const BatchInputData& data);
+  // The sequence input builder borrows the same snapshot used for writeback.
+  const BatchSamplingPlan& sampling_plan() const {
+    return sequence_handler_.sampling_plan();
+  }
   void process_sample_output(const BatchOutputData& data,
                              const RawForwardOutput& output,
                              bool replace_fake_token);

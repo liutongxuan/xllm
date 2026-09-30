@@ -13,6 +13,9 @@ cc_library(
     batch.h
     batch_group.h
     batch_state.h
+    batch_storage.h
+    batch_sampling_plan.h
+    batch_sequence_ordering.h
     rec_batch.h
     rec_batch_state.h
     rec_batch_group.h
@@ -36,6 +39,9 @@ cc_library(
     batch.cpp
     batch_group.cpp
     batch_state.cpp
+    batch_storage.cpp
+    batch_sampling_plan.cpp
+    batch_sequence_ordering.cpp
     rec_batch.cpp
     rec_batch_state.cpp
     rec_batch_group.cpp

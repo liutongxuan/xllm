@@ -20,14 +20,18 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
-#include "core/framework/batch/batch_state.h"
+#include "core/framework/batch/batch_storage.h"
 #include "core/framework/batch/rec_batch_output_handler.h"
 #include "core/framework/config/rec_execution_config.h"
 
 namespace xllm {
 
+struct ModelArgs;
+class ThreadPool;
+class MPMCThreadPool;
+
 // Owns Rec sequence management, forward preparation and output processing.
-// Shared batch state remains a private implementation detail.
+// Shared sequence storage remains a private implementation detail.
 class RecBatchState final {
  public:
   explicit RecBatchState(RecExecutionConfig config);
@@ -36,30 +40,30 @@ class RecBatchState final {
   BatchInputType input_type() const { return config_.input_type(); }
   const RecExecutionConfig& execution_config() const { return config_; }
   void reserve(size_t sequence_count, size_t group_count) {
-    sequence_state_.reserve(sequence_count, group_count);
+    storage_.reserve(sequence_count, group_count);
   }
   void add(Sequence* sequence, uint32_t token_budget) {
-    sequence_state_.add(sequence, token_budget);
+    storage_.add(sequence, token_budget);
   }
-  void add(SequencesGroup* group) { sequence_state_.add(group); }
-  void set_batch_id() { sequence_state_.set_batch_id(); }
-  uint64_t batch_id() const { return sequence_state_.batch_id(); }
-  bool empty() const { return sequence_state_.empty(); }
+  void add(SequencesGroup* group) { storage_.add(group); }
+  void set_batch_id() { storage_.set_batch_id(); }
+  uint64_t batch_id() const { return storage_.batch_id(); }
+  bool empty() const { return storage_.empty(); }
   size_t num_scheduled_sequences() const {
-    return sequence_state_.sequence_plan().size();
+    return storage_.sequence_plan().size();
   }
-  size_t num_groups() const { return sequence_state_.sequence_groups().size(); }
+  size_t num_groups() const { return storage_.sequence_groups().size(); }
   void set_swap_block_transfer_infos(std::vector<BlockTransferInfo> infos) {
-    sequence_state_.set_swap_block_transfer_infos(std::move(infos));
+    storage_.set_swap_block_transfer_infos(std::move(infos));
   }
   const std::vector<SequencesGroup*>& sequence_groups() const {
-    return sequence_state_.sequence_groups();
+    return storage_.sequence_groups();
   }
   const BatchSequencePlan& sequence_plan() const {
-    return sequence_state_.sequence_plan();
+    return storage_.sequence_plan();
   }
   const std::vector<uint32_t>& get_allowed_max_tokens() const {
-    return sequence_state_.sequence_plan().budgets();
+    return storage_.sequence_plan().budgets();
   }
 
   bool uses_group_input() const;
@@ -92,7 +96,7 @@ class RecBatchState final {
   void finish();
 
  private:
-  BatchState sequence_state_;
+  BatchStorage storage_;
   RecExecutionConfig config_;
   RecBatchOutputHandler output_handler_;
 };

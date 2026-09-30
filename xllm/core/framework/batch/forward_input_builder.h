@@ -21,12 +21,14 @@ limitations under the License.
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include "core/framework/batch/batch_input_data.h"
+#include "core/framework/batch/batch_sampling_plan.h"
 #include "core/framework/batch/sampling_input_builder.h"
 #include "core/framework/multimodal/mm_data.h"
 #include "core/framework/request/sequence.h"
@@ -43,7 +45,8 @@ class ForwardInputBuilder final {
   ForwardInputBuilder(const BatchInputData& data,
                       const ModelArgs* args,
                       int32_t cp_size = 1,
-                      ThreadPool* thread_pool = nullptr);
+                      ThreadPool* thread_pool = nullptr,
+                      const BatchSamplingPlan* sampling_plan = nullptr);
 
   explicit ForwardInputBuilder(
       const std::vector<Sequence*>& sequences,
@@ -56,7 +59,13 @@ class ForwardInputBuilder final {
       const ModelArgs* args,
       BatchForwardType batch_forward_type,
       int32_t cp_size = 1,
-      ThreadPool* thread_pool = nullptr);
+      ThreadPool* thread_pool = nullptr,
+      const BatchSamplingPlan* sampling_plan = nullptr);
+
+  ForwardInputBuilder(const ForwardInputBuilder&) = delete;
+  ForwardInputBuilder& operator=(const ForwardInputBuilder&) = delete;
+  ForwardInputBuilder(ForwardInputBuilder&&) = delete;
+  ForwardInputBuilder& operator=(ForwardInputBuilder&&) = delete;
 
   ForwardInput build_forward_input(uint32_t num_decoding_tokens,
                                    uint32_t min_decoding_batch_size);
@@ -157,8 +166,7 @@ class ForwardInputBuilder final {
                                   int32_t seq_index,
                                   BuilderState* state_ptr = nullptr);
   void extract_tokens_and_positions(Sequence* sequence,
-                                    uint32_t n_kv_cache_tokens,
-                                    uint32_t seq_len,
+                                    const BatchSamplingWindow& window,
                                     BuilderState* state_ptr = nullptr);
   // Append this batch row's linear-state transport fields: the live slot id
   // (always, so rows stay aligned) plus a LinearStateCacheOp carrying the
@@ -171,7 +179,8 @@ class ForwardInputBuilder final {
                                     uint32_t start,
                                     uint32_t end);
 
-  void handle_sampling_parameters(Sequence* sequence,
+  void handle_sampling_parameters(const BatchSamplingRow& row,
+                                  int32_t token_index,
                                   BuilderState* state_ptr = nullptr);
   void setup_kv_cache_info(
       Sequence* sequence,
@@ -187,6 +196,11 @@ class ForwardInputBuilder final {
   const std::vector<torch::Tensor>& input_embeddings_vec_;
   std::vector<MMData> mm_data_vec_;
   const ModelArgs* args_;
+
+  // Legacy direct builders own the same snapshot type used by Batch. Ordinary
+  // batch execution borrows the output handler's plan through writeback.
+  std::optional<BatchSamplingPlan> owned_sampling_plan_;
+  const BatchSamplingPlan* sampling_plan_ = nullptr;
 
   // Builder state
   BuilderState state_;

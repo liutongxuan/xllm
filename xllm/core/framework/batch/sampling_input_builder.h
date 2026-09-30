@@ -24,11 +24,19 @@ limitations under the License.
 
 namespace xllm {
 
+struct BatchSamplingRow;
+
 // Common sampling-row layout for sequence and Rec inputs. Request parameters
 // are non-owning; row indices and token statistics belong to this build.
 class SamplingInputBuilder final {
  public:
   using TokenCounts = std::unordered_map<int32_t, int32_t>;
+
+  SamplingInputBuilder() = default;
+  SamplingInputBuilder(const SamplingInputBuilder&) = delete;
+  SamplingInputBuilder& operator=(const SamplingInputBuilder&) = delete;
+  SamplingInputBuilder(SamplingInputBuilder&&) noexcept = default;
+  SamplingInputBuilder& operator=(SamplingInputBuilder&&) noexcept = default;
 
   void reserve(size_t rows);
   void append(const RequestSamplingParam* params,
@@ -36,6 +44,10 @@ class SamplingInputBuilder final {
               const TokenCounts* counts = nullptr,
               const TokenCounts* excluded_counts = nullptr,
               bool sample = true);
+  void append(const BatchSamplingRow& row,
+              int32_t token_index,
+              const TokenCounts* counts = nullptr,
+              const TokenCounts* excluded_counts = nullptr);
   void merge(SamplingInputBuilder other, int32_t token_offset);
   SamplingParameters build();
 

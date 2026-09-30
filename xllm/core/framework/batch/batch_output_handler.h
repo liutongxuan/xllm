@@ -18,9 +18,11 @@ limitations under the License.
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 #include "core/framework/batch/batch_input_data.h"
+#include "core/framework/batch/batch_sampling_plan.h"
 #include "core/runtime/forward_params.h"
 
 namespace xllm {
@@ -36,9 +38,16 @@ struct BatchOutputData {
 // forward.
 class BatchOutputHandler final {
  public:
-  void clear() { output_targets_.clear(); }
+  void clear() {
+    output_targets_.clear();
+    sampling_plan_.reset();
+  }
   void reserve(size_t target_count) { output_targets_.reserve(target_count); }
   void prepare(const BatchInputData& data);
+  void prepare(BatchSamplingPlan plan);
+  const BatchSamplingPlan& sampling_plan() const {
+    return sampling_plan_.value();
+  }
   // Domain handlers may collect token-based and explicitly selected targets
   // in forward row order after clear(), before input building advances KV
   // state.
@@ -56,11 +65,8 @@ class BatchOutputHandler final {
                                   bool replace_fake_token);
 
  private:
-  struct OutputTarget {
-    Sequence* sequence = nullptr;
-    size_t sample_id = 0;
-    bool from_sample_slot = false;
-  };
+  size_t target_count() const;
+  const BatchSamplingRow& target(size_t output_index) const;
 
   bool update_sequence_state(Sequence* sequence, bool replace_fake_token);
   void append_token_for_sequence(Sequence* sequence,
@@ -70,7 +76,8 @@ class BatchOutputHandler final {
   void process_beam_search(const BatchOutputData& data,
                            bool force_requested_result_size = false);
 
-  std::vector<OutputTarget> output_targets_;
+  std::vector<BatchSamplingRow> output_targets_;
+  std::optional<BatchSamplingPlan> sampling_plan_;
 };
 
 }  // namespace xllm

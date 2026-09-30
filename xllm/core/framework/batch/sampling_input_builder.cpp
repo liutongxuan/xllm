@@ -20,6 +20,8 @@ limitations under the License.
 #include <iterator>
 #include <limits>
 
+#include "core/framework/batch/batch_sampling_plan.h"
+#include "core/framework/request/sequence.h"
 #include "core/util/utils.h"
 
 namespace xllm {
@@ -66,6 +68,18 @@ void SamplingInputBuilder::append(const RequestSamplingParam* params,
     }
   }
   token_lengths_.emplace_back(static_cast<int32_t>(ids.size()));
+}
+
+void SamplingInputBuilder::append(const BatchSamplingRow& row,
+                                  int32_t token_index,
+                                  const TokenCounts* counts,
+                                  const TokenCounts* excluded_counts) {
+  CHECK(row.sequence != nullptr);
+  append(row.sequence->sampling_param(),
+         token_index,
+         counts,
+         excluded_counts,
+         row.sample);
 }
 
 void SamplingInputBuilder::merge(SamplingInputBuilder other,

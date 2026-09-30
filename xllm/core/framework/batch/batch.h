@@ -37,6 +37,10 @@ struct ModelArgs;
 class Batch final {
  public:
   Batch() = default;
+  Batch(const Batch&) = delete;
+  Batch& operator=(const Batch&) = delete;
+  Batch(Batch&&) noexcept = default;
+  Batch& operator=(Batch&&) noexcept = default;
 
   BatchInputType input_type() const;
   void reserve(size_t sequence_count, size_t group_count);

@@ -71,17 +71,22 @@ ForwardInput Batch::prepare_forward_input(uint32_t num_decoding_tokens,
                                           const ModelArgs& args,
                                           int32_t cp_size) {
   const auto data = state_.prepare_sequence_input_data();
-  output_handler_.prepare(data);
-  return state_.build_sequence_input(
-      data, num_decoding_tokens, min_decoding_batch_size, args, cp_size);
+  output_handler_.prepare(BatchSamplingPlan::create(data));
+  return state_.build_sequence_input(data,
+                                     num_decoding_tokens,
+                                     min_decoding_batch_size,
+                                     args,
+                                     cp_size,
+                                     &output_handler_.sampling_plan());
 }
 
 ForwardInput Batch::prepare_forward_input(const ModelArgs& args,
                                           ThreadPool* thread_pool,
                                           int32_t cp_size) {
   const auto data = state_.prepare_distributed_input_data();
-  output_handler_.prepare(data);
-  return state_.build_distributed_input(data, args, thread_pool, cp_size);
+  output_handler_.prepare(BatchSamplingPlan::create(data));
+  return state_.build_distributed_input(
+      data, args, thread_pool, cp_size, &output_handler_.sampling_plan());
 }
 
 void Batch::process_sample_output(const RawForwardOutput& output,

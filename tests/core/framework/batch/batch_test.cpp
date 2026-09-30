@@ -25,11 +25,15 @@ limitations under the License.
 #include <memory>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
+#include "core/framework/batch/batch_sampling_plan.h"
+#include "core/framework/batch/batch_storage.h"
 #include "core/framework/batch/forward_input_builder.h"
+#include "core/framework/batch/sampling_input_builder.h"
 #include "core/framework/config/scheduler_config.h"
 #include "framework/block/block.h"
 #include "framework/block/block_manager_impl.h"
@@ -321,6 +325,199 @@ class ScopedJsonObjectOutput final {
 };
 
 }  // namespace
+
+static_assert(!std::is_copy_constructible_v<BatchSamplingPlan>);
+static_assert(std::is_nothrow_move_constructible_v<BatchSamplingPlan>);
+static_assert(!std::is_copy_constructible_v<BatchStorage>);
+static_assert(std::is_nothrow_move_constructible_v<BatchStorage>);
+static_assert(!std::is_copy_constructible_v<Batch>);
+static_assert(std::is_nothrow_move_constructible_v<Batch>);
+static_assert(!std::is_copy_constructible_v<SamplingInputBuilder>);
+static_assert(std::is_nothrow_move_constructible_v<SamplingInputBuilder>);
+
+TEST(BatchSamplingPlanTest, RetainsReorderedWindowsAfterKvStateAdvances) {
+  Sequence partial = make_basic_sequence({1, 2, 3, 4});
+  Sequence sampled = make_basic_sequence({5, 6});
+  partial.kv_state().set_kv_cache_tokens_num(1);
+  BatchStorage storage;
+  storage.add(&partial, /*token_budget=*/2);
+  storage.add(&sampled, /*token_budget=*/2);
+  storage.sequence_plan().reorder({1, 0});
+  BatchSamplingPlan plan =
+      BatchSamplingPlan::create(storage.input_data(storage.sequence_plan()));
+  sampled.kv_state().set_kv_cache_tokens_num(2);
+  partial.kv_state().set_kv_cache_tokens_num(3);
+  BatchSamplingPlan moved = std::move(plan);
+
+  ASSERT_EQ(moved.sequence_count(), 2);
+  EXPECT_EQ(moved.window(0).sequence, &sampled);
+  EXPECT_EQ(moved.window(0).token_begin, 0);
+  EXPECT_EQ(moved.window(0).token_end, 2);
+  EXPECT_EQ(moved.window(1).sequence, &partial);
+  EXPECT_EQ(moved.window(1).token_begin, 1);
+  EXPECT_EQ(moved.window(1).token_end, 3);
+  ASSERT_EQ(moved.rows().size(), 1);
+  EXPECT_EQ(moved.rows()[0].sequence, &sampled);
+  EXPECT_EQ(moved.rows()[0].source_position, 1);
+  EXPECT_EQ(moved.sample_rows(), (std::vector<size_t>{0}));
+}
+
+TEST(SamplingInputBuilderTest, PlanRowsKeepSelectedAndSampleOffsetsDistinct) {
+  Sequence sequence = make_basic_sequence({1, 2});
+  SamplingInputBuilder first;
+  first.append(BatchSamplingRow{&sequence,
+                                /*source_position=*/0,
+                                /*sample_id=*/0,
+                                /*from_sample_slot=*/false,
+                                /*sample=*/false},
+               /*token_index=*/0);
+  first.append(BatchSamplingRow{&sequence, /*source_position=*/1},
+               /*token_index=*/1);
+  SamplingInputBuilder second;
+  second.append(BatchSamplingRow{&sequence, /*source_position=*/0},
+                /*token_index=*/0);
+  first.merge(std::move(second), /*token_offset=*/4);
+  EXPECT_EQ(first.selected_token_indices(), (std::vector<int32_t>{0, 1, 4}));
+  EXPECT_EQ(first.sample_indices(), (std::vector<int32_t>{1, 2}));
+}
+
+TEST(BatchSamplingPlanTest, PreservesSlotOrderWithinScheduledWindow) {
+  RequestSamplingParam sampling_param;
+  StoppingChecker stopping_checker;
+  std::vector<SampleSlot> slots(5);
+  const std::vector<size_t> positions = {5, 0, 3, 4, 6};
+  for (size_t index = 0; index < slots.size(); ++index) {
+    slots[index].sample_id = index;
+    slots[index].token_position = positions[index];
+  }
+  SequenceParams params;
+  params.seq_capacity = 16;
+  params.sampling_param = &sampling_param;
+  params.stopping_checker = &stopping_checker;
+  params.sample_slots = &slots;
+  IncrementalDecoder decoder(/*prompt=*/"",
+                             /*num_prompt_tokens=*/6,
+                             /*echo=*/false,
+                             /*skip_special_tokens=*/true);
+  Sequence sequence(/*index=*/0,
+                    /*prompt_token_ids=*/{1, 2, 3, 4, 5, 6},
+                    torch::Tensor(),
+                    MMData(),
+                    std::move(decoder),
+                    params);
+  sequence.kv_state().set_kv_cache_tokens_num(2);
+  const BatchSamplingPlan plan = BatchSamplingPlan::create(&sequence,
+                                                           /*token_budget=*/3);
+  ASSERT_EQ(plan.rows().size(), 3);
+  EXPECT_EQ(plan.rows()[0].source_position, 4);
+  EXPECT_EQ(plan.rows()[0].sample_id, 0);
+  EXPECT_EQ(plan.rows()[1].source_position, 2);
+  EXPECT_EQ(plan.rows()[1].sample_id, 2);
+  EXPECT_EQ(plan.rows()[2].source_position, 3);
+  EXPECT_EQ(plan.rows()[2].sample_id, 3);
+}
+
+TEST(BatchTest, SharedSamplingPlanKeepsThreadedDuplicateSourcesAndOutputRows) {
+  constexpr size_t kPromptLength = 32768;
+  BlockManager::Options options;
+  options.num_blocks(16).block_size(8192);
+  BlockManagerImpl manager(options);
+  RequestSamplingParam sampling_param;
+  StoppingChecker stopping_checker;
+  stopping_checker.set_max_generated_tokens(3);
+  std::vector<SampleSlot> slots(3);
+  slots[0].token_position = 0;
+  slots[0].sample_id = 0;
+  slots[1].token_position = 1;
+  slots[1].sample_id = 1;
+  slots[2].token_position = kPromptLength;
+  slots[2].sample_id = 2;
+  SequenceParams params;
+  params.seq_capacity = kPromptLength + 8;
+  params.sampling_param = &sampling_param;
+  params.stopping_checker = &stopping_checker;
+  params.sample_slots = &slots;
+  params.request_id = "sampling-plan";
+  IncrementalDecoder first_decoder(/*prompt=*/"",
+                                   kPromptLength,
+                                   /*echo=*/false,
+                                   /*skip_special_tokens=*/true);
+  IncrementalDecoder second_decoder(/*prompt=*/"",
+                                    kPromptLength,
+                                    /*echo=*/false,
+                                    /*skip_special_tokens=*/true);
+  const std::vector<int32_t> prompt(kPromptLength, 1);
+  Sequence first(/*index=*/0,
+                 prompt,
+                 torch::Tensor(),
+                 MMData(),
+                 std::move(first_decoder),
+                 params);
+  Sequence second(/*index=*/1,
+                  prompt,
+                  torch::Tensor(),
+                  MMData(),
+                  std::move(second_decoder),
+                  params);
+  first.add_blocks(BlockType::KV, manager.allocate(/*num_blocks=*/4));
+  second.add_blocks(BlockType::KV, manager.allocate(/*num_blocks=*/4));
+  BatchStorage storage;
+  storage.add(&first, std::numeric_limits<uint32_t>::max());
+  storage.add(&second, std::numeric_limits<uint32_t>::max());
+  const BatchInputData data = storage.input_data(storage.sequence_plan());
+  BatchOutputHandler handler;
+  handler.prepare(BatchSamplingPlan::create(data));
+  ThreadPool thread_pool(/*num_threads=*/2);
+  ModelArgs args;
+  ForwardInputBuilder builder(
+      data, &args, /*cp_size=*/1, &thread_pool, &handler.sampling_plan());
+  // 65,536 query tokens exercise the builder's parallel path.
+  const ForwardInput input = builder.build_forward_input(
+      /*num_decoding_tokens=*/0, /*min_decoding_batch_size=*/0);
+  EXPECT_TRUE(equal(input.sampling_params.selected_token_idxes,
+                    std::vector<int32_t>{0, 0, 32767, 32768, 32768, 65535}));
+  EXPECT_TRUE(equal(input.sampling_params.sample_idxes,
+                    std::vector<int32_t>{0, 1, 2, 3, 4, 5}));
+  EXPECT_EQ(handler.sampling_plan().window(0).token_begin, 0);
+  EXPECT_EQ(first.kv_state().kv_cache_tokens_num(), kPromptLength);
+
+  RawForwardOutput output;
+  output.outputs.reserve(6);
+  for (const int64_t token : {11, 12, 13, 21, 22, 23}) {
+    output.outputs.emplace_back(make_raw_sample_output(token, std::nullopt));
+  }
+  handler.process_sample_output({data.sequences, data.sequence_groups},
+                                output,
+                                /*replace_fake_token=*/false);
+  EXPECT_EQ(first.num_generated_tokens(), 3);
+  EXPECT_EQ(second.num_generated_tokens(), 3);
+  EXPECT_EQ(first.tokens()[kPromptLength], 11);
+  EXPECT_EQ(first.tokens()[kPromptLength + 2], 13);
+  EXPECT_EQ(second.tokens()[kPromptLength], 21);
+  EXPECT_EQ(second.tokens()[kPromptLength + 2], 23);
+}
+
+TEST(BatchTest, DecodePaddingDoesNotCreateSamplingOutputRows) {
+  BlockManager::Options options;
+  options.num_blocks(8).block_size(4);
+  BlockManagerImpl manager(options);
+  Sequence sequence = make_basic_sequence({1, 2, 3});
+  sequence.add_blocks(BlockType::KV, manager.allocate(/*num_blocks=*/2));
+  sequence.kv_state().set_kv_cache_tokens_num(3);
+  sequence.append_token(/*token_id=*/4);
+  ASSERT_EQ(sequence.stage(), SequenceStage::DECODE);
+  Batch batch(&sequence);
+  const ForwardInput input = batch.prepare_forward_input(
+      /*num_decoding_tokens=*/1, /*min_decoding_batch_size=*/4, ModelArgs());
+  EXPECT_EQ(input.token_ids.numel(), 4);
+  EXPECT_TRUE(equal(input.sampling_params.selected_token_idxes,
+                    std::vector<int32_t>{0}));
+  RawForwardOutput output;
+  output.outputs.emplace_back(make_raw_sample_output(42, std::nullopt));
+  batch.process_sample_output(output, /*replace_fake_token=*/false);
+  EXPECT_EQ(sequence.num_generated_tokens(), 2);
+  EXPECT_EQ(sequence.tokens()[sequence.num_prompt_tokens() + 1], 42);
+}
 
 TEST(ForwardInputBuilderTest, FirstChunkUsesRemotePrefix) {
   BlockManager::Options options;
@@ -2588,6 +2785,57 @@ TEST(BatchTest, UnusedLinearRestoreSourceIsReleasedDuringBuild) {
   EXPECT_EQ(manager.allocate(1).size(), 1u);
 }
 
+TEST(BatchTest, MovedBatchKeepsLinearRestoreSourcePinnedThroughWriteback) {
+  ScopedPrefillChunkStride chunk_stride(/*chunk_stride=*/4);
+  BlockManager::Options options;
+  options.num_blocks(/*num_blocks=*/4).block_size(/*block_size=*/4);
+  BlockManagerImpl manager(options);
+  Sequence sequence = make_basic_sequence({1, 2, 3, 4, 5, 6, 7, 8});
+  sequence.add_blocks(BlockType::KV, manager.allocate(/*num_blocks=*/2));
+  sequence.kv_state().incr_kv_cache_tokens_num(/*size=*/4);
+  std::vector<Block> restore_sources = manager.allocate(/*num_blocks=*/1);
+  ASSERT_EQ(restore_sources.size(), 1u);
+  const int32_t restore_source_id = restore_sources[0].id();
+  sequence.set_linear_restore_src_block(std::move(restore_sources[0]));
+
+  std::optional<Batch> original_batch;
+  original_batch.emplace(&sequence);
+  ModelArgs args;
+  args.layer_types({"linear_attention"});
+  const ForwardInput input = original_batch->prepare_forward_input(
+      /*num_decoding_tokens=*/0, /*min_decoding_bach_size=*/0, args);
+  ASSERT_EQ(input.input_params.linear_state_cache_ops.size(), 1u);
+  EXPECT_TRUE(input.input_params.linear_state_cache_ops[0].restore_requested);
+  EXPECT_EQ(input.input_params.linear_state_cache_ops[0].restore_src_slot_id,
+            restore_source_id);
+  EXPECT_FALSE(sequence.has_linear_restore_src_block());
+
+  std::optional<Batch> moved_batch;
+  moved_batch.emplace(std::move(*original_batch));
+  original_batch.reset();
+  EXPECT_TRUE(manager.allocate(/*num_blocks=*/1).empty());
+
+  std::optional<Batch> assigned_batch;
+  assigned_batch.emplace();
+  *assigned_batch = std::move(*moved_batch);
+  moved_batch.reset();
+  EXPECT_TRUE(manager.allocate(/*num_blocks=*/1).empty());
+
+  RawForwardOutput output;
+  output.outputs.emplace_back(
+      make_raw_sample_output(/*token_id=*/42, std::nullopt));
+  assigned_batch->process_sample_output(output, /*replace_fake_token=*/false);
+  EXPECT_EQ(sequence.num_generated_tokens(), 1u);
+  EXPECT_EQ(sequence.tokens()[sequence.num_prompt_tokens()], 42);
+  EXPECT_TRUE(manager.allocate(/*num_blocks=*/1).empty());
+
+  // Only the final owner can release the source slot for another allocation.
+  assigned_batch.reset();
+  const std::vector<Block> recycled = manager.allocate(/*num_blocks=*/1);
+  ASSERT_EQ(recycled.size(), 1u);
+  EXPECT_EQ(recycled[0].id(), restore_source_id);
+}
+
 TEST(BatchTest, ThreadedBatchPinsEveryLinearRestoreSourceUntilRelease) {
   ScopedPrefillChunkStride chunk_stride(/*chunk_stride=*/4);
 
@@ -3053,15 +3301,16 @@ TEST(BatchTest, KeepTargetsForOverlapReplacement) {
   batch.prepare_forward_input(
       /*num_decoding_tokens=*/1, /*min_decoding_bach_size=*/0, ModelArgs());
 
+  Batch moved_batch = std::move(batch);
   RawForwardOutput fake_output;
   fake_output.outputs.push_back(make_raw_sample_output(-1, std::nullopt));
-  batch.process_sample_output(fake_output, /*replace_fake_token=*/false);
+  moved_batch.process_sample_output(fake_output, /*replace_fake_token=*/false);
   EXPECT_EQ(seq.tokens()[seq.num_prompt_tokens()], -1);
   EXPECT_FALSE(seq.finished());
 
   RawForwardOutput real_output;
   real_output.outputs.push_back(make_raw_sample_output(101, -0.1f));
-  batch.process_sample_output(real_output, /*replace_fake_token=*/true);
+  moved_batch.process_sample_output(real_output, /*replace_fake_token=*/true);
 
   EXPECT_EQ(seq.tokens()[seq.num_prompt_tokens()], 101);
   EXPECT_TRUE(seq.finished());

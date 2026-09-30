@@ -16,76 +16,88 @@ limitations under the License.
 
 #pragma once
 
-#include <limits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "core/framework/batch/batch_input_data.h"
-#include "core/framework/batch/batch_sequence_plan.h"
+#include "core/framework/batch/batch_sampling_plan.h"
+#include "core/framework/batch/batch_sequence_ordering.h"
+#include "core/framework/batch/batch_storage.h"
 #include "core/runtime/forward_params.h"
 #include "core/util/threadpool.h"
 
 namespace xllm {
 
 struct ModelArgs;
-constexpr uint64_t UNINITIALIZED_BATCH_ID = 0x0;
 
-// Shared sequence execution state, composed by Batch and RecBatchState. It
-// maintains scheduling invariants and forward resources across model domains.
+// Ordinary LLM/VLM input coordination. Shared sequence resources are composed
+// through BatchStorage; domain-specific builders stay outside that storage.
 class BatchState final {
  public:
-  void reserve(size_t sequence_count, size_t group_count);
-  void add(Sequence* sequence, uint32_t token_budget);
-  void add(SequencesGroup* group);
-  void set_batch_id();
-  uint64_t batch_id() const { return batch_id_; }
-  bool empty() const {
-    return sequence_plan_.empty() && sequence_groups_.empty();
+  void reserve(size_t sequence_count, size_t group_count) {
+    storage_.reserve(sequence_count, group_count);
   }
-  BatchSequencePlan& sequence_plan() { return sequence_plan_; }
-  const BatchSequencePlan& sequence_plan() const { return sequence_plan_; }
+  void add(Sequence* sequence, uint32_t token_budget) {
+    storage_.add(sequence, token_budget);
+  }
+  void add(SequencesGroup* group) { storage_.add(group); }
+  void set_batch_id() { storage_.set_batch_id(); }
+  uint64_t batch_id() const { return storage_.batch_id(); }
+  bool empty() const { return storage_.empty(); }
+  BatchSequencePlan& sequence_plan() { return storage_.sequence_plan(); }
+  const BatchSequencePlan& sequence_plan() const {
+    return storage_.sequence_plan();
+  }
   const std::vector<SequencesGroup*>& sequence_groups() const {
-    return sequence_groups_;
+    return storage_.sequence_groups();
   }
   void set_swap_block_transfer_infos(std::vector<BlockTransferInfo> infos) {
-    swap_block_transfer_infos_ = std::move(infos);
+    storage_.set_swap_block_transfer_infos(std::move(infos));
   }
-  void update_forward_type(Sequence* sequence);
-  void refresh_forward_type(const std::vector<Sequence*>& sequences);
-  void refresh_sequences_from_groups();
-  std::vector<Sequence*> group_sequences() const;
-  size_t num_group_sequences() const;
-  Sequence* group_sequence(size_t index) const;
-  BatchInputData input_data(const BatchSequencePlan& plan);
+  void update_forward_type(Sequence* sequence) {
+    storage_.update_forward_type(sequence);
+  }
+  void refresh_forward_type(const std::vector<Sequence*>& sequences) {
+    storage_.refresh_forward_type(sequences);
+  }
+  void refresh_sequences_from_groups() {
+    storage_.refresh_sequences_from_groups();
+  }
+  std::vector<Sequence*> group_sequences() const {
+    return storage_.group_sequences();
+  }
+  size_t num_group_sequences() const { return storage_.num_group_sequences(); }
+  Sequence* group_sequence(size_t index) const {
+    return storage_.group_sequence(index);
+  }
+  BatchInputData input_data(const BatchSequencePlan& plan) {
+    return storage_.input_data(plan);
+  }
   // Prepare the final sequence view before domain output handlers capture
   // their targets. Build methods may then advance KV state.
   BatchInputData prepare_sequence_input_data();
   BatchInputData prepare_distributed_input_data();
-  ForwardInput build_sequence_input(const BatchInputData& data,
-                                    uint32_t num_decoding_tokens,
-                                    uint32_t min_decoding_batch_size,
-                                    const ModelArgs& args,
-                                    int32_t cp_size);
-  ForwardInput build_distributed_input(const BatchInputData& data,
-                                       const ModelArgs& args,
-                                       ThreadPool* thread_pool,
-                                       int32_t cp_size);
+  ForwardInput build_sequence_input(
+      const BatchInputData& data,
+      uint32_t num_decoding_tokens,
+      uint32_t min_decoding_batch_size,
+      const ModelArgs& args,
+      int32_t cp_size,
+      const BatchSamplingPlan* sampling_plan = nullptr);
+  ForwardInput build_distributed_input(
+      const BatchInputData& data,
+      const ModelArgs& args,
+      ThreadPool* thread_pool,
+      int32_t cp_size,
+      const BatchSamplingPlan* sampling_plan = nullptr);
   static std::unordered_map<uint32_t, uint32_t> cal_seq_exchange_index(
-      std::vector<uint32_t>& kv_cache_tokens_num);
+      std::vector<uint32_t>& kv_cache_tokens_num) {
+    return BatchSequenceOrdering::cal_seq_exchange_index(kv_cache_tokens_num);
+  }
 
  private:
-  void dp_balance_shuffle_seqs();
-  bool has_partial_finished_beam_group() const;
-  BatchSequencePlan sequence_plan_;
-  std::vector<SequencesGroup*> sequence_groups_;
-  std::vector<BlockTransferInfo> swap_block_transfer_infos_;
-  std::vector<torch::Tensor> input_embeddings_vec_;
-  std::vector<MMData> mm_data_vec_;
-  // Keep serialized restore sources alive through worker-result processing.
-  std::vector<Block> linear_restore_src_blocks_;
-  BatchForwardType batch_forward_type_;
-  uint64_t batch_id_ = UNINITIALIZED_BATCH_ID;
+  BatchStorage storage_;
 };
 
 }  // namespace xllm

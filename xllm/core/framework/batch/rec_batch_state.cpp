@@ -19,6 +19,8 @@ limitations under the License.
 
 #include <limits>
 
+#include "core/framework/batch/batch_sequence_ordering.h"
+#include "core/framework/batch/forward_input_builder.h"
 #include "core/framework/batch/rec_forward_input_builder.h"
 
 namespace xllm {
@@ -36,29 +38,29 @@ bool RecBatchState::uses_group_input() const {
 }
 
 size_t RecBatchState::size() const {
-  return uses_group_input() ? sequence_state_.num_group_sequences()
-                            : sequence_state_.sequence_plan().size();
+  return uses_group_input() ? storage_.num_group_sequences()
+                            : storage_.sequence_plan().size();
 }
 
 Sequence* RecBatchState::sequence(size_t index) const {
-  return uses_group_input() ? sequence_state_.group_sequence(index)
-                            : sequence_state_.sequence_plan()[index].sequence;
+  return uses_group_input() ? storage_.group_sequence(index)
+                            : storage_.sequence_plan()[index].sequence;
 }
 
 std::vector<Sequence*> RecBatchState::get_sequences() const {
-  if (!uses_group_input() && !sequence_state_.sequence_plan().empty()) {
-    return sequence_state_.sequence_plan().sequences();
+  if (!uses_group_input() && !storage_.sequence_plan().empty()) {
+    return storage_.sequence_plan().sequences();
   }
-  return sequence_state_.group_sequences();
+  return storage_.group_sequences();
 }
 
 void RecBatchState::refresh_forward_type() {
-  sequence_state_.refresh_forward_type(get_sequences());
+  storage_.refresh_forward_type(get_sequences());
 }
 
 void RecBatchState::refresh_sequences_from_groups() {
   if (!uses_group_input()) {
-    sequence_state_.refresh_sequences_from_groups();
+    storage_.refresh_sequences_from_groups();
   }
 }
 
@@ -68,10 +70,21 @@ ForwardInput RecBatchState::prepare_forward_input(
     const ModelArgs& args,
     int32_t cp_size) {
   if (config_.input_type() == BatchInputType::SEQUENCE) {
-    const auto data = sequence_state_.prepare_sequence_input_data();
+    CHECK(storage_.sequence_groups().empty() ||
+          !storage_.sequence_plan().empty())
+        << "Sequence input requires scheduled sequences";
+    const auto data = storage_.input_data(storage_.sequence_plan());
     output_handler_.prepare(data);
-    return sequence_state_.build_sequence_input(
-        data, num_decoding_tokens, min_decoding_batch_size, args, cp_size);
+    ForwardInputBuilder builder(data,
+                                &args,
+                                cp_size,
+                                /*thread_pool=*/nullptr,
+                                &output_handler_.sampling_plan());
+    auto input = builder.build_forward_input(num_decoding_tokens,
+                                             min_decoding_batch_size);
+    storage_.set_linear_restore_src_blocks(
+        builder.take_linear_restore_src_blocks());
+    return input;
   }
   return prepare_rec_forward_input(num_decoding_tokens,
                                    min_decoding_batch_size,
@@ -84,10 +97,21 @@ ForwardInput RecBatchState::prepare_forward_input(const ModelArgs& args,
                                                   int32_t cp_size) {
   CHECK(config_.input_type() == BatchInputType::SEQUENCE)
       << "Distributed input transport requires a sequence batch";
-  const auto data = sequence_state_.prepare_distributed_input_data();
+  CHECK(storage_.sequence_groups().empty() || !storage_.sequence_plan().empty())
+      << "Sequence input requires scheduled sequences";
+  BatchSequenceOrdering::prepare(storage_);
+  const auto data = storage_.input_data(storage_.sequence_plan());
   output_handler_.prepare(data);
-  return sequence_state_.build_distributed_input(
-      data, args, thread_pool, cp_size);
+  ForwardInputBuilder builder(
+      data, &args, cp_size, thread_pool, &output_handler_.sampling_plan());
+  auto input = builder.build_forward_input(/*num_decoding_tokens=*/0,
+                                           /*min_decoding_batch_size=*/0);
+  storage_.set_linear_restore_src_blocks(
+      builder.take_linear_restore_src_blocks());
+  if (storage_.has_partial_finished_beam_group()) {
+    input.sampling_params.acc_logprob = torch::Tensor();
+  }
+  return input;
 }
 
 ForwardInput RecBatchState::prepare_rec_forward_input(
@@ -98,13 +122,13 @@ ForwardInput RecBatchState::prepare_rec_forward_input(
   CHECK(config_.input_type() != BatchInputType::SEQUENCE)
       << "Rec input requires an explicit Rec batch input type";
   output_handler_.clear();
-  if (sequence_state_.empty()) {
+  if (storage_.empty()) {
     return {};
   }
   BatchSequencePlan group_plan;
-  const BatchSequencePlan* plan = &sequence_state_.sequence_plan();
+  const BatchSequencePlan* plan = &storage_.sequence_plan();
   if (uses_group_input()) {
-    CHECK(!sequence_state_.sequence_groups().empty())
+    CHECK(!storage_.sequence_groups().empty())
         << "OneRec input requires request groups";
     group_plan.reserve(size());
     for (auto* sequence : get_sequences()) {
@@ -112,10 +136,10 @@ ForwardInput RecBatchState::prepare_rec_forward_input(
     }
     plan = &group_plan;
   } else {
-    CHECK(sequence_state_.sequence_groups().empty() || !plan->empty())
+    CHECK(storage_.sequence_groups().empty() || !plan->empty())
         << "Sequence input requires scheduled sequences";
   }
-  auto data = sequence_state_.input_data(*plan);
+  auto data = storage_.input_data(*plan);
   output_handler_.prepare(data);
   auto builder =
       RecForwardInputBuilder::create(config_, data, &args, thread_pool);
@@ -127,9 +151,7 @@ void RecBatchState::process_sample_output(const RawForwardOutput& output,
                                           bool replace_fake_token) {
   const auto sequences = get_sequences();
   output_handler_.process_sample_output(
-      {sequences, sequence_state_.sequence_groups()},
-      output,
-      replace_fake_token);
+      {sequences, storage_.sequence_groups()}, output, replace_fake_token);
 }
 
 void RecBatchState::process_sample_output(
@@ -137,30 +159,27 @@ void RecBatchState::process_sample_output(
     bool replace_fake_token,
     bool force_requested_beam_result_size) {
   const auto sequences = get_sequences();
-  output_handler_.process_sample_output(
-      {sequences, sequence_state_.sequence_groups()},
-      output,
-      replace_fake_token,
-      force_requested_beam_result_size);
+  output_handler_.process_sample_output({sequences, storage_.sequence_groups()},
+                                        output,
+                                        replace_fake_token,
+                                        force_requested_beam_result_size);
 }
 
 void RecBatchState::process_beam_search_output(const RawForwardOutput& output,
                                                bool replace_fake_token) {
   const auto sequences = get_sequences();
   output_handler_.process_beam_search_output(
-      {sequences, sequence_state_.sequence_groups()},
-      output,
-      replace_fake_token);
+      {sequences, storage_.sequence_groups()}, output, replace_fake_token);
 }
 
 void RecBatchState::process_beam_sequence_group(const ForwardOutput& output) {
   const auto sequences = get_sequences();
   output_handler_.process_beam_sequence_group(
-      {sequences, sequence_state_.sequence_groups()}, output);
+      {sequences, storage_.sequence_groups()}, output);
 }
 
 void RecBatchState::finish() {
-  for (auto* group : sequence_state_.sequence_groups()) {
+  for (auto* group : storage_.sequence_groups()) {
     group->finish();
   }
   for (auto* sequence : get_sequences()) {
