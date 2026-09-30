@@ -27,7 +27,6 @@ limitations under the License.
 #include <memory>
 #include <vector>
 
-#include "core/distributed_runtime/engine.h"
 #include "core/framework/batch/batch_factory.h"
 #include "core/framework/config/kv_cache_config.h"
 #include "core/framework/config/parallel_config.h"
@@ -63,33 +62,30 @@ std::vector<std::shared_ptr<Request>> CancelRequestQueue::take_all() {
   return requests;
 }
 
-ContinuousScheduler::ContinuousScheduler(Engine* engine, const Options& options)
-    : options_(options),
-      batch_mode_(create_batch_mode(options)),
-      scheduler_config_(::xllm::SchedulerConfig::get_instance()),
-      batch_factory_(options.dp_size()),
-      engine_(engine),
-      request_queue_(options.request_queue_size()) {
-  CHECK(engine_ != nullptr);
-
-  kv_cache_manager_ = engine_->block_manager_pool();
-  CHECK(kv_cache_manager_ != nullptr);
-  scheduler_metrics_ =
-      std::make_unique<SchedulerMetrics>(engine_,
-                                         kv_cache_manager_,
-                                         options_.dp_size(),
-                                         options_.num_speculative_tokens(),
-                                         options_.enable_disagg_pd());
-
-  enable_prefix_cache_ =
-      ::xllm::KVCacheConfig::get_instance().enable_prefix_cache();
-  has_linear_attention_layers_ =
-      ::xllm::has_linear_attention_layers(engine_->model_args());
-  enable_in_batch_prefix_cache_ =
-      ::xllm::KVCacheConfig::get_instance().enable_in_batch_prefix_cache();
-
-  last_batch_ = BatchGroup(static_cast<size_t>(options_.dp_size()));
-
+ContinuousScheduler::ContinuousScheduler(
+    BatchExecution execution,
+    const Options& options,
+    PDExecution pd_execution,
+    XTensorInfoProvider xtensor_info_provider)
+    : ContinuousScheduler(execution.resources(), options) {
+  execution_.emplace(std::move(execution));
+  pd_execution_ = std::move(pd_execution);
+  xtensor_info_provider_ = std::move(xtensor_info_provider);
+  const bool register_xtensor =
+      options_.enable_service_routing() &&
+      ::xllm::KVCacheConfig::get_instance().enable_xtensor() &&
+      !options_.enable_disagg_pd();
+  if (register_xtensor) {
+    CHECK(xtensor_info_provider_)
+        << "XTensor service routing requires an info provider";
+    CHECK(pd_execution_.supports_cache_registration())
+        << "XTensor service routing requires cache registration";
+  }
+  if (options_.enable_disagg_pd() &&
+      ::xllm::KVCacheConfig::get_instance().enable_xtensor()) {
+    CHECK(xtensor_info_provider_)
+        << "XTensor PD routing requires an info provider";
+  }
   ProfileManager::Options profile_manager_options;
   profile_manager_options.dp_size(options.dp_size())
       .enable_schedule_overlap(options.enable_schedule_overlap())
@@ -103,14 +99,51 @@ ContinuousScheduler::ContinuousScheduler(Engine* engine, const Options& options)
       .instance_role(options.instance_role().value_or(InstanceRole::DEFAULT))
       .enable_profile_token_budget(options.enable_profile_token_budget());
   profile_manager_ =
-      std::make_unique<ProfileManager>(engine, profile_manager_options);
+      std::make_unique<ProfileManager>(*execution_, profile_manager_options);
+
+  if (options_.enable_service_routing()) {
+    if (::xllm::KVCacheConfig::get_instance().enable_xtensor() &&
+        !options_.enable_disagg_pd()) {
+      xservice_client_->set_xtensor_info_provider(xtensor_info_provider_);
+      pd_execution_.get_cache_info(instance_info_.cluster_ids,
+                                   instance_info_.addrs,
+                                   instance_info_.ports);
+    }
+  }
+}
+
+ContinuousScheduler::ContinuousScheduler(EngineResources resources,
+                                         const Options& options)
+    : options_(options),
+      batch_mode_(create_batch_mode(options)),
+      scheduler_config_(::xllm::SchedulerConfig::get_instance()),
+      batch_factory_(options.dp_size()),
+      resources_(std::move(resources)),
+      request_queue_(options.request_queue_size()) {
+  kv_cache_manager_ = resources_.block_manager_pool();
+  CHECK(kv_cache_manager_ != nullptr);
+  scheduler_metrics_ =
+      std::make_unique<SchedulerMetrics>(resources_.activation_memory_reader(),
+                                         kv_cache_manager_,
+                                         options_.dp_size(),
+                                         options_.num_speculative_tokens(),
+                                         options_.enable_disagg_pd());
+
+  enable_prefix_cache_ =
+      ::xllm::KVCacheConfig::get_instance().enable_prefix_cache();
+  has_linear_attention_layers_ =
+      ::xllm::has_linear_attention_layers(resources_.model_args());
+  enable_in_batch_prefix_cache_ =
+      ::xllm::KVCacheConfig::get_instance().enable_in_batch_prefix_cache();
+
+  last_batch_ = BatchGroup(static_cast<size_t>(options_.dp_size()));
 
   // Construct the scheduling policy from the resolved BatchMode.
   policy_ = create_scheduler_policy(batch_mode_, options_);
 
   cancel_request_queue_ = std::make_shared<CancelRequestQueue>();
   response_processor_ = std::make_unique<AsyncResponseProcessor>(
-      engine_->tokenizer(),
+      resources_.tokenizer(),
       options_.instance_role(),
       options_.enable_service_routing(),
       options_.disable_log_stats(),
@@ -127,13 +160,6 @@ ContinuousScheduler::ContinuousScheduler(Engine* engine, const Options& options)
       return;
     }
     xservice_client_->set_scheduler(this);
-    if (::xllm::KVCacheConfig::get_instance().enable_xtensor() &&
-        !options_.enable_disagg_pd()) {
-      xservice_client_->set_engine(engine_);
-      engine_->get_cache_info(instance_info_.cluster_ids,
-                              instance_info_.addrs,
-                              instance_info_.ports);
-    }
   }
 
   instance_info_.name = options_.instance_name().value_or("");
@@ -150,6 +176,11 @@ ContinuousScheduler::ContinuousScheduler(Engine* engine, const Options& options)
 }
 
 ContinuousScheduler::~ContinuousScheduler() {
+  if (xservice_client_ != nullptr && xtensor_info_provider_) {
+    // Clearing synchronizes with an in-progress callback before the owning
+    // concrete engine and its workers can be destroyed.
+    xservice_client_->set_xtensor_info_provider({});
+  }
   // Requests never submitted to the engine own no asynchronous callback and
   // can be cancelled directly, including an offline scheduler never started.
   {
@@ -404,7 +435,7 @@ SchedulerState ContinuousScheduler::make_state() {
       .kv_cache_manager = kv_cache_manager_,
       .profile_manager = profile_manager_.get(),
       .response_processor = response_processor_.get(),
-      .model_args = engine_->model_args(),
+      .model_args = resources_.model_args(),
       .last_step_prefill = last_step_prefill_,
       .options = options_,
       .min_speculative_tokens_required = min_speculative_tokens_required_,
@@ -457,6 +488,8 @@ void ContinuousScheduler::apply_cancel_requests() {
 // step the scheduler forward by one step
 // may get blocked if there are no requests to process
 void ContinuousScheduler::step(const absl::Duration& timeout) {
+  CHECK(execution_.has_value())
+      << "Ordinary scheduling requires a BatchGroup execution capability";
   if (!options_.enable_schedule_overlap()) {
     // get a new batch of requests
     BatchGroup batch = schedule_request(timeout);
@@ -468,7 +501,7 @@ void ContinuousScheduler::step(const absl::Duration& timeout) {
       return;
     }
 
-    engine_->step(batch);
+    execution_->step(batch);
 
     // process request output in batch
     process_batch_output(false);
@@ -511,16 +544,16 @@ void ContinuousScheduler::step_with_schedule_overlap(
   }
   const bool consumed_before_step = previous_pending && needs_prefill_state;
   if (consumed_before_step) {
-    engine_->update_last_step_result(last_batch_);
+    execution_->update_last_step_result(last_batch_);
   }
   if (!cur_batch_all_empty) {
-    engine_->step(batch);
+    execution_->step(batch);
   }
 
   // producer-consumer mode, make sure only one step is scheduled in advance
   if (previous_pending) {
     if (!consumed_before_step) {
-      engine_->update_last_step_result(last_batch_);
+      execution_->update_last_step_result(last_batch_);
     }
     process_batch_output(true);
   }
@@ -531,6 +564,8 @@ void ContinuousScheduler::step_with_schedule_overlap(
 }
 
 void ContinuousScheduler::generate() {
+  CHECK(execution_.has_value())
+      << "Ordinary generation requires a BatchGroup execution capability";
   bool batch_empty = false;
   while (num_pending_requests() > 0 || !batch_empty ||
          request_queue_.size() > 0 ||
@@ -547,7 +582,7 @@ void ContinuousScheduler::generate() {
     }
 
     // run inference for the batch
-    engine_->step(batch);
+    execution_->step(batch);
 
     // process request output in batch
     process_batch_output(false);

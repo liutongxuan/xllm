@@ -22,17 +22,15 @@ limitations under the License.
 
 #include "core/common/macros.h"
 #include "core/common/types.h"
-#include "core/distributed_runtime/engine.h"
+#include "core/distributed_runtime/batch_execution.h"
 #include "core/framework/batch/batch_factory.h"
 #include "core/framework/block/block_manager_pool.h"
 #include "core/framework/request/request.h"
 #include "core/framework/request/sequence.h"
-#include "core/runtime/xservice_client.h"
 #include "core/scheduler/profile/decode_graph_warmup_plan.h"
 #include "core/scheduler/profile/time_predictor.h"
 
 namespace xllm {
-class Engine;
 class ProfileManager {
  public:
   struct Options {
@@ -67,7 +65,17 @@ class ProfileManager {
     double intercept;  // milliseconds constant overhead
     std::string note;
   };
-  ProfileManager(Engine* engine, const Options& options);
+  ProfileManager(BatchExecution execution, const Options& options);
+
+  template <typename TargetEngine>
+    requires requires(TargetEngine& engine) { BatchExecution::bind(engine); }
+  ProfileManager(TargetEngine* engine, const Options& options)
+      : ProfileManager(
+            [engine] {
+              CHECK(engine != nullptr);
+              return BatchExecution::bind(*engine);
+            }(),
+            options) {}
 
   int32_t get_token_budget();
 
@@ -212,7 +220,7 @@ class ProfileManager {
 
   const Options options_;
 
-  Engine* engine_;
+  BatchExecution execution_;
   BatchFactory batch_factory_;
 
   DecodeGraphWarmupPlan decode_graph_warmup_plan_;

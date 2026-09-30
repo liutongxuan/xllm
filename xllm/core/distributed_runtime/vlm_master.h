@@ -27,8 +27,8 @@ limitations under the License.
 
 #include "common/options.h"
 #include "common/types.h"
+#include "core/distributed_runtime/speculative_engine.h"
 #include "core/framework/multimodal/mm_input.h"
-#include "engine.h"
 #include "framework/chat_template/jinja_chat_template.h"
 #include "framework/request/request_output.h"
 #include "framework/request/request_params.h"
@@ -40,10 +40,10 @@ limitations under the License.
 
 namespace xllm {
 
-class VLMMaster : public Master {
+class VLMMaster final : public Master {
  public:
   explicit VLMMaster(const Options& options);
-  ~VLMMaster();
+  ~VLMMaster() override;
 
   // completion
   void handle_request(std::string prompt,
@@ -85,6 +85,12 @@ class VLMMaster : public Master {
   int get_image_limit() { return options_.limit_image_per_prompt(); }
 
  private:
+  // Concrete engines are selected only within this model domain.
+  // They outlive the scheduler and request handlers.
+  std::variant<std::unique_ptr<VLMEngine>,
+               std::unique_ptr<SpeculativeEngineBase<VLMEngine>>>
+      engine_;
+
   using Task = folly::Function<void()>;
 
   std::unique_ptr<Scheduler> scheduler_;

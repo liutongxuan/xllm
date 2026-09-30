@@ -43,8 +43,8 @@ namespace xllm {
 
 // Peer that reaches inside HierarchyBlockManagerPool for verification of host
 // leaf construction. The pool is heavy to spin up; we exercise the plumbing
-// with an Engine stub set to nullptr because the constructor only touches the
-// engine during allocate / transfer paths, not at build time.
+// with no worker transfer capabilities because construction only configures
+// cache leaves; transfer operations are exercised separately.
 class HierarchyPoolTestPeer final {
  public:
   static const std::vector<CompositeBlockManager::LeafMap>& host_block_managers(
@@ -111,24 +111,16 @@ class HierarchyPoolTestPeer final {
 
 namespace {
 
-class FakePrefetchEngine final : public Engine {
+class FakePrefetchEngine final {
  public:
   explicit FakePrefetchEngine(size_t worker_count, int64_t timeout_ms = -1)
       : worker_count_(worker_count), timeout_ms_(timeout_ms) {}
-
-  ForwardOutput step(BatchGroup& /*batch*/) override { return {}; }
-
-  void update_last_step_result(BatchGroup& /*batch*/) override {}
-
-  std::vector<int64_t> get_active_activation_memory() const override {
-    return {0};
-  }
 
   void prefetch_from_storage(
       uint32_t dp_rank,
       std::shared_ptr<const StoragePrefetchRequest> request,
       PrefetchResult::StopPredicate stop_requested,
-      PrefetchResult::DoneCallback done) override {
+      PrefetchResult::DoneCallback done) {
     CHECK(request != nullptr);
     dp_rank_ = dp_rank;
     request_ = std::move(request);

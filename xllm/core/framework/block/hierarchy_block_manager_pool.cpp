@@ -490,9 +490,9 @@ void finalize_prefetch(Sequence* sequence,
 
 HierarchyBlockManagerPool::HierarchyBlockManagerPool(
     const BlockManagerPool::Options& options,
-    Engine* engine,
+    KVCacheTransferOperations transfer,
     int32_t dp_size)
-    : engine_(engine), BlockManagerPool(options, dp_size) {
+    : BlockManagerPool(options, dp_size), transfer_(std::move(transfer)) {
   CHECK(dp_size > 0) << "dp_size must be greater than 0";
   host_block_managers_.reserve(dp_size);
 
@@ -1116,8 +1116,7 @@ void HierarchyBlockManagerPool::prefetch_from_storage(
     }
 
     CHECK(storage_request.valid());
-    CHECK(engine_ != nullptr) << "Mooncake prefetch requires an Engine.";
-    engine_->prefetch_from_storage(
+    transfer_.prefetch_from_storage(
         dp_rank,
         std::make_shared<const StoragePrefetchRequest>(
             std::move(storage_request)),
@@ -1145,7 +1144,7 @@ void HierarchyBlockManagerPool::transfer_blocks(BatchGroup& batches) {
     CHECK_LT(i, batches.size())
         << "Missing batch for pending H2D transfer at dp_rank=" << i;
     batches[i].set_batch_id();
-    engine_->transfer_kv_blocks(
+    transfer_.transfer_kv_blocks(
         i, batches[i].batch_id(), load_block_transfer_infos_[i]);
     load_block_transfer_infos_[i].clear();
   }
@@ -1161,7 +1160,7 @@ void HierarchyBlockManagerPool::transfer_blocks(RecBatchGroup& batches) {
     CHECK_LT(i, batches.size())
         << "Missing batch for pending H2D transfer at dp_rank=" << i;
     batches[i].set_batch_id();
-    engine_->transfer_kv_blocks(
+    transfer_.transfer_kv_blocks(
         i, batches[i].batch_id(), load_block_transfer_infos_[i]);
     load_block_transfer_infos_[i].clear();
   }
@@ -1217,7 +1216,7 @@ void HierarchyBlockManagerPool::transfer_offload_blocks() {
       }
       std::shared_ptr<KVTransferTracker::Completion> completion =
           offload_transfers_.track();
-      folly::collectAll(engine_->transfer_kv_blocks(i, transfer_infos))
+      folly::collectAll(transfer_.transfer_kv_blocks(i, transfer_infos))
           .via(&folly::InlineExecutor::instance())
           .thenValue([device_blocks = std::move(src_blocks),
                       host_blocks = std::move(dst_blocks),

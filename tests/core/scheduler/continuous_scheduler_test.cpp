@@ -12,9 +12,10 @@
 #include <vector>
 
 #include "core/common/metrics.h"
+#include "core/framework/batch/dit_batch.h"
+#include "core/framework/batch/rec_batch_group.h"
 #include "core/framework/config/kv_cache_config.h"
 #include "core/framework/config/scheduler_config.h"
-#include "distributed_runtime/engine.h"
 #include "scheduler_factory.h"
 #include "util/utils.h"
 
@@ -81,8 +82,9 @@ class FakeTokenizer : public Tokenizer {
   }
 };
 
-class FakeEngine : public Engine {
+class FakeEngine {
  public:
+  virtual ~FakeEngine() = default;
   FakeEngine(int32_t num_blocks,
              int32_t block_size,
              bool enable_prefix_cache = false,
@@ -103,16 +105,14 @@ class FakeEngine : public Engine {
     fake_block_manager_ =
         std::make_unique<ControllablePrefetchBlockManagerPool>(opt);
   }
-  ForwardOutput step(BatchGroup& batch) { return {}; }
-  void update_last_step_result(BatchGroup& batch) { NOT_IMPLEMENTED(); }
+  virtual ForwardOutput step(BatchGroup& batch) { return {}; }
+  virtual void update_last_step_result(BatchGroup& batch) { NOT_IMPLEMENTED(); }
   const Tokenizer* tokenizer() const { return fake_tokenizer_.get(); }
   BlockManagerPool* block_manager_pool() const {
     return fake_block_manager_.get();
   }
   const ModelArgs& model_args() const { return model_args_; }
-  const TokenizerArgs& tokenizer_args() const { NOT_IMPLEMENTED(); }
   std::vector<int64_t> get_active_activation_memory() const { return {0}; }
-  bool init() override { return true; }
 
   void set_prefetch_ready(bool ready) {
     fake_block_manager_->set_prefetch_ready(ready);
@@ -131,19 +131,73 @@ class FakeEngine : public Engine {
 class PipelinePhaseEngine final : public FakeEngine {
  public:
   PipelinePhaseEngine() : FakeEngine(/*num_blocks=*/128, /*block_size=*/4) {}
-  ForwardOutput step(BatchGroup& /*batch*/) override {
+  ForwardOutput step(BatchGroup& batch) override {
+    last_step_batch = &batch;
     calls.emplace_back("step");
     return {};
   }
-  void update_last_step_result(BatchGroup& /*batch*/) override {
+  void update_last_step_result(BatchGroup& batch) override {
+    last_consumed_batch = &batch;
     calls.emplace_back("consume");
   }
   std::vector<std::string> calls;
+  BatchGroup* last_step_batch = nullptr;
+  BatchGroup* last_consumed_batch = nullptr;
 };
+
+class RecOnlyExecutionContract final {
+ public:
+  ForwardOutput step(RecBatchGroup& /*batches*/) { return {}; }
+  void update_last_step_result(RecBatchGroup& /*batches*/) {}
+};
+
+class DiTOnlyExecutionContract final {
+ public:
+  ForwardOutput step(DiTBatch& /*batch*/) { return {}; }
+  void update_last_step_result(DiTBatch& /*batch*/) {}
+};
+
+template <typename TargetEngine>
+concept AcceptsOrdinaryBatches =
+    requires(TargetEngine& engine) { BatchExecution::bind(engine); };
+
+static_assert(AcceptsOrdinaryBatches<PipelinePhaseEngine>);
+static_assert(!AcceptsOrdinaryBatches<RecOnlyExecutionContract>);
+static_assert(!AcceptsOrdinaryBatches<DiTOnlyExecutionContract>);
+
+TEST(BatchExecutionTest, KeepsBatchAndResourceReferencesAcrossCallbacks) {
+  PipelinePhaseEngine engine;
+  BatchExecution execution = BatchExecution::bind(engine);
+  BatchGroup batches(/*dp_size=*/1);
+  execution.step(batches);
+  execution.update_last_step_result(batches);
+
+  EXPECT_EQ(engine.last_step_batch, &batches);
+  EXPECT_EQ(engine.last_consumed_batch, &batches);
+  EXPECT_EQ(&execution.resources().model_args(), &engine.model_args());
+  EXPECT_EQ(execution.resources().tokenizer(), engine.tokenizer());
+  EXPECT_EQ(execution.resources().block_manager_pool(),
+            engine.block_manager_pool());
+  EXPECT_EQ(execution.resources().activation_memory_reader()(),
+            engine.get_active_activation_memory());
+  EXPECT_EQ(engine.calls, (std::vector<std::string>{"step", "consume"}));
+}
+
+TEST(BatchExecutionTest,
+     PreservesSingleTokenGraphDefaultsWithoutGraphCapability) {
+  PipelinePhaseEngine engine;
+  BatchExecution execution = BatchExecution::bind(engine);
+  const runtime::DecodeGraphExecutionShape shape =
+      execution.decode_graph_execution_shape();
+  EXPECT_EQ(shape.num_decoding_tokens, 1);
+  EXPECT_EQ(shape.num_speculative_tokens, 0);
+  EXPECT_FALSE(shape.enable_graph_mode_decode_no_padding);
+}
 
 class TestableContinuousScheduler final : public ContinuousScheduler {
  public:
-  TestableContinuousScheduler(Engine* engine, const Options& options)
+  template <typename TargetEngine>
+  TestableContinuousScheduler(TargetEngine* engine, const Options& options)
       : ContinuousScheduler(engine, options) {}
 
   BatchGroup prepare_batch_test() { return prepare_batch(); }

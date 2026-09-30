@@ -22,7 +22,8 @@ limitations under the License.
 
 #include "common/macros.h"
 #include "core/distributed_runtime/dist_manager.h"
-#include "engine.h"
+#include "core/framework/model/model_args.h"
+#include "core/runtime/options.h"
 #include "framework/batch/batch_group.h"
 #include "framework/block/block_manager_pool.h"
 #include "framework/quant_args.h"
@@ -34,24 +35,31 @@ limitations under the License.
 
 namespace xllm {
 
-class VLMEngine : public Engine {
+class VLMEngine final {
  public:
   // create an engine with the given devices
-  VLMEngine(const runtime::Options& options,
-            std::shared_ptr<DistManager> dist_manager = nullptr);
+  explicit VLMEngine(const runtime::Options& options,
+                     std::shared_ptr<DistManager> dist_manager = nullptr);
 
-  virtual ~VLMEngine() = default;
+  ~VLMEngine() = default;
 
-  ForwardOutput step(BatchGroup& batch) override;
+  ForwardOutput step(BatchGroup& batch);
 
   const runtime::Options& options() const { return options_; }
 
-  bool init(MasterStatus master_status) override;
+  const ModelArgs& model_args() const { return args_; }
+  const TokenizerArgs& tokenizer_args() const { return tokenizer_args_; }
+  const Tokenizer* tokenizer() const { return tokenizer_.get(); }
+  BlockManagerPool* block_manager_pool() const {
+    return kv_cache_manager_.get();
+  }
 
-  void update_last_step_result(BatchGroup& batch) override;
+  bool init(MasterStatus master_status);
+
+  void update_last_step_result(BatchGroup& batch);
 
   // return the active activation memory
-  std::vector<int64_t> get_active_activation_memory() const override;
+  std::vector<int64_t> get_active_activation_memory() const;
 
  private:
   template <typename TargetEngine>
@@ -63,7 +71,11 @@ class VLMEngine : public Engine {
   void setup_workers(const runtime::Options& options);
   void process_group_test();
 
- private:
+  ModelArgs args_;
+  TokenizerArgs tokenizer_args_;
+  std::unique_ptr<BlockManagerPool> kv_cache_manager_;
+  std::unique_ptr<Tokenizer> tokenizer_;
+
   // options
   runtime::Options options_;
 

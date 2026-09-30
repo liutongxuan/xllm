@@ -21,8 +21,8 @@ limitations under the License.
 #include <memory>
 
 #include "common/macros.h"
+#include "core/runtime/options.h"
 #include "dist_manager.h"
-#include "engine.h"
 #include "framework/batch/dit_batch.h"
 #include "framework/parallel_state/process_group.h"
 #include "framework/quant_args.h"
@@ -30,10 +30,10 @@ limitations under the License.
 
 namespace xllm {
 
-class DiTEngine : public Engine {
+class DiTEngine final {
  public:
-  DiTEngine(const runtime::Options& options,
-            std::shared_ptr<DistManager> dist_manager = nullptr);
+  explicit DiTEngine(const runtime::Options& options,
+                     std::shared_ptr<DistManager> dist_manager = nullptr);
 
   ~DiTEngine() = default;
 
@@ -48,15 +48,7 @@ class DiTEngine : public Engine {
 
   std::shared_ptr<DistManager> get_dist_manager() { return dist_manager_; }
 
-  // These two functions wouldn't be used in dit inference progress
-  ForwardOutput step(BatchGroup& batch) override {
-    ForwardOutput output;
-    return output;
-  }
-
-  void update_last_step_result(BatchGroup& batch) override { return; }
-
- protected:
+ private:
   // worker client which is used for call worker
   // The reason for adding a worker client is to unify the
   // access code for both local and remote workers, thereby

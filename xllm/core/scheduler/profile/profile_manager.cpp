@@ -65,9 +65,10 @@ int32_t decode_warmup_token_bucket(const DecodeGraphWarmupPlan& plan,
 
 }  // namespace
 
-ProfileManager::ProfileManager(Engine* engine, const Options& options)
-    : options_(options), engine_(engine), batch_factory_(options.dp_size()) {
-  CHECK(engine_ != nullptr);
+ProfileManager::ProfileManager(BatchExecution execution, const Options& options)
+    : options_(options),
+      execution_(std::move(execution)),
+      batch_factory_(options.dp_size()) {
   int32_t max_decode_batch_size = options_.max_seqs_per_batch();
   const int32_t max_concurrent_requests =
       ::xllm::ServiceConfig::get_instance().max_concurrent_requests();
@@ -86,10 +87,10 @@ ProfileManager::ProfileManager(Engine* engine, const Options& options)
             static_cast<uint32_t>(std::max<int32_t>(1, options_.dp_size()))));
   }
   decode_graph_warmup_plan_ =
-      build_decode_graph_warmup_plan(engine_->decode_graph_execution_shape(),
+      build_decode_graph_warmup_plan(execution_.decode_graph_execution_shape(),
                                      max_decode_batch_size,
                                      options_.dp_size());
-  block_manager_pool_ = engine_->block_manager_pool();
+  block_manager_pool_ = execution_.block_manager_pool();
   CHECK(block_manager_pool_ != nullptr);
   prefill_time_predictor_ = std::make_unique<TimePredictor>(
       options.enable_profile_kv_blocks(), true /*is_prefill*/);
@@ -334,7 +335,7 @@ void ProfileManager::dump_step_time_profile_to_file(
 
 void ProfileManager::profile_step_time(bool if_dump_to_file) {
   // get the maximum prefill token length
-  auto& model_args = engine_->model_args();
+  auto& model_args = execution_.model_args();
   int32_t max_context_len = model_args.max_position_embeddings();
 
   // TODO: support length for decode request profile
@@ -463,7 +464,7 @@ void ProfileManager::train_speculative_validate_time_predictor(
   // runs static, which corrupts collectives and shape assumptions.
   // Treat broadcast failure as fatal for the adaptive path and leave the
   // registry unset so every rank consistently falls back to static.
-  if (!engine_->set_speculative_validate_time_predictor(predictor)) {
+  if (!execution_.set_speculative_validate_time_predictor(predictor)) {
     LOG(ERROR)
         << "Failed to broadcast speculative validate predictor to workers. "
         << "Disabling adaptive speculative decode on all ranks to avoid "
@@ -508,7 +509,7 @@ void ProfileManager::profile_speculative_validate_time() {
             << "adaptive_enabled="
             << speculative_config.enable_adaptive_speculative_decode();
 
-  auto& model_args = engine_->model_args();
+  auto& model_args = execution_.model_args();
   const int32_t max_context_len = model_args.max_position_embeddings();
   const int32_t profile_max_prompt_length =
       std::min(max_context_len, options_.profile_max_prompt_length());
@@ -804,7 +805,7 @@ std::shared_ptr<Request> ProfileManager::generate_single_request(
     int32_t token_length,
     int32_t prefix_length,
     bool is_graph_warmup) {
-  auto& model_args = engine_->model_args();
+  auto& model_args = execution_.model_args();
   int32_t vocab_size = model_args.vocab_size();
   int32_t eos_token_id = model_args.eos_token_id();
 
@@ -869,7 +870,7 @@ std::shared_ptr<Request> ProfileManager::try_generate_single_decode_request(
     bool is_graph_warmup) {
   CHECK_GT(total_length, 1) << "Decode profiling requires total_length > 1.";
 
-  auto& model_args = engine_->model_args();
+  auto& model_args = execution_.model_args();
   int32_t vocab_size = model_args.vocab_size();
   int32_t eos_token_id = model_args.eos_token_id();
 
@@ -1004,9 +1005,9 @@ double ProfileManager::run_request(int32_t token_length,
       batch_factory_.create_batches(requests, sequences, sequences_budget);
 
   absl::Time start_time = absl::Now();
-  engine_->step(batches);
+  execution_.step(batches);
   if (options_.enable_schedule_overlap()) {
-    engine_->update_last_step_result(batches);
+    execution_.update_last_step_result(batches);
   }
   double latency = absl::ToDoubleMilliseconds(absl::Now() - start_time);
   for (auto& request : requests) {
@@ -1046,9 +1047,9 @@ double ProfileManager::run_request(
       requests, sequences, sequences_budget, nullptr);
 
   absl::Time start_time = absl::Now();
-  engine_->step(batches);
+  execution_.step(batches);
   if (options_.enable_schedule_overlap()) {
-    engine_->update_last_step_result(batches);
+    execution_.update_last_step_result(batches);
   }
   double latency = absl::ToDoubleMilliseconds(absl::Now() - start_time);
   for (auto& request : requests) {
@@ -1077,9 +1078,9 @@ double ProfileManager::run_decode_request(
       requests, sequences, sequences_budget, nullptr);
 
   absl::Time start_time = absl::Now();
-  engine_->step(batches);
+  execution_.step(batches);
   if (options_.enable_schedule_overlap()) {
-    engine_->update_last_step_result(batches);
+    execution_.update_last_step_result(batches);
   }
   double latency = absl::ToDoubleMilliseconds(absl::Now() - start_time);
   for (auto& request : requests) {
@@ -1114,9 +1115,9 @@ double ProfileManager::run_graph_decode_request(
       requests, sequences, sequences_budget, nullptr);
 
   absl::Time start_time = absl::Now();
-  engine_->step(batches);
+  execution_.step(batches);
   if (options_.enable_schedule_overlap()) {
-    engine_->update_last_step_result(batches);
+    execution_.update_last_step_result(batches);
   }
   double latency = absl::ToDoubleMilliseconds(absl::Now() - start_time);
   for (auto& request : requests) {
@@ -1189,14 +1190,14 @@ void ProfileManager::generate_random_decode_batch(
 void ProfileManager::warmup_for_eager() {
   constexpr int32_t kMaxEagerWarmupTokens = 256;
   const int32_t max_context_len =
-      engine_->model_args().max_position_embeddings();
+      execution_.model_args().max_position_embeddings();
   const int32_t prefill_tokens = std::min({options_.max_tokens_per_batch(),
                                            max_context_len,
                                            kMaxEagerWarmupTokens});
-  if (prefill_tokens <= 0 || engine_->model_args().vocab_size() <= 2) {
+  if (prefill_tokens <= 0 || execution_.model_args().vocab_size() <= 2) {
     LOG(INFO) << "Skipping eager warmup because model metadata is incomplete: "
               << "tokens=" << prefill_tokens
-              << ", vocab_size=" << engine_->model_args().vocab_size();
+              << ", vocab_size=" << execution_.model_args().vocab_size();
     return;
   }
   const double prefill_latency = run_request(prefill_tokens,
@@ -1225,7 +1226,7 @@ void ProfileManager::warmup_for_graph() {
 }
 
 void ProfileManager::warmup_prefill_for_graph() {
-  auto& model_args = engine_->model_args();
+  auto& model_args = execution_.model_args();
   int32_t max_context_len = model_args.max_position_embeddings();
 
   int32_t prefill_tokens =
@@ -1266,7 +1267,7 @@ void ProfileManager::warmup_unified_for_graph() {
 }
 
 void ProfileManager::warmup_decode_for_graph() {
-  auto& model_args = engine_->model_args();
+  auto& model_args = execution_.model_args();
   int32_t max_context_len = model_args.max_position_embeddings();
   int32_t max_decode_batch_size = options_.max_seqs_per_batch();
   const int32_t max_concurrent_requests =
@@ -1292,7 +1293,7 @@ void ProfileManager::warmup_decode_for_graph() {
   const int32_t warmup_capacity =
       std::min(max_decode_batch_size, allocatable_sequences);
   decode_graph_warmup_plan_ =
-      build_decode_graph_warmup_plan(engine_->decode_graph_execution_shape(),
+      build_decode_graph_warmup_plan(execution_.decode_graph_execution_shape(),
                                      warmup_capacity,
                                      options_.dp_size());
   const std::vector<int32_t>& decode_batch_sizes =

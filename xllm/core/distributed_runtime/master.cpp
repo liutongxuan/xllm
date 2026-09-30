@@ -51,19 +51,15 @@ limitations under the License.
 #include "framework/kv_cache/layerwise_split_layout.h"
 #include "framework/model/model_args.h"
 #include "framework/request/request.h"
-#include "llm_engine.h"
 #include "llm_master.h"
 #include "models/model_registry.h"
 #include "platform/platform.h"
-#include "rec_engine.h"
 #include "rec_master.h"
 #include "runtime/options.h"
-#include "speculative_engine.h"
 #include "util/model_config_utils.h"
 #include "util/scope_guard.h"
 #include "util/timer.h"
 #include "util/utils.h"
-#include "vlm_engine.h"
 #include "vlm_master.h"
 
 namespace brpc {
@@ -540,9 +536,8 @@ Master::Master(const Options& options, EngineType type)
     LOG(FATAL)
         << "Multi-stream parallel is refactoring now, will be supported later.";
   }
-  // construct engine
-  LOG(INFO) << "Creating engine with devices: "
-            << DeviceNameUtils::to_string(devices);
+  // Resolve runtime options; domain masters construct their concrete engines.
+  LOG(INFO) << "Using engine devices: " << DeviceNameUtils::to_string(devices);
 
   if (options_.enable_disagg_pd()) {
     // Enable service routing in disagg pd mode
@@ -603,8 +598,7 @@ Master::Master(const Options& options, EngineType type)
         .max_tokens_per_chunk_for_prefill(
             options_.max_tokens_per_chunk_for_prefill());
 
-    auto engine = std::make_unique<VLMEngine>(eng_options);
-    engine_ = std::move(engine);
+    engine_options_ = std::move(eng_options);
   } else if (type == EngineType::SSM || type == EngineType::VLMSSM) {
     if (type == EngineType::VLMSSM) {
       CHECK(!options_.enable_disagg_pd())
@@ -691,17 +685,7 @@ Master::Master(const Options& options, EngineType type)
         .max_tokens_for_graph_mode(options_.max_tokens_for_graph_mode());
     apply_runtime_kv_cache_options(options_, spec_options);
 
-    if (use_suffix_spec) {
-      engine_ = std::make_unique<SuffixSpeculativeEngine>(spec_options);
-    } else {
-      if (type == EngineType::VLMSSM) {
-        engine_ =
-            std::make_unique<SpeculativeEngineBase<VLMEngine>>(spec_options);
-      } else {
-        engine_ =
-            std::make_unique<SpeculativeEngineBase<LLMEngine>>(spec_options);
-      }
-    }
+    engine_options_ = std::move(spec_options);
   } else if (type == EngineType::LLM) {
     if (options_.task_type() == "embed" || options.task_type() == "mm_embed") {
       options_.enable_schedule_overlap(false);
@@ -759,7 +743,7 @@ Master::Master(const Options& options, EngineType type)
         .model_id(options_.model_id());
     apply_runtime_kv_cache_options(options_, eng_options);
 
-    engine_ = std::make_unique<LLMEngine>(eng_options);
+    engine_options_ = std::move(eng_options);
   } else if (type == EngineType::REC) {
     options_.enable_schedule_overlap(false);
     LOG(WARNING) << "Force to disable schedule overlap for REC model, not "
@@ -802,7 +786,7 @@ Master::Master(const Options& options, EngineType type)
             options_.max_tokens_per_chunk_for_prefill())
         .rec_worker_max_concurrency(options_.rec_worker_max_concurrency());
 
-    engine_ = std::make_unique<RecEngine>(eng_options);
+    engine_options_ = std::move(eng_options);
   } else if (type == EngineType::DIT) {
     // construct dit engine
     runtime::Options eng_options;
@@ -833,8 +817,7 @@ Master::Master(const Options& options, EngineType type)
         .vae_size(options_.vae_size())
         .text_encoder_tp_size(options_.text_encoder_tp_size());
 
-    auto dit_engine = std::make_unique<DiTEngine>(eng_options);
-    engine_ = std::move(dit_engine);
+    engine_options_ = std::move(eng_options);
   } else {
     LOG(WARNING) << "Not supported llm engine type: "
                  << static_cast<size_t>(type);

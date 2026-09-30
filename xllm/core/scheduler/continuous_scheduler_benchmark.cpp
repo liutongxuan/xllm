@@ -56,7 +56,6 @@ limitations under the License.
 #include <vector>
 
 #include "core/common/types.h"
-#include "core/distributed_runtime/engine.h"
 #include "core/framework/block/block_manager_pool.h"
 #include "core/framework/model/model_args.h"
 #include "core/framework/request/request.h"
@@ -94,7 +93,7 @@ class FakeTokenizer final : public Tokenizer {
 };
 
 // Engine stand-in: real BlockManagerPool, no model.
-class FakeEngine final : public Engine {
+class FakeEngine final {
  public:
   FakeEngine() {
     BlockManagerPool::Options options;
@@ -106,16 +105,14 @@ class FakeEngine final : public Engine {
         std::make_unique<BlockManagerPool>(options, /*dp_size=*/1);
   }
 
-  ForwardOutput step(BatchGroup& /*batch*/) override { return {}; }
-  void update_last_step_result(BatchGroup& /*batch*/) override {}
-  const Tokenizer* tokenizer() const override { return &fake_tokenizer_; }
-  BlockManagerPool* block_manager_pool() const override {
+  ForwardOutput step(BatchGroup& /*batch*/) { return {}; }
+  void update_last_step_result(BatchGroup& /*batch*/) {}
+  const Tokenizer* tokenizer() const { return &fake_tokenizer_; }
+  BlockManagerPool* block_manager_pool() const {
     return block_manager_pool_.get();
   }
-  const ModelArgs& model_args() const override { return model_args_; }
-  std::vector<int64_t> get_active_activation_memory() const override {
-    return {0};
-  }
+  const ModelArgs& model_args() const { return model_args_; }
+  std::vector<int64_t> get_active_activation_memory() const { return {0}; }
 
  private:
   FakeTokenizer fake_tokenizer_;
@@ -127,7 +124,8 @@ class FakeEngine final : public Engine {
 // completion callbacks before the next one starts.
 class BenchContinuousScheduler final : public ContinuousScheduler {
  public:
-  BenchContinuousScheduler(Engine* engine, const Options& options)
+  template <typename TargetEngine>
+  BenchContinuousScheduler(TargetEngine* engine, const Options& options)
       : ContinuousScheduler(engine, options) {}
 
   BatchGroup prepare_batch_test() { return prepare_batch(); }

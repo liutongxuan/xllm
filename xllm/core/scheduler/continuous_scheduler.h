@@ -25,10 +25,14 @@ limitations under the License.
 #include <list>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <unordered_map>
 
 #include "core/common/macros.h"
 #include "core/common/types.h"
+#include "core/distributed_runtime/batch_execution.h"
+#include "core/distributed_runtime/pd_execution.h"
+#include "core/distributed_runtime/xtensor_info_provider.h"
 #include "core/framework/batch/batch_factory.h"
 #include "core/framework/batch/batch_group.h"
 #include "core/framework/block/kv_cache_manager.h"
@@ -43,7 +47,6 @@ limitations under the License.
 #include "core/scheduler/scheduler_metrics.h"
 
 namespace xllm {
-class Engine;
 class RequestPriorityQueue;
 class SchedulerConfig;
 class SchedulerPolicy;
@@ -174,7 +177,19 @@ class ContinuousScheduler : public Scheduler {
     PROPERTY(int32_t, rec_worker_max_concurrency) = 1;
   };
 
-  ContinuousScheduler(Engine* engine, const Options& options);
+  ContinuousScheduler(BatchExecution execution,
+                      const Options& options,
+                      PDExecution pd_execution = {},
+                      XTensorInfoProvider xtensor_info_provider = {});
+
+  template <typename TargetEngine>
+    requires requires(TargetEngine& engine) { BatchExecution::bind(engine); }
+  ContinuousScheduler(TargetEngine* engine, const Options& options)
+      : ContinuousScheduler(
+            BatchExecution::bind(checked_engine(engine)),
+            options,
+            PDExecution::bind(checked_engine(engine)),
+            bind_xtensor_info_provider(checked_engine(engine))) {}
   ~ContinuousScheduler() override;
 
   bool add_request(std::shared_ptr<Request>& request) override;
@@ -213,6 +228,16 @@ class ContinuousScheduler : public Scheduler {
   const InstanceInfo& get_instance_info() override { return instance_info_; }
 
  protected:
+  template <typename TargetEngine>
+  static TargetEngine& checked_engine(TargetEngine* engine) {
+    CHECK(engine != nullptr);
+    return *engine;
+  }
+
+  // Resource-only construction preserves the Rec scheduler's temporary
+  // inheritance without exposing ordinary batch execution or profiling.
+  ContinuousScheduler(EngineResources resources, const Options& options);
+
   void clear_mtp_bootstrap(Request* request);
   void drain_prefetch_pipeline();
   virtual void enqueue_ready_request(std::shared_ptr<Request> request);
@@ -235,8 +260,10 @@ class ContinuousScheduler : public Scheduler {
   // Policy object that encapsulates all batch-assembly logic.
   std::unique_ptr<SchedulerPolicy> policy_;
 
-  // the engine to run the batch
-  Engine* engine_;
+  EngineResources resources_;
+  std::optional<BatchExecution> execution_;
+  PDExecution pd_execution_;
+  XTensorInfoProvider xtensor_info_provider_;
 
   KVCacheManager* kv_cache_manager_;
 

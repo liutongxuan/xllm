@@ -25,7 +25,6 @@ limitations under the License.
 #include <vector>
 
 #include "common/metrics.h"
-#include "distributed_runtime/engine.h"
 #include "framework/block/block_manager_impl.h"
 #include "framework/block/block_manager_pool.h"
 #include "framework/model/model_args.h"
@@ -63,7 +62,7 @@ class FakeTokenizer final : public Tokenizer {
   }
 };
 
-class FakeEngine final : public Engine {
+class FakeEngine final {
  public:
   FakeEngine(int32_t num_blocks,
              int32_t block_size,
@@ -79,35 +78,47 @@ class FakeEngine final : public Engine {
     block_manager_ = std::make_unique<BlockManagerPool>(options, /*dp_size=*/1);
   }
 
-  ForwardOutput step(BatchGroup& /*batch*/) override { NOT_IMPLEMENTED(); }
+  ForwardOutput step(BatchGroup& /*batch*/) { NOT_IMPLEMENTED(); }
 
-  void update_last_step_result(BatchGroup& /*batch*/) override {
+  void update_last_step_result(BatchGroup& /*batch*/) { NOT_IMPLEMENTED(); }
+
+  const Tokenizer* tokenizer() const { return tokenizer_.get(); }
+
+  BlockManagerPool* block_manager_pool() const { return block_manager_.get(); }
+
+  const ModelArgs& model_args() const { return model_args_; }
+
+  std::vector<int64_t> get_active_activation_memory() const {
     NOT_IMPLEMENTED();
   }
-
-  const Tokenizer* tokenizer() const override { return tokenizer_.get(); }
-
-  BlockManagerPool* block_manager_pool() const override {
-    return block_manager_.get();
-  }
-
-  const ModelArgs& model_args() const override { return model_args_; }
-
-  const TokenizerArgs& tokenizer_args() const override { NOT_IMPLEMENTED(); }
-
-  std::vector<int64_t> get_active_activation_memory() const override {
-    NOT_IMPLEMENTED();
-  }
-
-  bool init() override { return true; }
 
   bool pull_kv_blocks(int32_t /*src_dp_size*/,
                       int32_t /*src_dp_rank*/,
                       const std::vector<uint64_t>& /*src_cluster_ids*/,
                       const std::vector<std::string>& /*src_addrs*/,
                       int32_t /*dst_dp_rank*/,
-                      const std::vector<KVTransferMapping>& mappings) override {
+                      const std::vector<KVTransferMapping>& mappings) {
     pulled_mappings = mappings;
+    return true;
+  }
+
+  void get_cache_info(std::vector<uint64_t>& /*cluster_ids*/,
+                      std::vector<std::string>& /*addrs*/,
+                      std::vector<uint16_t>& /*ports*/) {}
+
+  bool link_cluster(const std::vector<uint64_t>& /*cluster_ids*/,
+                    const std::vector<std::string>& /*addrs*/,
+                    const std::vector<uint16_t>& /*ports*/,
+                    int32_t /*dp_size*/,
+                    int32_t /*kv_split_size*/) {
+    return true;
+  }
+
+  bool unlink_cluster(const std::vector<uint64_t>& /*cluster_ids*/,
+                      const std::vector<std::string>& /*addrs*/,
+                      const std::vector<uint16_t>& /*ports*/,
+                      int32_t /*dp_size*/,
+                      int32_t /*kv_split_size*/) {
     return true;
   }
 
@@ -121,7 +132,8 @@ class FakeEngine final : public Engine {
 
 class TestDisaggPDScheduler final : public DisaggPDScheduler {
  public:
-  TestDisaggPDScheduler(Engine* engine, const Options& options)
+  template <typename TargetEngine>
+  TestDisaggPDScheduler(TargetEngine* engine, const Options& options)
       : DisaggPDScheduler(engine, options, SkipRuntimeStart{}) {}
 
   void cache_prefill_blocks_for_test(Request* request) {
@@ -246,6 +258,11 @@ bool recv_first_generation(DisaggPDScheduler* scheduler,
 }
 
 }  // namespace
+
+TEST(PDExecutionTest, RejectsMissingClusterCapabilitiesBeforeExecution) {
+  EXPECT_DEATH(PDExecution{}.validate_cluster_exchange(),
+               "PD requires cache registration");
+}
 
 TEST(DisaggPDSchedulerTest, CachesPrefillBlocksBeforeRelease) {
   FakeEngine engine(/*num_blocks=*/8, /*block_size=*/2);

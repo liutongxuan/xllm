@@ -35,8 +35,6 @@ limitations under the License.
 #include "core/framework/config/scheduler_config.h"
 #include "core/framework/config/service_config.h"
 #include "disagg_pd.pb.h"
-#include "disagg_pd_scheduler.h"
-#include "distributed_runtime/engine.h"
 #include "framework/block/block_manager_pool.h"
 #include "framework/kv_cache_transfer/pd_topology_guard.h"
 #include "framework/request/request.h"
@@ -123,17 +121,30 @@ bool has_rank_preserving_kv_groups(const proto::DisaggResponse& response) {
       });
 }
 
-DisaggPDScheduler::DisaggPDScheduler(Engine* engine,
+DisaggPDScheduler::DisaggPDScheduler(BatchExecution execution,
                                      const Options& options,
+                                     PDExecution pd_execution,
+                                     XTensorInfoProvider xtensor_info_provider,
                                      SkipRuntimeStart)
-    : ContinuousScheduler(engine, options), server_name_("DisaggPDServer") {
+    : ContinuousScheduler(std::move(execution),
+                          options,
+                          PDExecution::checked(std::move(pd_execution)),
+                          std::move(xtensor_info_provider)),
+      server_name_("DisaggPDServer") {
   if (!options_.instance_role().has_value()) {
     LOG(FATAL) << "Instance type is not set in disagg pd mode.";
   }
 }
 
-DisaggPDScheduler::DisaggPDScheduler(Engine* engine, const Options& options)
-    : DisaggPDScheduler(engine, options, SkipRuntimeStart{}) {
+DisaggPDScheduler::DisaggPDScheduler(BatchExecution execution,
+                                     const Options& options,
+                                     PDExecution pd_execution,
+                                     XTensorInfoProvider xtensor_info_provider)
+    : DisaggPDScheduler(std::move(execution),
+                        options,
+                        std::move(pd_execution),
+                        std::move(xtensor_info_provider),
+                        SkipRuntimeStart{}) {
   dispatch_thread_ = std::make_unique<std::thread>(
       &DisaggPDScheduler::dispatch_requests, this);
 
@@ -141,7 +152,7 @@ DisaggPDScheduler::DisaggPDScheduler(Engine* engine, const Options& options)
   rpc_server_thread_ =
       std::make_unique<std::thread>(&DisaggPDScheduler::start_rpc_server, this);
   initialize_rpc_server(server_name_);
-  register_instance_info(server_name_, engine_);
+  register_instance_info(server_name_);
 
   if (!options_.disable_ttft_profiling() &&
       options_.instance_role().value() == InstanceRole::MIX) {
@@ -182,12 +193,13 @@ void DisaggPDScheduler::initialize_rpc_server(const std::string& server_name) {
   }
   xservice_client_->set_scheduler(this);
   if (::xllm::KVCacheConfig::get_instance().enable_xtensor()) {
-    xservice_client_->set_engine(engine_);
+    CHECK(xtensor_info_provider_)
+        << "XTensor PD routing requires an info provider";
+    xservice_client_->set_xtensor_info_provider(xtensor_info_provider_);
   }
 }
 
-void DisaggPDScheduler::register_instance_info(const std::string& server_name,
-                                               Engine* engine) {
+void DisaggPDScheduler::register_instance_info(const std::string& server_name) {
   // register instance info
   instance_info_.name = xservice_client_->get_instance_name();
   auto rpc_server = ServerRegistry::get_instance().get_server(server_name);
@@ -197,7 +209,7 @@ void DisaggPDScheduler::register_instance_info(const std::string& server_name,
             << ", instance rpc_address = " << instance_info_.rpc_address
             << ", instance type = " << instance_info_.type;
 
-  engine->get_cache_info(
+  pd_execution_.get_cache_info(
       instance_info_.cluster_ids, instance_info_.addrs, instance_info_.ports);
   instance_info_.dp_size = options_.dp_size();
   instance_info_.kv_split_size =
@@ -217,7 +229,7 @@ void DisaggPDScheduler::register_instance_info(const std::string& server_name,
 void DisaggPDScheduler::profile_ttft() {
   LOG(INFO) << "Start profiling TTFT.";
   // get the maximum prefill token length
-  auto& model_args = engine_->model_args();
+  auto& model_args = resources_.model_args();
   int32_t max_context_len = model_args.max_position_embeddings();
   if (!options_.enable_chunked_prefill()) {
     max_context_len =
@@ -239,7 +251,7 @@ void DisaggPDScheduler::profile_ttft() {
 void DisaggPDScheduler::profile_tpot() {
   LOG(INFO) << "Start profiling TPOT.";
   // get the maximum token length
-  auto& model_args = engine_->model_args();
+  auto& model_args = resources_.model_args();
   int32_t max_context_len = model_args.max_position_embeddings();
   if (!options_.enable_chunked_prefill()) {
     max_context_len =
@@ -345,7 +357,7 @@ proto::DisaggPDService_Stub* DisaggPDScheduler::create_rpc_channel(
 
 void DisaggPDScheduler::start_rpc_server() {
   std::unique_ptr<DisaggPDService> service =
-      std::make_unique<DisaggPDService>(this, engine_);
+      std::make_unique<DisaggPDService>(this, resources_, pd_execution_);
   auto rpc_server =
       ServerRegistry::get_instance().register_server(server_name_);
   if (!rpc_server->start(std::move(service))) {
@@ -805,7 +817,7 @@ void DisaggPDScheduler::prefill_send_first_generation() {
             group->add_ids(static_cast<uint64_t>(block.id()));
           }
         }
-        if (has_linear_attention_layers(engine_->model_args())) {
+        if (has_linear_attention_layers(resources_.model_args())) {
           const int32_t linear_state_id = sequence->get_linear_state_slot_id();
           CHECK_GE(linear_state_id, 0)
               << "Prefill did not allocate a linear-state slot.";
@@ -1075,12 +1087,12 @@ bool DisaggPDScheduler::decode_recv_first_generation(
     }
 
     const int32_t dst_dp_rank = sequence->dp_rank();
-    const bool pulled = engine_->pull_kv_blocks(src_dp_size,
-                                                src_dp_rank,
-                                                src_cluster_ids,
-                                                src_addrs,
-                                                dst_dp_rank,
-                                                source_mappings);
+    const bool pulled = pd_execution_.pull_kv_blocks(src_dp_size,
+                                                     src_dp_rank,
+                                                     src_cluster_ids,
+                                                     src_addrs,
+                                                     dst_dp_rank,
+                                                     source_mappings);
     if (!pulled) {
       LOG(ERROR) << "Failed to pull KV blocks, request_id: " << req_id;
       kv_cache_manager_->deallocate(request.get());
@@ -1139,7 +1151,7 @@ bool DisaggPDScheduler::try_allocate(Sequence* sequence) {
 
 bool DisaggPDScheduler::exceeds_decode_capacity(Sequence* sequence) const {
   CHECK(sequence != nullptr);
-  const BlockManagerPool* block_manager = engine_->block_manager_pool();
+  const BlockManagerPool* block_manager = resources_.block_manager_pool();
   CHECK(block_manager != nullptr);
   const BlockManagerPool::Options& block_options = block_manager->options();
   if (block_options.enable_xtensor() ||
@@ -1178,7 +1190,7 @@ bool DisaggPDScheduler::link_instance(const std::string& instance_name,
                                       const int32_t dp_size,
                                       const int32_t src_kv_split_size) {
   std::lock_guard<std::mutex> lock(linked_instances_mutex_);
-  if (!engine_->link_cluster(
+  if (!pd_execution_.link_cluster(
           cluster_ids, addrs, ports, dp_size, src_kv_split_size)) {
     LOG(ERROR) << "Link instance failed, instance_name: " << instance_name;
     return false;
@@ -1210,7 +1222,7 @@ bool DisaggPDScheduler::unlink_instance(
   }
 
   std::lock_guard<std::mutex> lock(linked_instances_mutex_);
-  if (!engine_->unlink_cluster(
+  if (!pd_execution_.unlink_cluster(
           cluster_ids, addrs, ports, dp_size, src_kv_split_size)) {
     LOG(ERROR) << "Unlink instance failed, instance_name: " << instance_name;
     return false;

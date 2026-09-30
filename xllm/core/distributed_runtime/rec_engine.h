@@ -20,8 +20,9 @@ limitations under the License.
 #include <memory>
 
 #include "common/macros.h"
+#include "core/framework/model/model_args.h"
+#include "core/runtime/options.h"
 #include "distributed_runtime/dist_manager.h"
-#include "engine.h"
 #include "framework/batch/rec_batch_group.h"
 #include "framework/block/block_manager_pool.h"
 #include "framework/kv_cache/kv_cache_utils.h"
@@ -36,25 +37,32 @@ namespace xllm {
 
 class KVCacheShape;
 
-class RecEngine : public Engine {
+class RecEngine final {
  public:
-  RecEngine(const runtime::Options& options,
-            std::shared_ptr<DistManager> dist_manager = nullptr);
+  explicit RecEngine(const runtime::Options& options,
+                     std::shared_ptr<DistManager> dist_manager = nullptr);
 
-  virtual ~RecEngine() = default;
+  ~RecEngine() = default;
 
-  ForwardOutput step(RecBatchGroup& batch) override;
+  ForwardOutput step(RecBatchGroup& batch);
 
   const runtime::Options& options() const { return options_; }
 
-  bool init() override;
+  const ModelArgs& model_args() const { return args_; }
+  const TokenizerArgs& tokenizer_args() const { return tokenizer_args_; }
+  const Tokenizer* tokenizer() const { return tokenizer_.get(); }
+  BlockManagerPool* block_manager_pool() const {
+    return kv_cache_manager_.get();
+  }
+
+  bool init();
 
   // Start local WorkerServers without loading weights. Non-leader ranks
   // call this so rank 0's DistManager can collect the cluster; LlmRec
   // otherwise creates DistManager only inside init().
   void setup_distributed_workers();
 
-  std::vector<int64_t> get_active_activation_memory() const override;
+  std::vector<int64_t> get_active_activation_memory() const;
 
  private:
   // ============================================================
@@ -198,6 +206,11 @@ class RecEngine : public Engine {
   // ============================================================
   // Member variables
   // ============================================================
+  ModelArgs args_;
+  TokenizerArgs tokenizer_args_;
+  std::unique_ptr<BlockManagerPool> kv_cache_manager_;
+  std::unique_ptr<Tokenizer> tokenizer_;
+
   runtime::Options options_;
   torch::ScalarType dtype_;
   QuantArgs quant_args_;

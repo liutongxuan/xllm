@@ -19,9 +19,11 @@ limitations under the License.
 
 namespace xllm {
 
-DisaggPDService::DisaggPDService(DisaggPDScheduler* scheduler, Engine* engine) {
-  disagg_pd_service_impl_ =
-      std::make_unique<DisaggPDServiceImpl>(scheduler, engine);
+DisaggPDService::DisaggPDService(DisaggPDScheduler* scheduler,
+                                 EngineResources resources,
+                                 PDExecution pd_execution) {
+  disagg_pd_service_impl_ = std::make_unique<DisaggPDServiceImpl>(
+      scheduler, std::move(resources), std::move(pd_execution));
 }
 
 void DisaggPDService::AddNewRequests(

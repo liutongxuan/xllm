@@ -33,10 +33,10 @@ limitations under the License.
 
 namespace xllm {
 
-class RecMaster : public Master {
+class RecMaster final : public Master {
  public:
   explicit RecMaster(const Options& options);
-  ~RecMaster();
+  ~RecMaster() override;
 
   // handle a request, the engine will execute the request asynchronously
   // completion/encode
@@ -67,6 +67,9 @@ class RecMaster : public Master {
   RecType rec_type() const { return rec_type_; }
 
  private:
+  // The engine outlives the scheduler and request handlers.
+  std::unique_ptr<RecEngine> engine_;
+
   using RequestBuilder =
       std::function<std::shared_ptr<Request>(const RequestParams&,
                                              OutputCallback)>;

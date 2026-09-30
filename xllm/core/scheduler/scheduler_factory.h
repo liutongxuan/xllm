@@ -18,12 +18,13 @@ limitations under the License.
 #include <cstdint>
 #include <memory>
 
-#include "runtime/xservice_client.h"
 #include "scheduler/continuous_scheduler.h"
 #include "scheduler/dit_scheduler.h"
 #include "scheduler/fixed_steps_scheduler.h"
 
 namespace xllm {
+
+class RecEngine;
 
 enum class SchedulerKind : int8_t {
   CONTINUOUS = 0,
@@ -35,15 +36,29 @@ SchedulerKind select_scheduler_kind(
     const ContinuousScheduler::Options& options);
 
 std::unique_ptr<ContinuousScheduler> create_continuous_scheduler(
-    Engine* engine,
-    ContinuousScheduler::Options options);
+    BatchExecution execution,
+    ContinuousScheduler::Options options,
+    PDExecution pd_execution = {},
+    XTensorInfoProvider xtensor_info_provider = {});
+
+template <typename TargetEngine>
+  requires requires(TargetEngine& engine) { BatchExecution::bind(engine); }
+std::unique_ptr<ContinuousScheduler> create_continuous_scheduler(
+    TargetEngine* engine,
+    ContinuousScheduler::Options options) {
+  CHECK(engine != nullptr);
+  return create_continuous_scheduler(BatchExecution::bind(*engine),
+                                     std::move(options),
+                                     PDExecution::bind(*engine),
+                                     bind_xtensor_info_provider(*engine));
+}
 
 std::unique_ptr<DiTScheduler> create_dit_scheduler(
-    Engine* engine,
+    DiTEngine* engine,
     DiTScheduler::Options options);
 
 std::unique_ptr<FixedStepsScheduler> create_fixed_steps_scheduler(
-    Engine* engine,
+    RecEngine* engine,
     ContinuousScheduler::Options options);
 
 }  // namespace xllm

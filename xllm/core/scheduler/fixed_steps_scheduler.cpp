@@ -31,7 +31,6 @@ limitations under the License.
 #include "core/common/global_flags.h"
 #include "core/common/metrics.h"
 #include "core/common/types.h"
-#include "core/distributed_runtime/engine.h"
 #include "core/framework/batch/rec_batch.h"
 #include "core/framework/batch/rec_batch_factory.h"
 #include "core/framework/config/rec_config.h"
@@ -43,14 +42,23 @@ limitations under the License.
 
 namespace xllm {
 
-FixedStepsScheduler::FixedStepsScheduler(Engine* engine, const Options& options)
-    : ContinuousScheduler(engine, options),
+FixedStepsScheduler::FixedStepsScheduler(EngineResources resources,
+                                         RecStep rec_step,
+                                         const Options& options)
+    : ContinuousScheduler(std::move(resources), options),
+      rec_step_(std::move(rec_step)),
       step_semaphore_(
           static_cast<std::ptrdiff_t>(options.rec_worker_max_concurrency())) {
   step_threadpool_ = std::make_unique<ThreadPool>(
       /*num_threads=*/static_cast<size_t>(options.rec_worker_max_concurrency()),
       /*cpu_binding=*/false,
       /*pool_name=*/"FixedStepsScheduler.step");
+}
+
+FixedStepsScheduler::~FixedStepsScheduler() {
+  // Tasks release the semaphore and use scheduler resources after execution.
+  // Join them while those members are still alive.
+  step_threadpool_.reset();
 }
 
 void FixedStepsScheduler::handle_prefill_requests(
@@ -378,29 +386,9 @@ void FixedStepsScheduler::step(const absl::Duration& timeout) {
     }
 
     // Submit task to thread pool for asynchronous execution
-    // After engine_->step() completes, process finished/cancelled requests
-    auto function = [this,
-                     batches = std::move(result.batches),
-                     requests = std::move(result.requests),
-                     sequences = std::move(result.sequences)]() mutable {
-      engine_->step(batches);
-
-      // After step completes, check and process finished/cancelled requests
-      std::vector<std::shared_ptr<Request>> finished_requests;
-      for (auto& request : requests) {
-        if (request) {
-          request->update_connection_status();
-          if (request->finished() || request->cancelled()) {
-            kv_cache_manager_->deallocate(request.get());
-            finished_requests.emplace_back(request);
-          }
-        }
-      }
-
-      // Process finished requests
-      if (!finished_requests.empty()) {
-        response_processor_->process_completed_requests(finished_requests);
-      }
+    // After rec_step_() completes, process finished/cancelled requests
+    auto function = [this, result = std::move(result)]() mutable {
+      execute_batch(std::move(result));
 
       if (options_.rec_worker_max_concurrency() > 1) {
         step_semaphore_.release();
@@ -418,6 +406,43 @@ void FixedStepsScheduler::step(const absl::Duration& timeout) {
   } else {
     LOG(ERROR) << "FixedStepsScheduler::step() not supported with "
                   "enable_schedule_overlap";
+  }
+}
+
+void FixedStepsScheduler::generate() {
+  bool batch_empty = false;
+  while (num_pending_requests() > 0 || !batch_empty ||
+         request_queue_.size() > 0 || has_pending_prefetch()) {
+    ScheduleResult result = schedule_request(absl::Milliseconds(50));
+    batch_empty =
+        std::all_of(result.batches.begin(),
+                    result.batches.end(),
+                    [](const RecBatch& batch) { return batch.empty(); });
+    if (batch_empty) {
+      continue;
+    }
+    execute_batch(std::move(result));
+  }
+  response_processor_->wait_completion();
+}
+
+void FixedStepsScheduler::execute_batch(ScheduleResult result) {
+  rec_step_(result.batches);
+
+  std::vector<std::shared_ptr<Request>> finished_requests;
+  finished_requests.reserve(result.requests.size());
+  for (const std::shared_ptr<Request>& request : result.requests) {
+    if (request == nullptr) {
+      continue;
+    }
+    request->update_connection_status();
+    if (request->finished() || request->cancelled()) {
+      kv_cache_manager_->deallocate(request.get());
+      finished_requests.emplace_back(request);
+    }
+  }
+  if (!finished_requests.empty()) {
+    response_processor_->process_completed_requests(finished_requests);
   }
 }
 

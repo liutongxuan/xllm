@@ -23,7 +23,9 @@ namespace xllm {
 
 class DisaggPDService : public proto::DisaggPDService {
  public:
-  explicit DisaggPDService(DisaggPDScheduler* scheduler, Engine* engine);
+  explicit DisaggPDService(DisaggPDScheduler* scheduler,
+                           EngineResources resources,
+                           PDExecution pd_execution);
   explicit DisaggPDService() {}
   virtual ~DisaggPDService() = default;
 

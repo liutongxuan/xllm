@@ -21,7 +21,6 @@ limitations under the License.
 #include "common/types.h"
 #include "core/framework/config/kv_cache_config.h"
 #include "core/framework/sampling/json_object_grammar.h"
-#include "distributed_runtime/llm_engine.h"
 #include "framework/request/request_output.h"
 #include "scheduler/disagg_pd_scheduler.h"
 #include "util/utils.h"
@@ -29,8 +28,11 @@ limitations under the License.
 namespace xllm {
 
 DisaggPDServiceImpl::DisaggPDServiceImpl(DisaggPDScheduler* scheduler,
-                                         Engine* engine)
-    : scheduler_(scheduler), engine_(engine) {
+                                         EngineResources resources,
+                                         PDExecution pd_execution)
+    : scheduler_(scheduler),
+      resources_(std::move(resources)),
+      pd_execution_(std::move(pd_execution)) {
   xservice_client_ = XServiceClient::get_instance();
   if (!xservice_client_->initialize_done()) {
     LOG(FATAL) << "XServiceClient not init.";
@@ -46,10 +48,10 @@ DisaggPDServiceImpl::get_json_object_grammar(bool reasoning_enabled,
       reasoning_enabled ? json_reasoning_grammar_ : json_object_grammar_;
   if (grammar == nullptr) {
     grammar = JsonObjectGrammar::create_from_tokenizer(
-        *engine_->tokenizer(),
-        engine_->model_args().eos_token_id(),
-        engine_->model_args().stop_token_ids(),
-        engine_->model_args().vocab_size(),
+        *resources_.tokenizer(),
+        resources_.model_args().eos_token_id(),
+        resources_.model_args().stop_token_ids(),
+        resources_.model_args().vocab_size(),
         reasoning_enabled,
         error);
   }
@@ -269,7 +271,7 @@ void DisaggPDServiceImpl::decode_recv_new_requests(
           block_ids.push_back(block_id);
         }
       }
-      if (has_linear_attention_layers(engine_->model_args())) {
+      if (has_linear_attention_layers(resources_.model_args())) {
         const int32_t linear_state_id = sequence->get_linear_state_slot_id();
         CHECK_GE(linear_state_id, 0)
             << "Decode did not allocate a linear-state slot.";
@@ -282,7 +284,7 @@ void DisaggPDServiceImpl::decode_recv_new_requests(
           !block_ids.empty()) {
         std::vector<std::pair<std::vector<uint64_t>, std::vector<uint64_t>>>
             layer_offsets;
-        if (engine_->get_xtensor_offsets_for_blocks(
+        if (pd_execution_.get_xtensor_offsets_for_blocks(
                 dp_rank, block_ids, layer_offsets)) {
           // Fill proto with per-layer offsets
           for (const auto& [k_offsets, v_offsets] : layer_offsets) {

@@ -22,10 +22,12 @@ limitations under the License.
 #include <future>
 #include <memory>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "common/options.h"
 #include "common/rate_limiter.h"
+#include "core/distributed_runtime/speculative_engine.h"
 #include "framework/chat_template/chat_template.h"
 #include "framework/request/llm_request_factory.h"
 #include "framework/request/request_output.h"
@@ -39,10 +41,10 @@ namespace xllm {
 class Call;
 class Tokenizer;
 
-class LLMMaster : public Master {
+class LLMMaster final : public Master {
  public:
   explicit LLMMaster(const Options& options);
-  ~LLMMaster();
+  ~LLMMaster() override;
 
   // handle a request, the engine will execute the request asynchronously
   // completion/encode
@@ -88,6 +90,10 @@ class LLMMaster : public Master {
   // this is a blocking call
   void generate();
 
+  bool start_profile() override;
+
+  bool stop_profile() override;
+
   bool sleep() override;
 
   bool wakeup() override;
@@ -99,6 +105,12 @@ class LLMMaster : public Master {
   bool unlink_p2p(const std::vector<std::string>& remote_addrs) override;
 
  private:
+  // Concrete engines are selected only within this model domain.
+  // They outlive the scheduler and request handlers.
+  std::variant<std::unique_ptr<LLMEngine>,
+               std::unique_ptr<SpeculativeEngineBase<LLMEngine>>>
+      engine_;
+
   XServiceClient* xservice_client_ = nullptr;
 
   std::unique_ptr<Scheduler> scheduler_;

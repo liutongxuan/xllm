@@ -10,7 +10,10 @@ cc_library(
   NAME 
     distributed_runtime
   HDRS
-    engine.h
+    engine_resources.h
+    batch_execution.h
+    pd_execution.h
+    xtensor_info_provider.h
     master.h
     dit_engine.h
     dit_master.h

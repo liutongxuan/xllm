@@ -24,7 +24,6 @@ limitations under the License.
 
 #include "common/metrics.h"
 #include "core/framework/config/scheduler_config.h"
-#include "distributed_runtime/engine.h"
 #include "framework/block/kv_cache_manager.h"
 
 namespace xllm {
@@ -43,17 +42,18 @@ int64_t SchedulerMetrics::amortized_token_latency(int64_t latency,
   return (latency + n / 2) / n;
 }
 
-SchedulerMetrics::SchedulerMetrics(Engine* engine,
-                                   KVCacheManager* kv_cache_manager,
-                                   int32_t dp_size,
-                                   int32_t num_speculative_tokens,
-                                   bool collect_recent_latency)
-    : engine_(engine),
+SchedulerMetrics::SchedulerMetrics(
+    std::function<std::vector<int64_t>()> activation_memory_reader,
+    KVCacheManager* kv_cache_manager,
+    int32_t dp_size,
+    int32_t num_speculative_tokens,
+    bool collect_recent_latency)
+    : activation_memory_reader_(std::move(activation_memory_reader)),
       kv_cache_manager_(kv_cache_manager),
       dp_size_(dp_size),
       num_speculative_tokens_(num_speculative_tokens),
       collect_recent_latency_(collect_recent_latency) {
-  CHECK(engine_ != nullptr);
+  CHECK(activation_memory_reader_);
   CHECK(kv_cache_manager_ != nullptr);
 }
 
@@ -151,7 +151,7 @@ std::vector<int64_t> SchedulerMetrics::get_num_occupied_slots(
 
 std::vector<int64_t> SchedulerMetrics::get_active_activation_in_bytes() const {
   const std::vector<int64_t> all_active_activation_in_bytes =
-      engine_->get_active_activation_memory();
+      activation_memory_reader_();
   std::vector<int64_t> active_activation_in_bytes(
       static_cast<size_t>(dp_size_));
   const int32_t dp_local_tp_size = static_cast<int32_t>(

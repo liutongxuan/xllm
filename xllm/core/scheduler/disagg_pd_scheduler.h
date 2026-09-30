@@ -51,7 +51,18 @@ bool has_rank_preserving_kv_groups(const proto::DisaggResponse& response);
 
 class DisaggPDScheduler : public ContinuousScheduler {
  public:
-  DisaggPDScheduler(Engine* engine, const Options& options);
+  DisaggPDScheduler(BatchExecution execution,
+                    const Options& options,
+                    PDExecution pd_execution,
+                    XTensorInfoProvider xtensor_info_provider = {});
+
+  template <typename TargetEngine>
+    requires requires(TargetEngine& engine) { BatchExecution::bind(engine); }
+  DisaggPDScheduler(TargetEngine* engine, const Options& options)
+      : DisaggPDScheduler(BatchExecution::bind(checked_engine(engine)),
+                          options,
+                          PDExecution::bind(checked_engine(engine)),
+                          bind_xtensor_info_provider(checked_engine(engine))) {}
 
   ~DisaggPDScheduler() override;
 
@@ -120,7 +131,22 @@ class DisaggPDScheduler : public ContinuousScheduler {
   // Skips dispatch and RPC startup. Unit tests construct through this so they
   // do not block in initialize_rpc_server.
   struct SkipRuntimeStart {};
-  DisaggPDScheduler(Engine* engine, const Options& options, SkipRuntimeStart);
+  DisaggPDScheduler(BatchExecution execution,
+                    const Options& options,
+                    PDExecution pd_execution,
+                    XTensorInfoProvider xtensor_info_provider,
+                    SkipRuntimeStart);
+
+  template <typename TargetEngine>
+    requires requires(TargetEngine& engine) { BatchExecution::bind(engine); }
+  DisaggPDScheduler(TargetEngine* engine,
+                    const Options& options,
+                    SkipRuntimeStart tag)
+      : DisaggPDScheduler(BatchExecution::bind(checked_engine(engine)),
+                          options,
+                          PDExecution::bind(checked_engine(engine)),
+                          bind_xtensor_info_provider(checked_engine(engine)),
+                          tag) {}
 
   void do_permanent_rejection(const std::shared_ptr<Request>& request);
 
@@ -155,7 +181,7 @@ class DisaggPDScheduler : public ContinuousScheduler {
 
   // Register instance information including name, RPC address, type, and cache
   // info
-  void register_instance_info(const std::string& server_name, Engine* engine);
+  void register_instance_info(const std::string& server_name);
 
   // remote instance name(ID) -> instance info
   std::unordered_map<std::string, InstanceInfo> remote_instances_info_;

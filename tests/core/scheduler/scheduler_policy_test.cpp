@@ -31,7 +31,6 @@ limitations under the License.
 #include "continuous_scheduler.h"
 #include "core/framework/config/kv_cache_store_config.h"
 #include "core/framework/config/scheduler_config.h"
-#include "distributed_runtime/engine.h"
 #include "framework/block/block_manager_pool.h"
 #include "framework/model/model_args.h"
 #include "util/utils.h"
@@ -61,7 +60,7 @@ class FakeTokenizer : public Tokenizer {
   }
 };
 
-class FakeEngine : public Engine {
+class FakeEngine final {
  public:
   FakeEngine(int32_t num_blocks,
              int32_t block_size,
@@ -80,10 +79,8 @@ class FakeEngine : public Engine {
   BlockManagerPool* block_manager_pool() const {
     return fake_block_manager_.get();
   }
-  const ModelArgs& model_args() const override { return model_args_; }
-  const TokenizerArgs& tokenizer_args() const { NOT_IMPLEMENTED(); }
+  const ModelArgs& model_args() const { return model_args_; }
   std::vector<int64_t> get_active_activation_memory() const { return {0}; }
-  bool init() override { return true; }
 
  private:
   std::unique_ptr<Tokenizer> fake_tokenizer_;
@@ -464,7 +461,8 @@ void update_requests(std::vector<std::shared_ptr<Request>> requests) {
 
 class TestableContinuousScheduler final : public ContinuousScheduler {
  public:
-  TestableContinuousScheduler(Engine* engine, const Options& options)
+  template <typename TargetEngine>
+  TestableContinuousScheduler(TargetEngine* engine, const Options& options)
       : ContinuousScheduler(engine, options) {}
 
   BatchGroup prepare_batch_test() { return prepare_batch(); }

@@ -23,7 +23,6 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
-#include "distributed_runtime/engine.h"
 #include "framework/block/block_manager_pool.h"
 #include "framework/request/request.h"
 #include "framework/request/request_state.h"
@@ -31,7 +30,7 @@ limitations under the License.
 namespace xllm {
 namespace {
 
-class FakeEngine final : public Engine {
+class FakeEngine final {
  public:
   FakeEngine() {
     BlockManagerPool::Options options;
@@ -39,17 +38,9 @@ class FakeEngine final : public Engine {
     block_manager_ = std::make_unique<BlockManagerPool>(options, /*dp_size=*/1);
   }
 
-  ForwardOutput step(BatchGroup& /*batch*/) override { return {}; }
+  BlockManagerPool* block_manager_pool() const { return block_manager_.get(); }
 
-  void update_last_step_result(BatchGroup& /*batch*/) override {}
-
-  BlockManagerPool* block_manager_pool() const override {
-    return block_manager_.get();
-  }
-
-  std::vector<int64_t> get_active_activation_memory() const override {
-    return {0};
-  }
+  std::vector<int64_t> get_active_activation_memory() const { return {0}; }
 
  private:
   std::unique_ptr<BlockManagerPool> block_manager_;
@@ -86,11 +77,13 @@ std::shared_ptr<Request> make_request() {
 
 TEST(SchedulerMetricsTest, CollectsAndDrainsLatencySamples) {
   FakeEngine engine;
-  SchedulerMetrics metrics(/*engine=*/&engine,
-                           /*kv_cache_manager=*/engine.block_manager_pool(),
-                           /*dp_size=*/1,
-                           /*num_speculative_tokens=*/0,
-                           /*collect_recent_latency=*/true);
+  SchedulerMetrics metrics(
+      /*activation_memory_reader=*/
+      [&engine] { return engine.get_active_activation_memory(); },
+      /*kv_cache_manager=*/engine.block_manager_pool(),
+      /*dp_size=*/1,
+      /*num_speculative_tokens=*/0,
+      /*collect_recent_latency=*/true);
   std::shared_ptr<Request> request = make_request();
   Sequence* sequence = request->sequences().front().get();
   sequence->kv_state().set_kv_cache_tokens_num(sequence->num_prompt_tokens());
@@ -126,11 +119,13 @@ TEST(SchedulerMetricsTest, CollectsAndDrainsLatencySamples) {
 
 TEST(SchedulerMetricsTest, SkipsRecentSamplesWhenCollectionDisabled) {
   FakeEngine engine;
-  SchedulerMetrics metrics(/*engine=*/&engine,
-                           /*kv_cache_manager=*/engine.block_manager_pool(),
-                           /*dp_size=*/1,
-                           /*num_speculative_tokens=*/0,
-                           /*collect_recent_latency=*/false);
+  SchedulerMetrics metrics(
+      /*activation_memory_reader=*/
+      [&engine] { return engine.get_active_activation_memory(); },
+      /*kv_cache_manager=*/engine.block_manager_pool(),
+      /*dp_size=*/1,
+      /*num_speculative_tokens=*/0,
+      /*collect_recent_latency=*/false);
   std::shared_ptr<Request> request = make_request();
   Sequence* sequence = request->sequences().front().get();
   sequence->kv_state().set_kv_cache_tokens_num(sequence->num_prompt_tokens());

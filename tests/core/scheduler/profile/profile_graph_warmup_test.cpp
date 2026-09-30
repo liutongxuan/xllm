@@ -21,7 +21,6 @@ limitations under the License.
 #include <string>
 #include <vector>
 
-#include "core/distributed_runtime/engine.h"
 #include "core/framework/block/block_manager_pool.h"
 #include "core/framework/config/execution_config.h"
 #include "core/framework/model/mtp_utils.h"
@@ -84,7 +83,7 @@ runtime::DecodeGraphExecutionShape make_decode_graph_execution_shape(
   return execution_shape;
 }
 
-class RecordingProfileEngine final : public Engine {
+class RecordingProfileEngine final {
  public:
   explicit RecordingProfileEngine(bool overlap = false) : overlap_(overlap) {
     BlockManagerPool::Options options;
@@ -100,7 +99,7 @@ class RecordingProfileEngine final : public Engine {
         .hidden_size(8);
   }
 
-  ForwardOutput step(BatchGroup& batches) override {
+  ForwardOutput step(BatchGroup& batches) {
     EXPECT_EQ(pending_steps_, 0);
     int32_t sequence_count = 0;
     for (Batch& batch : batches) {
@@ -115,22 +114,20 @@ class RecordingProfileEngine final : public Engine {
     return ForwardOutput();
   }
 
-  void update_last_step_result(BatchGroup& batches) override {
+  void update_last_step_result(BatchGroup& batches) {
     (void)batches;
     EXPECT_EQ(pending_steps_, 1);
     EXPECT_GT(block_manager_->num_used_blocks().front(), 0);
     --pending_steps_;
   }
 
-  BlockManagerPool* block_manager_pool() const override {
-    return block_manager_.get();
-  }
+  BlockManagerPool* block_manager_pool() const { return block_manager_.get(); }
 
-  const ModelArgs& model_args() const override { return model_args_; }
+  const Tokenizer* tokenizer() const { return nullptr; }
 
-  std::vector<int64_t> get_active_activation_memory() const override {
-    return {};
-  }
+  const ModelArgs& model_args() const { return model_args_; }
+
+  std::vector<int64_t> get_active_activation_memory() const { return {}; }
 
   void reset_profile_markers() { all_requests_marked_ = true; }
 

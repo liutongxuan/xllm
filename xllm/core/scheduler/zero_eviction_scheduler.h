@@ -100,7 +100,10 @@ class BlockCapacityGuard {
 
 class ZeroEvictionScheduler final : public ContinuousScheduler {
  public:
-  ZeroEvictionScheduler(Engine* engine, const Options& options);
+  ZeroEvictionScheduler(BatchExecution execution,
+                        const Options& options,
+                        PDExecution pd_execution = {},
+                        XTensorInfoProvider xtensor_info_provider = {});
   ~ZeroEvictionScheduler() override;
 
  private:

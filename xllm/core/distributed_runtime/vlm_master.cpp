@@ -122,69 +122,82 @@ VLMMaster::VLMMaster(const Options& options)
     : Master(options,
              should_use_vlm_speculative_engine(options) ? EngineType::VLMSSM
                                                         : EngineType::VLM) {
+  if (engine_type_ == EngineType::VLMSSM) {
+    engine_.emplace<1>(
+        std::make_unique<SpeculativeEngineBase<VLMEngine>>(engine_options_));
+  } else {
+    engine_.emplace<0>(std::make_unique<VLMEngine>(engine_options_));
+  }
   if (!is_leader()) {
     return;
   }
 
-  CHECK(engine_->init(master_status_));
+  std::visit(
+      [this](auto& engine) {
+        CHECK(engine->init(master_status_));
 
-  model_args_ = engine_->model_args();
+        model_args_ = engine->model_args();
 
-  if (options_.enable_service_routing()) {
-    XServiceClient* xservice_client = XServiceClient::get_instance();
-    if (!xservice_client->init(options_.etcd_addr().value_or(""),
-                               options_.instance_name().value_or(""),
-                               engine_->block_manager_pool(),
-                               options_.etcd_namespace().value_or(""))) {
-      LOG(FATAL) << "XServiceClient init fail!";
-      return;
-    }
-  }
+        if (options_.enable_service_routing()) {
+          XServiceClient* xservice_client = XServiceClient::get_instance();
+          if (!xservice_client->init(options_.etcd_addr().value_or(""),
+                                     options_.instance_name().value_or(""),
+                                     engine->block_manager_pool(),
+                                     options_.etcd_namespace().value_or(""))) {
+            LOG(FATAL) << "XServiceClient init fail!";
+            return;
+          }
+        }
 
-  ContinuousScheduler::Options scheduler_options;
-  scheduler_options.max_tokens_per_batch(options.max_tokens_per_batch())
-      .max_seqs_per_batch(options.max_seqs_per_batch())
-      .request_queue_size(options.request_queue_size())
-      .max_tokens_per_chunk_for_prefill(
-          options.max_tokens_per_chunk_for_prefill())
-      .num_speculative_tokens(options_.num_speculative_tokens())
-      .dp_size(options_.dp_size())
-      .enable_disagg_pd(options_.enable_disagg_pd())
-      .enable_chunked_prefill(options_.enable_chunked_prefill())
-      .instance_name(options_.instance_name())
-      .instance_role(options_.instance_role())
-      .kv_cache_transfer_mode(options_.kv_cache_transfer_mode())
-      .enable_service_routing(options_.enable_service_routing())
-      .disable_log_stats(options_.disable_log_stats())
-      .disable_ttft_profiling(options_.disable_ttft_profiling())
-      .enable_schedule_overlap(options_.enable_schedule_overlap())
-      .server_idx(options_.server_idx());
-  scheduler_ = create_continuous_scheduler(engine_.get(), scheduler_options);
+        ContinuousScheduler::Options scheduler_options;
+        scheduler_options.max_tokens_per_batch(options_.max_tokens_per_batch())
+            .max_seqs_per_batch(options_.max_seqs_per_batch())
+            .request_queue_size(options_.request_queue_size())
+            .max_tokens_per_chunk_for_prefill(
+                options_.max_tokens_per_chunk_for_prefill())
+            .num_speculative_tokens(options_.num_speculative_tokens())
+            .dp_size(options_.dp_size())
+            .enable_disagg_pd(options_.enable_disagg_pd())
+            .enable_chunked_prefill(options_.enable_chunked_prefill())
+            .instance_name(options_.instance_name())
+            .instance_role(options_.instance_role())
+            .kv_cache_transfer_mode(options_.kv_cache_transfer_mode())
+            .enable_service_routing(options_.enable_service_routing())
+            .disable_log_stats(options_.disable_log_stats())
+            .disable_ttft_profiling(options_.disable_ttft_profiling())
+            .enable_schedule_overlap(options_.enable_schedule_overlap())
+            .server_idx(options_.server_idx());
+        scheduler_ =
+            create_continuous_scheduler(engine.get(), scheduler_options);
 
-  if (options_.enable_service_routing()) {
-    auto& instance_info = scheduler_->get_instance_info();
-    XServiceClient::get_instance()->register_instance(instance_info);
-  }
+        if (options_.enable_service_routing()) {
+          auto& instance_info = scheduler_->get_instance_info();
+          XServiceClient::get_instance()->register_instance(instance_info);
+        }
 
-  chat_template_ =
-      std::make_unique<JinjaChatTemplate>(engine_->tokenizer_args());
-  tokenizer_ = engine_->tokenizer()->clone();
-  processor_ = create_multimodal_processor(model_args_,
-                                           tokenizer_,
-                                           options_.max_processor_cache_items(),
-                                           engine_->tokenizer_args());
+        chat_template_ =
+            std::make_unique<JinjaChatTemplate>(engine->tokenizer_args());
+        tokenizer_ = engine->tokenizer()->clone();
+        processor_ =
+            create_multimodal_processor(model_args_,
+                                        tokenizer_,
+                                        options_.max_processor_cache_items(),
+                                        engine->tokenizer_args());
 
-  request_factory_ = std::make_unique<VLMRequestFactory>(processor_.get(),
-                                                         chat_template_.get(),
-                                                         tokenizer_.get(),
-                                                         &model_args_,
-                                                         &options_,
-                                                         get_rate_limiter());
+        request_factory_ =
+            std::make_unique<VLMRequestFactory>(processor_.get(),
+                                                chat_template_.get(),
+                                                tokenizer_.get(),
+                                                &model_args_,
+                                                &options_,
+                                                get_rate_limiter());
 
-  threadpool_ = std::make_unique<ThreadPool>(
-      /*num_threads=*/options_.num_request_handling_threads(),
-      /*cpu_binding=*/false,
-      /*pool_name=*/"VLMMaster.request");
+        threadpool_ = std::make_unique<ThreadPool>(
+            /*num_threads=*/options_.num_request_handling_threads(),
+            /*cpu_binding=*/false,
+            /*pool_name=*/"VLMMaster.request");
+      },
+      engine_);
 }
 
 VLMMaster::~VLMMaster() {

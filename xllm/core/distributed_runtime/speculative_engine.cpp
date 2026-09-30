@@ -82,7 +82,9 @@ SuffixSpeculativeEngine::SuffixSpeculativeEngine(
 
 template <typename TargetEngine>
 runtime::DecodeGraphExecutionShape
-SpeculativeEngineBase<TargetEngine>::decode_graph_execution_shape() const {
+SpeculativeEngineBase<TargetEngine>::decode_graph_execution_shape() const
+  requires std::is_same_v<TargetEngine, LLMEngine>
+{
   return engine_->decode_graph_execution_shape();
 }
 
@@ -197,7 +199,9 @@ bool SpeculativeEngineBase<TargetEngine>::should_skip_external_draft_kv_cache()
 template <typename TargetEngine>
 bool SpeculativeEngineBase<TargetEngine>::
     set_speculative_validate_time_predictor(
-        const SpeculativeProfileRegistry::ValidateTimePredictor& predictor) {
+        const SpeculativeProfileRegistry::ValidateTimePredictor& predictor)
+  requires std::is_same_v<TargetEngine, LLMEngine>
+{
   return engine_->set_speculative_validate_time_predictor(predictor);
 }
 
@@ -303,7 +307,9 @@ bool SpeculativeEngineBase<TargetEngine>::pull_kv_blocks(
     const std::vector<uint64_t>& src_cluster_ids,
     const std::vector<std::string>& src_addrs,
     const int32_t dst_dp_rank,
-    const std::vector<KVTransferMapping>& mappings) {
+    const std::vector<KVTransferMapping>& mappings)
+  requires std::is_same_v<TargetEngine, LLMEngine>
+{
   return engine_->pull_kv_blocks(src_dp_size,
                                  src_dp_rank,
                                  src_cluster_ids,
@@ -316,7 +322,9 @@ template <typename TargetEngine>
 void SpeculativeEngineBase<TargetEngine>::get_cache_info(
     std::vector<uint64_t>& cluster_ids,
     std::vector<std::string>& addrs,
-    std::vector<uint16_t>& ports) {
+    std::vector<uint16_t>& ports)
+  requires std::is_same_v<TargetEngine, LLMEngine>
+{
   engine_->get_cache_info(cluster_ids, addrs, ports);
 };
 
@@ -326,7 +334,9 @@ bool SpeculativeEngineBase<TargetEngine>::link_cluster(
     const std::vector<std::string>& addrs,
     const std::vector<uint16_t>& ports,
     const int32_t src_dp_size,
-    const int32_t src_kv_split_size) {
+    const int32_t src_kv_split_size)
+  requires std::is_same_v<TargetEngine, LLMEngine>
+{
   return engine_->link_cluster(
       cluster_ids, addrs, ports, src_dp_size, src_kv_split_size);
 };
@@ -337,7 +347,9 @@ bool SpeculativeEngineBase<TargetEngine>::unlink_cluster(
     const std::vector<std::string>& addrs,
     const std::vector<uint16_t>& ports,
     const int32_t src_dp_size,
-    const int32_t src_kv_split_size) {
+    const int32_t src_kv_split_size)
+  requires std::is_same_v<TargetEngine, LLMEngine>
+{
   return engine_->unlink_cluster(
       cluster_ids, addrs, ports, src_dp_size, src_kv_split_size);
 };

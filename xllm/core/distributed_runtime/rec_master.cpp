@@ -57,13 +57,12 @@ RecType get_rec_type(const ModelArgs& model_args) {
 
 RecMaster::RecMaster(const Options& options)
     : Master(options, EngineType::REC) {
+  engine_ = std::make_unique<RecEngine>(engine_options_);
   if (!is_leader()) {
     // RecEngine does not create DistManager in its constructor. LlmRec
     // starts workers in init(); skip that on non-leaders but still host
     // the local WorkerServer so rank 0 can collect the cluster.
-    auto* rec_engine = dynamic_cast<RecEngine*>(engine_.get());
-    CHECK(rec_engine != nullptr);
-    rec_engine->setup_distributed_workers();
+    engine_->setup_distributed_workers();
     return;
   }
 

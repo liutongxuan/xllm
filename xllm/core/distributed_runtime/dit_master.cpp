@@ -38,6 +38,7 @@ limitations under the License.
 namespace xllm {
 DiTMaster::DiTMaster(const Options& options)
     : Master(options, EngineType::DIT) {
+  engine_ = std::make_unique<DiTEngine>(engine_options_);
   if (!is_leader()) {
     return;
   }

@@ -29,7 +29,7 @@ limitations under the License.
 #include "common/options.h"
 #include "common/rate_limiter.h"
 #include "common/types.h"
-#include "engine.h"
+#include "core/runtime/options.h"
 #include "framework/request/request_params.h"
 namespace xllm {
 
@@ -57,15 +57,10 @@ class Master {
     return false;
   }
 
-  // Start/stop online timeline profiling on all workers. Forwards to the
-  // engine, which broadcasts to every worker. CUDA only for now.
-  virtual bool start_profile() {
-    return engine_ ? engine_->start_profile() : false;
-  }
+  // Masters with worker timeline profiling override these operations.
+  virtual bool start_profile() { return false; }
 
-  virtual bool stop_profile() {
-    return engine_ ? engine_->stop_profile() : false;
-  }
+  virtual bool stop_profile() { return false; }
 
   virtual bool unlink_p2p(const std::vector<std::string>& remote_addrs) {
     return false;
@@ -88,7 +83,7 @@ class Master {
 
   Options options_;
   EngineType engine_type_ = EngineType::INVALID;
-  std::unique_ptr<Engine> engine_;
+  runtime::Options engine_options_;
   RateLimiter rate_limiter_;
   MasterStatus master_status_{MasterStatus::WAKEUP};
 

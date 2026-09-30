@@ -15,8 +15,14 @@ limitations under the License.
 
 #pragma once
 
+#include <memory>
+#include <type_traits>
+#include <vector>
+
 #include "common/macros.h"
-#include "engine.h"
+#include "core/framework/speculative/speculative_profile_registry.h"
+#include "core/runtime/decode_graph_bucket.h"
+#include "core/runtime/options.h"
 #include "framework/batch/batch_group.h"
 #include "framework/block/block_manager_pool.h"
 #include "framework/kv_cache/kv_cache_utils.h"
@@ -29,41 +35,41 @@ limitations under the License.
 namespace xllm {
 
 template <typename TargetEngine>
-class SpeculativeEngineBase : public Engine {
+class SpeculativeEngineBase {
  public:
   // create an engine with the given devices
   explicit SpeculativeEngineBase(const runtime::Options& options);
 
-  ~SpeculativeEngineBase() override;
+  virtual ~SpeculativeEngineBase();
 
-  bool init(MasterStatus master_status) override;
+  bool init(MasterStatus master_status);
 
   // step the engine forward
-  ForwardOutput step(BatchGroup& batch) override;
+  ForwardOutput step(BatchGroup& batch);
 
-  const Tokenizer* tokenizer() const override { return engine_->tokenizer(); }
+  const Tokenizer* tokenizer() const { return engine_->tokenizer(); }
 
-  BlockManagerPool* block_manager_pool() const override {
+  BlockManagerPool* block_manager_pool() const {
     return engine_->block_manager_pool();
   }
 
-  const ModelArgs& model_args() const override { return model_args_; }
+  const ModelArgs& model_args() const { return model_args_; }
 
   bool set_speculative_validate_time_predictor(
       const SpeculativeProfileRegistry::ValidateTimePredictor& predictor)
-      override;
+    requires std::is_same_v<TargetEngine, LLMEngine>;
 
-  runtime::DecodeGraphExecutionShape decode_graph_execution_shape()
-      const override;
+  runtime::DecodeGraphExecutionShape decode_graph_execution_shape() const
+    requires std::is_same_v<TargetEngine, LLMEngine>;
 
-  const TokenizerArgs& tokenizer_args() const override {
+  const TokenizerArgs& tokenizer_args() const {
     return engine_->tokenizer_args();
   }
 
-  void update_last_step_result(BatchGroup& batch) override;
+  void update_last_step_result(BatchGroup& batch);
 
   // return the active activation memory
-  std::vector<int64_t> get_active_activation_memory() const override;
+  std::vector<int64_t> get_active_activation_memory() const;
 
   // P/D
   bool pull_kv_blocks(const int32_t src_dp_size,
@@ -71,23 +77,27 @@ class SpeculativeEngineBase : public Engine {
                       const std::vector<uint64_t>& src_cluster_ids,
                       const std::vector<std::string>& src_addrs,
                       const int32_t dst_dp_rank,
-                      const std::vector<KVTransferMapping>& mappings) override;
+                      const std::vector<KVTransferMapping>& mappings)
+    requires std::is_same_v<TargetEngine, LLMEngine>;
 
   void get_cache_info(std::vector<uint64_t>& cluster_ids,
                       std::vector<std::string>& addrs,
-                      std::vector<uint16_t>& ports) override;
+                      std::vector<uint16_t>& ports)
+    requires std::is_same_v<TargetEngine, LLMEngine>;
 
   bool link_cluster(const std::vector<uint64_t>& cluster_ids,
                     const std::vector<std::string>& addrs,
                     const std::vector<uint16_t>& ports,
                     const int32_t src_dp_size,
-                    const int32_t src_kv_split_size = 1) override;
+                    const int32_t src_kv_split_size = 1)
+    requires std::is_same_v<TargetEngine, LLMEngine>;
 
   bool unlink_cluster(const std::vector<uint64_t>& cluster_ids,
                       const std::vector<std::string>& addrs,
                       const std::vector<uint16_t>& ports,
                       const int32_t src_dp_size,
-                      const int32_t src_kv_split_size = 1) override;
+                      const int32_t src_kv_split_size = 1)
+    requires std::is_same_v<TargetEngine, LLMEngine>;
 
  protected:
   SpeculativeEngineBase(const runtime::Options& options, bool use_draft_engine);
@@ -122,7 +132,7 @@ class SpeculativeEngineBase : public Engine {
   std::shared_ptr<DistManager> dist_manager_ = nullptr;
 };
 
-class SuffixSpeculativeEngine : public SpeculativeEngineBase<LLMEngine> {
+class SuffixSpeculativeEngine final : public SpeculativeEngineBase<LLMEngine> {
  public:
   explicit SuffixSpeculativeEngine(const runtime::Options& options);
   ~SuffixSpeculativeEngine() override = default;

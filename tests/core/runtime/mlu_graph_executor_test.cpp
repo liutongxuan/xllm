@@ -25,7 +25,6 @@ limitations under the License.
 
 #include "base_executor_impl.h"
 #include "core/common/constants.h"
-#include "core/distributed_runtime/engine.h"
 #include "core/framework/batch/batch.h"
 #include "core/framework/config/execution_config.h"
 #include "core/framework/kv_cache/kv_cache.h"
@@ -61,17 +60,6 @@ class ScopedConfigSnapshot final {
   bool enable_graph_mode_decode_no_padding_;
 };
 
-class CompatibilityShapeEngine final : public Engine {
- public:
-  ForwardOutput step(BatchGroup& /*batch*/) override { return {}; }
-
-  void update_last_step_result(BatchGroup& /*batch*/) override {}
-
-  std::vector<int64_t> get_active_activation_memory() const override {
-    return {};
-  }
-};
-
 TEST(DecodeGraphBucketTest, MapsTokenBucketsWithAndWithoutPadding) {
   EXPECT_EQ(runtime::get_decode_graph_token_bucket(
                 /*num_tokens=*/1, /*enable_no_padding=*/false),
@@ -96,11 +84,8 @@ TEST(DecodeGraphBucketTest, MapsTokenBucketsWithAndWithoutPadding) {
             17);
 }
 
-TEST(DecodeGraphExecutionShapeTest, DefaultEngineUsesSingleTokenDecodeShape) {
-  CompatibilityShapeEngine engine;
-
-  const runtime::DecodeGraphExecutionShape execution_shape =
-      engine.decode_graph_execution_shape();
+TEST(DecodeGraphExecutionShapeTest, DefaultShapeUsesSingleTokenDecode) {
+  const runtime::DecodeGraphExecutionShape execution_shape;
 
   EXPECT_EQ(execution_shape.num_decoding_tokens, 1);
   EXPECT_EQ(execution_shape.num_speculative_tokens, 0);

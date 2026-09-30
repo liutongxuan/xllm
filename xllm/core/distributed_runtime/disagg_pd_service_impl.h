@@ -19,20 +19,23 @@ limitations under the License.
 #include <mutex>
 #include <string>
 
+#include "core/distributed_runtime/engine_resources.h"
+#include "core/distributed_runtime/pd_execution.h"
 #include "disagg_pd.pb.h"
 #include "framework/sampling/json_object_grammar.h"
 #include "runtime/xservice_client.h"
 
 namespace xllm {
 
-class Engine;
 class Request;
 class DisaggPDScheduler;
 
 // a class to handle disagg_pd requests
 class DisaggPDServiceImpl {
  public:
-  explicit DisaggPDServiceImpl(DisaggPDScheduler* scheduler, Engine* engine);
+  explicit DisaggPDServiceImpl(DisaggPDScheduler* scheduler,
+                               EngineResources resources,
+                               PDExecution pd_execution);
   ~DisaggPDServiceImpl() = default;
 
   virtual void decode_recv_new_requests(const proto::DisaggRequests* request,
@@ -56,7 +59,8 @@ class DisaggPDServiceImpl {
       std::string* error);
 
   DisaggPDScheduler* scheduler_;  // not owned
-  Engine* engine_;                // not owned
+  EngineResources resources_;
+  PDExecution pd_execution_;
   XServiceClient* xservice_client_ = nullptr;
   std::mutex json_object_grammar_mutex_;
   std::shared_ptr<const JsonObjectGrammar> json_object_grammar_;

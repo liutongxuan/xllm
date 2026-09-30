@@ -23,7 +23,6 @@ limitations under the License.
 #include "continuous_scheduler.h"
 #include "core/framework/config/kv_cache_config.h"
 #include "core/framework/config/scheduler_config.h"
-#include "distributed_runtime/engine.h"
 #include "framework/request/rec_type.h"
 
 namespace xllm {
@@ -61,9 +60,9 @@ class FakeTokenizer : public Tokenizer {
   }
 };
 
-class FakeEngine : public Engine {
+class FakeRecEngine final {
  public:
-  FakeEngine(int32_t num_blocks, int32_t block_size) {
+  FakeRecEngine(int32_t num_blocks, int32_t block_size) {
     BlockManagerPool::Options opt;
     opt.num_blocks_ = num_blocks;
     opt.block_size_ = block_size;
@@ -71,33 +70,28 @@ class FakeEngine : public Engine {
     fake_tokenizer_ = std::make_unique<FakeTokenizer>();
     fake_block_manager_ = std::make_unique<BlockManagerPool>(opt, 1);
   }
-  ForwardOutput step(BatchGroup& batch) override {
+  ForwardOutput step(RecBatchGroup& batch) {
     (void)batch;
+    ++step_calls_;
     return ForwardOutput();
   }
-  ForwardOutput step(RecBatchGroup& batch) override {
-    (void)batch;
-    return ForwardOutput();
-  }
-  void update_last_step_result(BatchGroup& batch) override { (void)batch; }
-  const Tokenizer* tokenizer() const override { return fake_tokenizer_.get(); }
-  BlockManagerPool* block_manager_pool() const override {
+  const Tokenizer* tokenizer() const { return fake_tokenizer_.get(); }
+  BlockManagerPool* block_manager_pool() const {
     return fake_block_manager_.get();
   }
-  const ModelArgs& model_args() const override {
+  const ModelArgs& model_args() const {
     static ModelArgs args;
     return args;
   }
-  const TokenizerArgs& tokenizer_args() const override {
+  const TokenizerArgs& tokenizer_args() const {
     static TokenizerArgs args;
     return args;
   }
-  std::vector<int64_t> get_active_activation_memory() const override {
-    return {};
-  }
-  bool init() override { return true; }
+  std::vector<int64_t> get_active_activation_memory() const { return {}; }
+  int32_t step_calls() const { return step_calls_; }
 
  private:
+  int32_t step_calls_ = 0;
   std::unique_ptr<Tokenizer> fake_tokenizer_;
   std::unique_ptr<BlockManagerPool> fake_block_manager_;
 };
@@ -187,7 +181,7 @@ class TestableFixedStepsScheduler final : public FixedStepsScheduler {
 }  // namespace
 
 TEST(FixedStepsSchedulerTest, AddRequestSuccess) {
-  auto engine = std::make_unique<FakeEngine>(32, 32);
+  auto engine = std::make_unique<FakeRecEngine>(32, 32);
   auto opt = CreateOptions();
   FixedStepsScheduler scheduler(engine.get(), opt);
   auto requests = GenRequests({64}, {10}, RecType::kOneRec);
@@ -198,7 +192,7 @@ TEST(FixedStepsSchedulerTest, AddRequestSuccess) {
 TEST(FixedStepsSchedulerTest, PrepareBatchEmptyWhenNoRequests) {
   ScopedConfigValue<bool> prefix_cache(
       KVCacheConfig::get_instance().enable_prefix_cache(), false);
-  auto engine = std::make_unique<FakeEngine>(32, 32);
+  auto engine = std::make_unique<FakeRecEngine>(32, 32);
   auto opt = CreateOptions();
   TestableFixedStepsScheduler scheduler(engine.get(), opt);
   RecBatchGroup batches = scheduler.prepare_batch_test();
@@ -213,7 +207,7 @@ TEST(FixedStepsSchedulerTest, PrepareBatchOneRecSchedulesRequest) {
       SchedulerConfig::get_instance()
           .prefill_scheduling_memory_usage_threshold(),
       1.0);
-  auto engine = std::make_unique<FakeEngine>(64, 32);
+  auto engine = std::make_unique<FakeRecEngine>(64, 32);
   auto opt = CreateOptions(10000, 256);
   TestableFixedStepsScheduler scheduler(engine.get(), opt);
   auto requests = GenRequests({64, 64}, {10, 10}, RecType::kOneRec);
@@ -240,7 +234,7 @@ TEST(FixedStepsSchedulerTest, PrepareBatchRespectsTokenBudget) {
       SchedulerConfig::get_instance()
           .prefill_scheduling_memory_usage_threshold(),
       1.0);
-  auto engine = std::make_unique<FakeEngine>(64, 32);
+  auto engine = std::make_unique<FakeRecEngine>(64, 32);
   auto opt = CreateOptions(50, 1);
   TestableFixedStepsScheduler scheduler(engine.get(), opt);
   auto requests = GenRequests({40, 40}, {10, 10}, RecType::kOneRec);
@@ -258,12 +252,31 @@ TEST(FixedStepsSchedulerTest, StepCompletesWithRequest) {
       SchedulerConfig::get_instance()
           .prefill_scheduling_memory_usage_threshold(),
       1.0);
-  auto engine = std::make_unique<FakeEngine>(64, 32);
+  auto engine = std::make_unique<FakeRecEngine>(64, 32);
   auto opt = CreateOptions(10000, 256);
   FixedStepsScheduler scheduler(engine.get(), opt);
   auto requests = GenRequests({32}, {10}, RecType::kOneRec);
   scheduler.add_request(requests[0]);
   EXPECT_NO_THROW(scheduler.step(absl::Milliseconds(500)));
+  EXPECT_EQ(engine->step_calls(), 1);
+}
+
+TEST(FixedStepsSchedulerTest, GenerateExecutesRecBatches) {
+  ScopedConfigValue<bool> prefix_cache(
+      KVCacheConfig::get_instance().enable_prefix_cache(), false);
+  ScopedConfigValue<double> memory_threshold(
+      SchedulerConfig::get_instance()
+          .prefill_scheduling_memory_usage_threshold(),
+      1.0);
+  auto engine = std::make_unique<FakeRecEngine>(64, 32);
+  auto opt = CreateOptions(10000, 256);
+  FixedStepsScheduler scheduler(engine.get(), opt);
+  auto requests = GenRequests({32}, {10}, RecType::kOneRec);
+  ASSERT_TRUE(scheduler.add_request(requests[0]));
+
+  scheduler.generate();
+
+  EXPECT_EQ(engine->step_calls(), 1);
 }
 
 }  // namespace xllm

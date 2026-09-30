@@ -55,85 +55,102 @@ LLMMaster::LLMMaster(const Options& options)
     : Master(
           options,
           should_use_ssm_engine(options) ? EngineType::SSM : EngineType::LLM) {
+  if (engine_type_ == EngineType::SSM) {
+    if (options_.speculative_algorithm() == "Suffix") {
+      engine_.emplace<1>(
+          std::make_unique<SuffixSpeculativeEngine>(engine_options_));
+    } else {
+      engine_.emplace<1>(
+          std::make_unique<SpeculativeEngineBase<LLMEngine>>(engine_options_));
+    }
+  } else {
+    engine_.emplace<0>(std::make_unique<LLMEngine>(engine_options_));
+  }
   if (!is_leader()) {
     return;
   }
 
-  CHECK(engine_->init(master_status_));
-  task_type_ = options_.task_type();
+  std::visit(
+      [this](auto& engine) {
+        CHECK(engine->init(master_status_));
+        task_type_ = options_.task_type();
 
-  model_args_ = engine_->model_args();
+        model_args_ = engine->model_args();
 
-  if (options_.enable_service_routing()) {
-    xservice_client_ = XServiceClient::get_instance();
-    if (!xservice_client_->init(options_.etcd_addr().value_or(""),
-                                options_.instance_name().value_or(""),
-                                engine_->block_manager_pool(),
-                                options_.etcd_namespace().value_or(""))) {
-      LOG(FATAL) << "XServiceClient init fail!";
-      return;
-    }
-  }
+        if (options_.enable_service_routing()) {
+          xservice_client_ = XServiceClient::get_instance();
+          if (!xservice_client_->init(options_.etcd_addr().value_or(""),
+                                      options_.instance_name().value_or(""),
+                                      engine->block_manager_pool(),
+                                      options_.etcd_namespace().value_or(""))) {
+            LOG(FATAL) << "XServiceClient init fail!";
+            return;
+          }
+        }
 
-  ContinuousScheduler::Options scheduler_options;
-  scheduler_options.max_tokens_per_batch(options_.max_tokens_per_batch())
-      .max_seqs_per_batch(options_.max_seqs_per_batch())
-      .enable_task_pipeline(options_.enable_task_pipeline())
-      .request_queue_size(options_.request_queue_size())
-      .max_tokens_per_chunk_for_prefill(
-          options_.max_tokens_per_chunk_for_prefill())
-      .num_speculative_tokens(options_.num_speculative_tokens())
-      .nnodes(options_.nnodes())
-      .dp_size(options_.dp_size())
-      .cp_size(options_.cp_size())
-      .enable_disagg_pd(options_.enable_disagg_pd())
-      .enable_schedule_overlap(options_.enable_schedule_overlap())
-      .enable_chunked_prefill(options_.enable_chunked_prefill())
-      .instance_name(options_.instance_name())
-      .instance_role(options_.instance_role())
-      .kv_cache_transfer_mode(options_.kv_cache_transfer_mode())
-      .enable_service_routing(options_.enable_service_routing())
-      .disable_log_stats(options_.disable_log_stats())
-      .priority_strategy(options_.priority_strategy())
-      .enable_profile_step_time(options_.enable_profile_step_time())
-      .enable_profile_token_budget(options_.enable_profile_token_budget())
-      .enable_latency_aware_schedule(options_.enable_latency_aware_schedule())
-      .profile_max_prompt_length(options_.profile_max_prompt_length())
-      .enable_profile_kv_blocks(options_.enable_profile_kv_blocks())
-      .disable_ttft_profiling(options_.disable_ttft_profiling())
-      .max_global_ttft_ms(options_.max_global_ttft_ms())
-      .max_global_tpot_ms(options_.max_global_tpot_ms())
-      .server_idx(options_.server_idx())
-      .rec_worker_max_concurrency(options_.rec_worker_max_concurrency());
-  scheduler_ = create_continuous_scheduler(engine_.get(), scheduler_options);
+        ContinuousScheduler::Options scheduler_options;
+        scheduler_options.max_tokens_per_batch(options_.max_tokens_per_batch())
+            .max_seqs_per_batch(options_.max_seqs_per_batch())
+            .enable_task_pipeline(options_.enable_task_pipeline())
+            .request_queue_size(options_.request_queue_size())
+            .max_tokens_per_chunk_for_prefill(
+                options_.max_tokens_per_chunk_for_prefill())
+            .num_speculative_tokens(options_.num_speculative_tokens())
+            .nnodes(options_.nnodes())
+            .dp_size(options_.dp_size())
+            .cp_size(options_.cp_size())
+            .enable_disagg_pd(options_.enable_disagg_pd())
+            .enable_schedule_overlap(options_.enable_schedule_overlap())
+            .enable_chunked_prefill(options_.enable_chunked_prefill())
+            .instance_name(options_.instance_name())
+            .instance_role(options_.instance_role())
+            .kv_cache_transfer_mode(options_.kv_cache_transfer_mode())
+            .enable_service_routing(options_.enable_service_routing())
+            .disable_log_stats(options_.disable_log_stats())
+            .priority_strategy(options_.priority_strategy())
+            .enable_profile_step_time(options_.enable_profile_step_time())
+            .enable_profile_token_budget(options_.enable_profile_token_budget())
+            .enable_latency_aware_schedule(
+                options_.enable_latency_aware_schedule())
+            .profile_max_prompt_length(options_.profile_max_prompt_length())
+            .enable_profile_kv_blocks(options_.enable_profile_kv_blocks())
+            .disable_ttft_profiling(options_.disable_ttft_profiling())
+            .max_global_ttft_ms(options_.max_global_ttft_ms())
+            .max_global_tpot_ms(options_.max_global_tpot_ms())
+            .server_idx(options_.server_idx())
+            .rec_worker_max_concurrency(options_.rec_worker_max_concurrency());
+        scheduler_ =
+            create_continuous_scheduler(engine.get(), scheduler_options);
 
-  if (options_.enable_service_routing()) {
-    auto& instance_info = scheduler_->get_instance_info();
-    XServiceClient::get_instance()->register_instance(instance_info);
-  }
+        if (options_.enable_service_routing()) {
+          auto& instance_info = scheduler_->get_instance_info();
+          XServiceClient::get_instance()->register_instance(instance_info);
+        }
 
-  // construct chat template
-  chat_template_ =
-      ChatTemplate::create(engine_->tokenizer_args(), model_args_.model_type());
+        // construct chat template
+        chat_template_ = ChatTemplate::create(engine->tokenizer_args(),
+                                              model_args_.model_type());
 
-  tokenizer_ = engine_->tokenizer()->clone();
-  Tokenizer* request_tokenizer = tokenizer_.get();
-  threadpool_ = std::make_unique<ThreadPool>(
-      /*num_threads=*/options_.num_request_handling_threads(),
-      [request_tokenizer]() { request_tokenizer->warmup(); },
-      /*cpu_binding=*/false,
-      /*pool_name=*/"LLMMaster.request");
+        tokenizer_ = engine->tokenizer()->clone();
+        Tokenizer* request_tokenizer = tokenizer_.get();
+        threadpool_ = std::make_unique<ThreadPool>(
+            /*num_threads=*/options_.num_request_handling_threads(),
+            [request_tokenizer]() { request_tokenizer->warmup(); },
+            /*cpu_binding=*/false,
+            /*pool_name=*/"LLMMaster.request");
 
-  request_factory_ = std::make_unique<LLMRequestFactory>(
-      tokenizer_.get(),
-      chat_template_.get(),
-      &model_args_,
-      &options_,
-      get_rate_limiter(),
-      task_type_,
-      [this](const std::vector<RequestOutput>& outputs) {
-        return handle_rpc_responses(outputs);
-      });
+        request_factory_ = std::make_unique<LLMRequestFactory>(
+            tokenizer_.get(),
+            chat_template_.get(),
+            &model_args_,
+            &options_,
+            get_rate_limiter(),
+            task_type_,
+            [this](const std::vector<RequestOutput>& outputs) {
+              return handle_rpc_responses(outputs);
+            });
+      },
+      engine_);
 }
 
 LLMMaster::~LLMMaster() {
@@ -343,26 +360,43 @@ std::vector<bool> LLMMaster::handle_rpc_responses(
   return xservice_client_->generations(outputs);
 }
 
-bool LLMMaster::sleep() { return engine_->sleep(master_status_); }
+bool LLMMaster::start_profile() {
+  auto* engine = std::get_if<0>(&engine_);
+  return engine != nullptr && (*engine)->start_profile();
+}
+
+bool LLMMaster::stop_profile() {
+  auto* engine = std::get_if<0>(&engine_);
+  return engine != nullptr && (*engine)->stop_profile();
+}
+
+bool LLMMaster::sleep() {
+  auto* engine = std::get_if<0>(&engine_);
+  return engine != nullptr && (*engine)->sleep(master_status_);
+}
 
 bool LLMMaster::wakeup() {
   WakeupOptions options;
   options.master_status = master_status_;
-  return engine_->wakeup(options);
+  auto* engine = std::get_if<0>(&engine_);
+  return engine != nullptr && (*engine)->wakeup(options);
 }
 
 bool LLMMaster::wakeup(const WakeupOptions& options) {
   WakeupOptions opts = options;
   opts.master_status = master_status_;
-  return engine_->wakeup(opts);
+  auto* engine = std::get_if<0>(&engine_);
+  return engine != nullptr && (*engine)->wakeup(opts);
 }
 
 bool LLMMaster::link_p2p(const std::vector<std::string>& remote_addrs) {
-  return engine_->link_p2p(remote_addrs);
+  auto* engine = std::get_if<0>(&engine_);
+  return engine != nullptr && (*engine)->link_p2p(remote_addrs);
 }
 
 bool LLMMaster::unlink_p2p(const std::vector<std::string>& remote_addrs) {
-  return engine_->unlink_p2p(remote_addrs);
+  auto* engine = std::get_if<0>(&engine_);
+  return engine != nullptr && (*engine)->unlink_p2p(remote_addrs);
 }
 
 }  // namespace xllm

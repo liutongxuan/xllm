@@ -15,6 +15,7 @@ limitations under the License.
 
 #pragma once
 
+#include <functional>
 #include <mutex>
 #include <vector>
 
@@ -22,16 +23,16 @@ limitations under the License.
 
 namespace xllm {
 
-class Engine;
 class KVCacheManager;
 
 class SchedulerMetrics final {
  public:
-  SchedulerMetrics(Engine* engine,
-                   KVCacheManager* kv_cache_manager,
-                   int32_t dp_size,
-                   int32_t num_speculative_tokens,
-                   bool collect_recent_latency);
+  SchedulerMetrics(
+      std::function<std::vector<int64_t>()> activation_memory_reader,
+      KVCacheManager* kv_cache_manager,
+      int32_t dp_size,
+      int32_t num_speculative_tokens,
+      bool collect_recent_latency);
 
   SchedulerMetrics(const SchedulerMetrics&) = delete;
   SchedulerMetrics& operator=(const SchedulerMetrics&) = delete;
@@ -53,7 +54,7 @@ class SchedulerMetrics final {
       const std::vector<Sequence*>& sequences) const;
   std::vector<int64_t> get_active_activation_in_bytes() const;
 
-  Engine* engine_;
+  std::function<std::vector<int64_t>()> activation_memory_reader_;
   KVCacheManager* kv_cache_manager_;
   int32_t dp_size_;
   int32_t num_speculative_tokens_;

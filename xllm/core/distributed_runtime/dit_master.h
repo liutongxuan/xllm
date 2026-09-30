@@ -23,6 +23,7 @@ limitations under the License.
 #include <string>
 #include <vector>
 
+#include "core/distributed_runtime/dit_engine.h"
 #include "framework/request/dit_request_params.h"
 #include "master.h"
 #include "scheduler/dit_scheduler.h"
@@ -31,10 +32,10 @@ namespace xllm {
 
 class Call;
 
-class DiTMaster : public Master {
+class DiTMaster final : public Master {
  public:
   explicit DiTMaster(const Options& options);
-  ~DiTMaster();
+  ~DiTMaster() override;
 
   // handle a request, the engine will execute the request asynchronously
   void handle_request(DiTRequestParams params,
@@ -53,6 +54,9 @@ class DiTMaster : public Master {
   void generate();
 
  private:
+  // The engine outlives the scheduler and request handlers.
+  std::unique_ptr<DiTEngine> engine_;
+
   std::unique_ptr<DiTScheduler> scheduler_;
 
   // thread pool for handling requests

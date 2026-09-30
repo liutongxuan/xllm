@@ -16,6 +16,7 @@ limitations under the License.
 
 #pragma once
 
+#include <folly/futures/Future.h>
 #include <gflags/gflags.h>
 #include <sys/sysinfo.h>
 #include <unistd.h>
@@ -25,17 +26,21 @@ limitations under the License.
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "common/macros.h"
-#include "core/distributed_runtime/master.h"
+#include "core/framework/kv_cache_transfer/prefetch_result.h"
+#include "core/framework/speculative/speculative_profile_registry.h"
+#include "core/runtime/decode_graph_bucket.h"
+#include "core/runtime/options.h"
 #include "dist_manager.h"
-#include "engine.h"
 #include "framework/batch/batch_group.h"
 #include "framework/block/block_manager_pool.h"
 #include "framework/eplb/eplb_manager.h"
 #include "framework/eplb/eplb_policy.h"
 #include "framework/kv_cache/kv_cache_utils.h"
+#include "framework/model/model_args.h"
 #include "framework/quant_args.h"
 #include "framework/tokenizer/tokenizer.h"
 #include "framework/tokenizer/tokenizer_args.h"
@@ -47,31 +52,36 @@ namespace xllm {
 
 class ModelLoader;
 
-class LLMEngine : public Engine {
+class LLMEngine final {
  public:
   // create an engine with the given devices
-  LLMEngine(const runtime::Options& options,
-            std::shared_ptr<DistManager> dist_manager = nullptr);
+  explicit LLMEngine(const runtime::Options& options,
+                     std::shared_ptr<DistManager> dist_manager = nullptr);
 
-  virtual ~LLMEngine() = default;
+  ~LLMEngine() = default;
 
-  ForwardOutput step(BatchGroup& batch) override;
+  ForwardOutput step(BatchGroup& batch);
 
   const runtime::Options& options() const { return options_; }
 
-  runtime::DecodeGraphExecutionShape decode_graph_execution_shape()
-      const override;
+  const ModelArgs& model_args() const { return args_; }
+  const TokenizerArgs& tokenizer_args() const { return tokenizer_args_; }
+  const Tokenizer* tokenizer() const { return tokenizer_.get(); }
+  BlockManagerPool* block_manager_pool() const {
+    return kv_cache_manager_.get();
+  }
 
-  bool init(MasterStatus master_status) override;
+  runtime::DecodeGraphExecutionShape decode_graph_execution_shape() const;
+
+  bool init(MasterStatus master_status);
 
   bool set_speculative_validate_time_predictor(
-      const SpeculativeProfileRegistry::ValidateTimePredictor& predictor)
-      override;
+      const SpeculativeProfileRegistry::ValidateTimePredictor& predictor);
 
-  void update_last_step_result(BatchGroup& batch) override;
+  void update_last_step_result(BatchGroup& batch);
 
   // return the active activation memory
-  std::vector<int64_t> get_active_activation_memory() const override;
+  std::vector<int64_t> get_active_activation_memory() const;
 
   // P/D
   bool pull_kv_blocks(const int32_t src_dp_size,
@@ -79,58 +89,58 @@ class LLMEngine : public Engine {
                       const std::vector<uint64_t>& src_cluster_ids,
                       const std::vector<std::string>& src_addrs,
                       const int32_t dst_dp_rank,
-                      const std::vector<KVTransferMapping>& mappings) override;
+                      const std::vector<KVTransferMapping>& mappings);
 
   std::vector<folly::SemiFuture<uint32_t>> transfer_kv_blocks(
       const uint32_t dp_rank,
-      const std::vector<BlockTransferInfo>& block_transfer_info) override;
+      const std::vector<BlockTransferInfo>& block_transfer_info);
 
   void transfer_kv_blocks(
       const uint32_t dp_rank,
       const uint64_t batch_id,
-      const std::vector<BlockTransferInfo>& block_transfer_info) override;
+      const std::vector<BlockTransferInfo>& block_transfer_info);
 
   void prefetch_from_storage(
       const uint32_t dp_rank,
       std::shared_ptr<const StoragePrefetchRequest> request,
       PrefetchResult::StopPredicate stop_requested,
-      PrefetchResult::DoneCallback done) override;
+      PrefetchResult::DoneCallback done);
 
   void get_cache_info(std::vector<uint64_t>& cluster_ids,
                       std::vector<std::string>& addrs,
-                      std::vector<uint16_t>& ports) override;
+                      std::vector<uint16_t>& ports);
 
   void get_xtensor_info(
       std::vector<size_t>& worker_free_phy_pages,
       std::unordered_map<std::string, std::vector<WeightSegment>>&
-          model_weight_segments) override;
+          model_weight_segments);
 
   bool link_cluster(const std::vector<uint64_t>& cluster_ids,
                     const std::vector<std::string>& addrs,
                     const std::vector<uint16_t>& ports,
                     const int32_t src_dp_size,
-                    const int32_t src_kv_split_size = 1) override;
+                    const int32_t src_kv_split_size = 1);
 
   bool unlink_cluster(const std::vector<uint64_t>& cluster_ids,
                       const std::vector<std::string>& addrs,
                       const std::vector<uint16_t>& ports,
                       const int32_t src_dp_size,
-                      const int32_t src_kv_split_size = 1) override;
+                      const int32_t src_kv_split_size = 1);
 
   // P2P link for weight transfer - each worker links to one remote addr
-  bool link_p2p(const std::vector<std::string>& remote_addrs) override;
+  bool link_p2p(const std::vector<std::string>& remote_addrs);
 
-  bool unlink_p2p(const std::vector<std::string>& remote_addrs) override;
+  bool unlink_p2p(const std::vector<std::string>& remote_addrs);
 
   std::shared_ptr<DistManager> get_dist_manager() { return dist_manager_; };
 
-  bool sleep(MasterStatus master_status) override;
+  bool sleep(MasterStatus master_status);
 
-  bool wakeup(const WakeupOptions& options) override;
+  bool wakeup(const WakeupOptions& options);
 
-  bool start_profile() override;
+  bool start_profile();
 
-  bool stop_profile() override;
+  bool stop_profile();
 
   // XTensor mode: get GlobalXTensor offsets for allocated blocks via RPC
   // Calls worker in the specified DP group to compute offsets
@@ -138,7 +148,7 @@ class LLMEngine : public Engine {
       int32_t dp_rank,
       const std::vector<int32_t>& block_ids,
       std::vector<std::pair<std::vector<uint64_t>, std::vector<uint64_t>>>&
-          layer_offsets) override;
+          layer_offsets);
 
  private:
   bool profile_workers(bool is_start);
@@ -160,7 +170,11 @@ class LLMEngine : public Engine {
   std::vector<ForwardInput> prepare_inputs(BatchGroup& batch);
   void process_group_test();
 
- protected:
+  ModelArgs args_;
+  TokenizerArgs tokenizer_args_;
+  std::unique_ptr<BlockManagerPool> kv_cache_manager_;
+  std::unique_ptr<Tokenizer> tokenizer_;
+
   // options
   runtime::Options options_;
 

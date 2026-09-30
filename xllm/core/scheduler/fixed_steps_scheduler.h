@@ -19,10 +19,12 @@ limitations under the License.
 #include <folly/MPMCQueue.h>
 #include <folly/futures/Future.h>
 
+#include <functional>
 #include <limits>
 #include <memory>
 #include <queue>
 #include <semaphore>
+#include <utility>
 
 #include "core/common/macros.h"
 #include "core/common/types.h"
@@ -37,7 +39,6 @@ limitations under the License.
 #include "core/util/threadpool.h"
 
 namespace xllm {
-class Engine;
 
 // Return value structure for schedule_request
 struct ScheduleResult {
@@ -48,17 +49,38 @@ struct ScheduleResult {
 
 class FixedStepsScheduler : public ContinuousScheduler {
  public:
-  FixedStepsScheduler(Engine* engine, const Options& options);
-  ~FixedStepsScheduler() override = default;
+  template <typename TargetEngine>
+    requires requires(TargetEngine& engine, RecBatchGroup& batches) {
+      engine.step(batches);
+    }
+  FixedStepsScheduler(TargetEngine* engine, const Options& options)
+      : FixedStepsScheduler(
+            [engine] {
+              CHECK(engine != nullptr);
+              return EngineResources::bind(*engine);
+            }(),
+            [engine](RecBatchGroup& batches) { return engine->step(batches); },
+            options) {}
+  ~FixedStepsScheduler() override;
 
   // step the scheduler forward by one step
   // may get blocked if there are no requests to process
   void step(const absl::Duration& timeout) override;
 
+  void generate() override;
+
  protected:
   RecBatchGroup prepare_rec_batch();
 
  private:
+  using RecStep = std::function<ForwardOutput(RecBatchGroup&)>;
+
+  FixedStepsScheduler(EngineResources resources,
+                      RecStep rec_step,
+                      const Options& options);
+
+  RecStep rec_step_;
+
   // Scheduler pipeline for different rec types
   class SchedulerPipeline {
    public:
@@ -120,6 +142,8 @@ class FixedStepsScheduler : public ContinuousScheduler {
       bool is_rec_multi_round);
 
   ScheduleResult schedule_request(const absl::Duration& timeout);
+
+  void execute_batch(ScheduleResult result);
 
   void handle_prefill_requests(
       size_t& remaining_token_budget,
