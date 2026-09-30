@@ -41,10 +41,12 @@ limitations under the License.
 #include "core/framework/request/sequence.h"
 #include "core/runtime/xservice_client.h"
 #include "core/scheduler/async_response_processor.h"
+#include "core/scheduler/cancel_request_queue.h"
 #include "core/scheduler/profile/profile_manager.h"
 #include "core/scheduler/request_priority_queue.h"
 #include "core/scheduler/scheduler.h"
 #include "core/scheduler/scheduler_metrics.h"
+#include "core/scheduler/scheduler_request_admission.h"
 
 namespace xllm {
 class RequestPriorityQueue;
@@ -79,16 +81,6 @@ struct BatchMode {
   // "priority": static priority weight
   // "deadline": earliest-deadline-first
   std::string priority_strategy = "fcfs";
-};
-
-class CancelRequestQueue final {
- public:
-  void submit(std::shared_ptr<Request> request);
-  std::vector<std::shared_ptr<Request>> take_all();
-
- private:
-  std::mutex mutex_;
-  std::vector<std::shared_ptr<Request>> requests_;
 };
 
 class ContinuousScheduler : public Scheduler {
@@ -172,9 +164,6 @@ class ContinuousScheduler : public Scheduler {
     // Index ID for internal server ID, which must be set different values
     // if the model supports multiple version or there are multiple models.
     PROPERTY(int64_t, server_idx) = 0;
-
-    // max concurrency for rec worker
-    PROPERTY(int32_t, rec_worker_max_concurrency) = 1;
   };
 
   ContinuousScheduler(BatchExecution execution,
@@ -213,13 +202,13 @@ class ContinuousScheduler : public Scheduler {
   }
 
   bool has_pending_prefetch() const override {
-    return prefetching_requests_.load(std::memory_order_relaxed) > 0;
+    return request_admission_->num_prefetching_requests() > 0;
   }
 
   uint32_t get_waiting_requests_num() const override {
     return prefill_queue_->size() + chunk_queue_->size() +
            decode_restore_waiting_.size() +
-           prefetching_requests_.load(std::memory_order_relaxed);
+           request_admission_->num_prefetching_requests();
   }
 
   void get_latency_metrics(std::vector<int64_t>& ttft,
@@ -233,10 +222,6 @@ class ContinuousScheduler : public Scheduler {
     CHECK(engine != nullptr);
     return *engine;
   }
-
-  // Resource-only construction preserves the Rec scheduler's temporary
-  // inheritance without exposing ordinary batch execution or profiling.
-  ContinuousScheduler(EngineResources resources, const Options& options);
 
   void clear_mtp_bootstrap(Request* request);
   void drain_prefetch_pipeline();
@@ -271,10 +256,7 @@ class ContinuousScheduler : public Scheduler {
   // the schedule owns the requests and manages their lifetimes.
   folly::MPMCQueue<std::shared_ptr<Request>> request_queue_;
 
-  std::atomic<size_t> prefetching_requests_{0};
-  std::mutex prefetch_admission_mutex_;
-  std::deque<std::shared_ptr<Request>> prefetch_admissions_;
-  std::deque<std::shared_ptr<Request>> completed_prefetches_;
+  std::unique_ptr<SchedulerRequestAdmission> request_admission_;
 
   // a batch of requests in running state, sorted by priority from high to low.
   // This may include decoding requests and prefill requests in chunked prefill
@@ -353,8 +335,7 @@ class ContinuousScheduler : public Scheduler {
   // Construct a SchedulerState snapshot for the policy.
   SchedulerState make_state();
 
-  void drain_prefetch_admissions();
-  void drain_completed_prefetches();
+  ContinuousScheduler(EngineResources resources, const Options& options);
 
   void apply_cancel_requests();
 

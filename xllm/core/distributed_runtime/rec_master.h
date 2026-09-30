@@ -27,8 +27,7 @@ limitations under the License.
 #include "master.h"
 #include "rec.pb.h"
 #include "rec_engine.h"
-#include "scheduler/continuous_scheduler.h"
-#include "scheduler/fixed_steps_scheduler.h"
+#include "scheduler/rec_scheduler.h"
 #include "util/threadpool.h"
 
 namespace xllm {
@@ -78,7 +77,7 @@ class RecMaster final : public Master {
                         OutputCallback callback,
                         RequestBuilder build_request);
 
-  std::unique_ptr<FixedStepsScheduler> scheduler_;
+  std::unique_ptr<RecScheduler> scheduler_;
   // model args
   ModelArgs model_args_;
   RecType rec_type_ = RecType::kNone;

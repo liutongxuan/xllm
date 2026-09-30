@@ -117,8 +117,7 @@ LLMMaster::LLMMaster(const Options& options)
             .disable_ttft_profiling(options_.disable_ttft_profiling())
             .max_global_ttft_ms(options_.max_global_ttft_ms())
             .max_global_tpot_ms(options_.max_global_tpot_ms())
-            .server_idx(options_.server_idx())
-            .rec_worker_max_concurrency(options_.rec_worker_max_concurrency());
+            .server_idx(options_.server_idx());
         scheduler_ =
             create_continuous_scheduler(engine.get(), scheduler_options);
 

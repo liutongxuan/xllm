@@ -17,51 +17,92 @@ limitations under the License.
 
 #include <absl/time/time.h>
 #include <folly/MPMCQueue.h>
-#include <folly/futures/Future.h>
 
+#include <atomic>
+#include <concepts>
 #include <functional>
-#include <limits>
 #include <memory>
-#include <queue>
+#include <optional>
 #include <semaphore>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "core/common/macros.h"
 #include "core/common/types.h"
+#include "core/distributed_runtime/engine_resources.h"
 #include "core/framework/batch/rec_batch_factory.h"
 #include "core/framework/batch/rec_batch_group.h"
 #include "core/framework/request/request.h"
 #include "core/framework/request/sequence.h"
-#include "core/runtime/xservice_client.h"
 #include "core/scheduler/async_response_processor.h"
-#include "core/scheduler/continuous_scheduler.h"
+#include "core/scheduler/cancel_request_queue.h"
+#include "core/scheduler/request_priority_queue.h"
 #include "core/scheduler/scheduler.h"
+#include "core/scheduler/scheduler_request_admission.h"
 #include "core/util/threadpool.h"
 
 namespace xllm {
 
 // Return value structure for schedule_request
-struct ScheduleResult {
+struct RecScheduleResult {
   RecBatchGroup batches;
   std::vector<std::shared_ptr<Request>> requests;
   std::vector<Sequence*> sequences;
 };
 
-class FixedStepsScheduler : public ContinuousScheduler {
+class RecScheduler : public Scheduler {
  public:
+  class Options final {
+   public:
+    PROPERTY(int32_t, max_tokens_per_batch) = 20000;
+    PROPERTY(int32_t, max_seqs_per_batch) = 256;
+    PROPERTY(int32_t, request_queue_size) = 100000;
+    PROPERTY(int32_t, dp_size) = 1;
+    PROPERTY(std::optional<std::string>, instance_name);
+    PROPERTY(std::optional<InstanceRole>,
+             instance_role) = InstanceRole::DEFAULT;
+    PROPERTY(bool, enable_schedule_overlap) = false;
+    PROPERTY(bool, enable_service_routing) = false;
+    PROPERTY(bool, disable_log_stats) = false;
+    PROPERTY(std::string, priority_strategy) = "fcfs";
+    PROPERTY(int32_t, rec_worker_max_concurrency) = 1;
+  };
   template <typename TargetEngine>
     requires requires(TargetEngine& engine, RecBatchGroup& batches) {
-      engine.step(batches);
+      EngineResources::bind(engine);
+      { engine.step(batches) } -> std::same_as<ForwardOutput>;
     }
-  FixedStepsScheduler(TargetEngine* engine, const Options& options)
-      : FixedStepsScheduler(
+  RecScheduler(TargetEngine* engine, Options options)
+      : RecScheduler(
             [engine] {
               CHECK(engine != nullptr);
               return EngineResources::bind(*engine);
             }(),
             [engine](RecBatchGroup& batches) { return engine->step(batches); },
-            options) {}
-  ~FixedStepsScheduler() override;
+            std::move(options)) {}
+  ~RecScheduler() override;
+
+  bool add_request(std::shared_ptr<Request>& request) override;
+
+  void incr_pending_requests(size_t count) override {
+    pending_requests_.fetch_add(count, std::memory_order_relaxed);
+  }
+  void decr_pending_requests() override {
+    const size_t previous =
+        pending_requests_.fetch_sub(1, std::memory_order_relaxed);
+    CHECK_GT(previous, 0u) << "pending requests underflow";
+  }
+  size_t num_pending_requests() override {
+    return pending_requests_.load(std::memory_order_relaxed);
+  }
+  bool has_pending_prefetch() const override {
+    return request_admission_->num_prefetching_requests() > 0;
+  }
+  uint32_t get_waiting_requests_num() const override;
+  void get_latency_metrics(std::vector<int64_t>& /*ttft*/,
+                           std::vector<int64_t>& /*tbt*/) override {}
+  const InstanceInfo& get_instance_info() override { return instance_info_; }
 
   // step the scheduler forward by one step
   // may get blocked if there are no requests to process
@@ -71,15 +112,31 @@ class FixedStepsScheduler : public ContinuousScheduler {
 
  protected:
   RecBatchGroup prepare_rec_batch();
+  std::vector<std::shared_ptr<Request>> running_requests_;
 
  private:
   using RecStep = std::function<ForwardOutput(RecBatchGroup&)>;
 
-  FixedStepsScheduler(EngineResources resources,
-                      RecStep rec_step,
-                      const Options& options);
+  RecScheduler(EngineResources resources, RecStep rec_step, Options options);
 
+  void apply_cancel_requests();
+
+  const Options options_;
+  EngineResources resources_;
   RecStep rec_step_;
+  KVCacheManager* kv_cache_manager_;
+  folly::MPMCQueue<std::shared_ptr<Request>> request_queue_;
+  std::unique_ptr<SchedulerRequestAdmission> request_admission_;
+  std::unique_ptr<RequestPriorityQueue> prefill_queue_;
+  std::vector<Sequence*> running_sequences_;
+  std::vector<size_t> running_sequences_budgets_;
+  std::shared_ptr<CancelRequestQueue> cancel_request_queue_;
+  std::unique_ptr<AsyncResponseProcessor> response_processor_;
+  std::atomic<size_t> pending_requests_{0};
+  // Read by the service-routing thread; updated by the scheduling owner.
+  std::atomic<size_t> waiting_requests_{0};
+  bool enable_prefix_cache_ = false;
+  InstanceInfo instance_info_;
 
   // Scheduler pipeline for different rec types
   class SchedulerPipeline {
@@ -141,9 +198,9 @@ class FixedStepsScheduler : public ContinuousScheduler {
       RecType rec_type,
       bool is_rec_multi_round);
 
-  ScheduleResult schedule_request(const absl::Duration& timeout);
+  RecScheduleResult schedule_request(const absl::Duration& timeout);
 
-  void execute_batch(ScheduleResult result);
+  void execute_batch(RecScheduleResult result);
 
   void handle_prefill_requests(
       size_t& remaining_token_budget,

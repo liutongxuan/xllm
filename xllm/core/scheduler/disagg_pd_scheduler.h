@@ -68,7 +68,7 @@ class DisaggPDScheduler : public ContinuousScheduler {
 
   uint32_t get_waiting_requests_num() const override {
     return prefill_queue_->size() +
-           prefetching_requests_.load(std::memory_order_relaxed);
+           request_admission_->num_prefetching_requests();
   };
 
   void step(const absl::Duration& timeout) override;

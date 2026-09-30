@@ -50,18 +50,6 @@ constexpr char kDecodeRestoreTimeoutMessage[] =
 
 }  // namespace
 
-void CancelRequestQueue::submit(std::shared_ptr<Request> request) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  requests_.emplace_back(std::move(request));
-}
-
-std::vector<std::shared_ptr<Request>> CancelRequestQueue::take_all() {
-  std::vector<std::shared_ptr<Request>> requests;
-  std::lock_guard<std::mutex> lock(mutex_);
-  requests.swap(requests_);
-  return requests;
-}
-
 ContinuousScheduler::ContinuousScheduler(
     BatchExecution execution,
     const Options& options,
@@ -122,6 +110,12 @@ ContinuousScheduler::ContinuousScheduler(EngineResources resources,
       request_queue_(options.request_queue_size()) {
   kv_cache_manager_ = resources_.block_manager_pool();
   CHECK(kv_cache_manager_ != nullptr);
+  request_admission_ = std::make_unique<SchedulerRequestAdmission>(
+      kv_cache_manager_,
+      request_queue_,
+      [this](std::shared_ptr<Request> request) {
+        enqueue_ready_request(std::move(request));
+      });
   scheduler_metrics_ =
       std::make_unique<SchedulerMetrics>(resources_.activation_memory_reader(),
                                          kv_cache_manager_,
@@ -181,96 +175,12 @@ ContinuousScheduler::~ContinuousScheduler() {
     // concrete engine and its workers can be destroyed.
     xservice_client_->set_xtensor_info_provider({});
   }
-  // Requests never submitted to the engine own no asynchronous callback and
-  // can be cancelled directly, including an offline scheduler never started.
-  {
-    std::lock_guard<std::mutex> lock(prefetch_admission_mutex_);
-    for (const std::shared_ptr<Request>& request : prefetch_admissions_) {
-      request->set_cancel();
-    }
-    const size_t unissued = prefetch_admissions_.size();
-    prefetch_admissions_.clear();
-    const size_t previous =
-        prefetching_requests_.fetch_sub(unissued, std::memory_order_acq_rel);
-    CHECK_GE(previous, unissued);
-  }
-  kv_cache_manager_->drain_prefetch_completions();
-  drain_completed_prefetches();
-  CHECK_EQ(prefetching_requests_.load(std::memory_order_acquire), 0u)
-      << "ContinuousScheduler destroyed with pending prefetch callbacks";
+  request_admission_->shutdown();
   running_requests_.clear();
 }
 
 bool ContinuousScheduler::add_request(std::shared_ptr<Request>& request) {
-  CHECK(request != nullptr);
-  CHECK(!request->sequences().empty());
-
-  std::lock_guard<std::mutex> lock(prefetch_admission_mutex_);
-  const size_t pending_before_reservation =
-      prefetching_requests_.load(std::memory_order_relaxed);
-  const size_t queued_requests =
-      static_cast<size_t>(std::max<ssize_t>(request_queue_.size(), 0));
-  if (queued_requests + pending_before_reservation >=
-      request_queue_.capacity()) {
-    return false;
-  }
-
-  if (!kv_cache_manager_->has_storage_prefetch()) {
-    return request_queue_.write(request);
-  }
-
-  prefetching_requests_.fetch_add(1, std::memory_order_relaxed);
-  prefetch_admissions_.emplace_back(request);
-  VLOG(1) << "[Mooncake][AdmissionPending] request=" << request->request_id();
-  return true;
-}
-
-void ContinuousScheduler::drain_prefetch_admissions() {
-  std::deque<std::shared_ptr<Request>> requests;
-  {
-    std::lock_guard<std::mutex> lock(prefetch_admission_mutex_);
-    requests.swap(prefetch_admissions_);
-  }
-
-  for (std::shared_ptr<Request>& request : requests) {
-    if (request->finished() || request->cancelled()) {
-      const size_t previous =
-          prefetching_requests_.fetch_sub(1, std::memory_order_relaxed);
-      CHECK_GT(previous, 0u);
-      continue;
-    }
-
-    kv_cache_manager_->prefetch_from_storage(
-        request, [this](std::shared_ptr<Request> completed) {
-          std::lock_guard<std::mutex> lock(prefetch_admission_mutex_);
-          completed_prefetches_.emplace_back(std::move(completed));
-        });
-  }
-}
-
-void ContinuousScheduler::drain_completed_prefetches() {
-  std::deque<std::shared_ptr<Request>> completed;
-  {
-    std::lock_guard<std::mutex> lock(prefetch_admission_mutex_);
-    completed.swap(completed_prefetches_);
-  }
-
-  for (std::shared_ptr<Request>& request : completed) {
-    const bool cancelled = request->finished() || request->cancelled();
-    {
-      // Admission observes the queue size and reservation count together.
-      std::lock_guard<std::mutex> lock(prefetch_admission_mutex_);
-      if (!cancelled) {
-        enqueue_ready_request(request);
-      }
-      const size_t previous =
-          prefetching_requests_.fetch_sub(1, std::memory_order_relaxed);
-      CHECK_GT(previous, 0u);
-    }
-    VLOG(1) << (cancelled ? "[Mooncake][AdmissionCancelled] request="
-                          : "[Mooncake][AdmissionReady] request=")
-            << request->request_id();
-  }
+  return request_admission_->add_request(request);
 }
 
 void ContinuousScheduler::enqueue_ready_request(
@@ -336,10 +246,7 @@ void ContinuousScheduler::drain_decode_restore_waiting(
 }
 
 void ContinuousScheduler::drain_prefetch_pipeline() {
-  kv_cache_manager_->drain_prefetch_completions();
-  drain_prefetch_admissions();
-  kv_cache_manager_->drain_prefetch_completions();
-  drain_completed_prefetches();
+  request_admission_->drain();
 }
 
 BatchGroup ContinuousScheduler::prepare_batch() {
@@ -569,7 +476,7 @@ void ContinuousScheduler::generate() {
   bool batch_empty = false;
   while (num_pending_requests() > 0 || !batch_empty ||
          request_queue_.size() > 0 ||
-         prefetching_requests_.load(std::memory_order_relaxed) > 0) {
+         request_admission_->num_prefetching_requests() > 0) {
     // build a batch of requests/sequences
     const auto timeout = absl::Milliseconds(50);
     BatchGroup batch = schedule_request(timeout);

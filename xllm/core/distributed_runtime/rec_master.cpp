@@ -87,23 +87,18 @@ RecMaster::RecMaster(const Options& options)
     }
   }
 
-  ContinuousScheduler::Options scheduler_options;
+  RecScheduler::Options scheduler_options;
   scheduler_options.max_tokens_per_batch(options_.max_tokens_per_batch())
       .max_seqs_per_batch(options_.max_seqs_per_batch())
       .request_queue_size(options_.request_queue_size())
-      .max_tokens_per_chunk_for_prefill(
-          options_.max_tokens_per_chunk_for_prefill())
-      .num_speculative_tokens(options_.num_speculative_tokens())
       .dp_size(options_.dp_size())
-      .enable_disagg_pd(options_.enable_disagg_pd())
       .enable_schedule_overlap(options_.enable_schedule_overlap())
-      .enable_chunked_prefill(options_.enable_chunked_prefill())
+      .instance_name(options_.instance_name())
       .instance_role(options_.instance_role())
-      .kv_cache_transfer_mode(options_.kv_cache_transfer_mode())
       .enable_service_routing(options_.enable_service_routing())
       .disable_log_stats(options_.disable_log_stats())
       .rec_worker_max_concurrency(options_.rec_worker_max_concurrency());
-  scheduler_ = create_fixed_steps_scheduler(engine_.get(), scheduler_options);
+  scheduler_ = create_rec_scheduler(engine_.get(), scheduler_options);
 
   chat_template_ = nullptr;
   // Initialize chat template and tokenizer for LlmRec (Qwen3).

@@ -16,8 +16,10 @@ cc_library(
     dit_scheduler.h
     scheduler_factory.h
     request_priority_queue.h
-    fixed_steps_scheduler.h
+    rec_scheduler.h
     scheduler_metrics.h
+    cancel_request_queue.h
+    scheduler_request_admission.h
   SRCS
     scheduler_policy.cpp
     prefill_first_policy.cpp
@@ -26,11 +28,12 @@ cc_library(
     zero_eviction_scheduler.cpp
     continuous_scheduler.cpp
     scheduler_metrics.cpp
+    scheduler_request_admission.cpp
     disagg_pd_scheduler.cpp
     async_response_processor.cpp
     dit_scheduler.cpp
     scheduler_factory.cpp
-    fixed_steps_scheduler.cpp
+    rec_scheduler.cpp
   DEPS
     :batch
     :distributed_runtime

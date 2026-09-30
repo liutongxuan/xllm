@@ -13,12 +13,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "core/scheduler/fixed_steps_scheduler.h"
+#include "core/scheduler/rec_scheduler.h"
 
 #include <absl/time/clock.h>
 #include <absl/time/time.h>
-#include <folly/MPMCQueue.h>
-#include <folly/Unit.h>
 #include <glog/logging.h>
 
 #include <algorithm>
@@ -28,55 +26,136 @@ limitations under the License.
 #include <limits>
 #include <memory>
 
-#include "core/common/global_flags.h"
 #include "core/common/metrics.h"
 #include "core/common/types.h"
 #include "core/framework/batch/rec_batch.h"
 #include "core/framework/batch/rec_batch_factory.h"
+#include "core/framework/config/kv_cache_config.h"
+#include "core/framework/config/parallel_config.h"
 #include "core/framework/config/rec_config.h"
 #include "core/framework/config/scheduler_config.h"
 #include "core/framework/request/rec_type.h"
 #include "core/framework/request/request.h"
 #include "core/framework/request/sequence.h"
+#include "core/runtime/xservice_client.h"
 #include "core/util/rec_model_utils.h"
+#include "core/util/timer.h"
 
 namespace xllm {
 
-FixedStepsScheduler::FixedStepsScheduler(EngineResources resources,
-                                         RecStep rec_step,
-                                         const Options& options)
-    : ContinuousScheduler(std::move(resources), options),
+namespace {
+
+size_t checked_queue_capacity(int32_t capacity) {
+  CHECK_GT(capacity, 0);
+  return static_cast<size_t>(capacity);
+}
+
+std::ptrdiff_t checked_concurrency(int32_t concurrency) {
+  CHECK_GT(concurrency, 0);
+  CHECK_LE(concurrency, 10000);
+  return static_cast<std::ptrdiff_t>(concurrency);
+}
+
+}  // namespace
+
+RecScheduler::RecScheduler(EngineResources resources,
+                           RecStep rec_step,
+                           Options options)
+    : options_(std::move(options)),
+      resources_(std::move(resources)),
       rec_step_(std::move(rec_step)),
+      kv_cache_manager_(resources_.block_manager_pool()),
+      request_queue_(checked_queue_capacity(options_.request_queue_size())),
       step_semaphore_(
-          static_cast<std::ptrdiff_t>(options.rec_worker_max_concurrency())) {
-  step_threadpool_ = std::make_unique<ThreadPool>(
-      /*num_threads=*/static_cast<size_t>(options.rec_worker_max_concurrency()),
-      /*cpu_binding=*/false,
-      /*pool_name=*/"FixedStepsScheduler.step");
+          checked_concurrency(options_.rec_worker_max_concurrency())) {
+  CHECK(kv_cache_manager_ != nullptr);
+  CHECK(resources_.tokenizer() != nullptr);
+  CHECK_GT(options_.dp_size(), 0);
+  CHECK_GT(options_.max_tokens_per_batch(), 0);
+  CHECK_GT(options_.max_seqs_per_batch(), 0);
+  request_admission_ = std::make_unique<SchedulerRequestAdmission>(
+      kv_cache_manager_,
+      request_queue_,
+      [this](std::shared_ptr<Request> request) {
+        CHECK(request_queue_.write(std::move(request)))
+            << "Reserved Rec request queue slot disappeared before prefetch "
+               "completed";
+      });
+  enable_prefix_cache_ = KVCacheConfig::get_instance().enable_prefix_cache();
+  cancel_request_queue_ = std::make_shared<CancelRequestQueue>();
+  response_processor_ = std::make_unique<AsyncResponseProcessor>(
+      resources_.tokenizer(),
+      options_.instance_role(),
+      options_.enable_service_routing(),
+      options_.disable_log_stats(),
+      [cancel_request_queue =
+           cancel_request_queue_](std::shared_ptr<Request> request) {
+        cancel_request_queue->submit(std::move(request));
+      });
+  if (options_.priority_strategy() == "fcfs" ||
+      options_.priority_strategy() == "multi_slo_and_prio") {
+    prefill_queue_ = std::make_unique<DequeQueue>();
+  } else {
+    prefill_queue_ = std::make_unique<HeapQueue>(
+        create_comparator(options_.priority_strategy(), /*is_decode=*/false));
+  }
+  if (options_.enable_service_routing()) {
+    XServiceClient* xservice_client = XServiceClient::get_instance();
+    CHECK(xservice_client->initialize_done())
+        << "XServiceClient not initialized";
+    xservice_client->set_scheduler(this);
+  }
+  instance_info_.name = options_.instance_name().value_or("");
+  instance_info_.type =
+      options_.instance_role().value_or(InstanceRole::DEFAULT).to_string();
+  instance_info_.dp_size = options_.dp_size();
+  instance_info_.kv_split_size =
+      ParallelConfig::get_instance().kv_split_size_effective();
+  if (options_.rec_worker_max_concurrency() > 1) {
+    step_threadpool_ = std::make_unique<ThreadPool>(
+        /*num_threads=*/static_cast<size_t>(
+            options_.rec_worker_max_concurrency()),
+        /*cpu_binding=*/false,
+        /*pool_name=*/"RecScheduler.step");
+  }
 }
 
-FixedStepsScheduler::~FixedStepsScheduler() {
+RecScheduler::~RecScheduler() {
   // Tasks release the semaphore and use scheduler resources after execution.
-  // Join them while those members are still alive.
   step_threadpool_.reset();
+  response_processor_->wait_completion();
+  request_admission_->shutdown();
 }
 
-void FixedStepsScheduler::handle_prefill_requests(
+bool RecScheduler::add_request(std::shared_ptr<Request>& request) {
+  CHECK(request != nullptr);
+  if (request->state().rec_type == RecType::kNone) {
+    return false;
+  }
+  return request_admission_->add_request(request);
+}
+
+uint32_t RecScheduler::get_waiting_requests_num() const {
+  const size_t queued_requests =
+      static_cast<size_t>(std::max<ssize_t>(request_queue_.size(), 0));
+  return static_cast<uint32_t>(
+      waiting_requests_.load(std::memory_order_relaxed) + queued_requests +
+      request_admission_->num_prefetching_requests());
+}
+
+void RecScheduler::apply_cancel_requests() {
+  for (const std::shared_ptr<Request>& request :
+       cancel_request_queue_->take_all()) {
+    request->set_cancel();
+  }
+}
+
+void RecScheduler::handle_prefill_requests(
     size_t& remaining_token_budget,
     size_t& remaining_seq_budget,
     std::vector<std::shared_ptr<Request>>& finished_requests) {
-  // Handle new request prompt first.
-  // Include those requests that are preempted by others.
-  //
-  // schedule the prefill requests in the waiting priority queue until budgets
-  // are exhausted.
-  // When the KV Cache usage reaches the threshold, prefill requests will no
-  // longer be scheduled to avoid frequent preemption.
-  //
-  // NOTE: preempted requests will be pushed in waiting_priority_queue,
-  // they may contain many sequences, so we should check here.
-  bool budget_exhausted = false;
-  bool blocks_exhausted = false;
+  // Admit one fixed execution window, reserving every scheduled sequence's
+  // complete KV capacity before handing ownership to the Rec engine.
   const bool requires_kv_cache =
       scheduler_pipeline_ && scheduler_pipeline_->requires_kv_cache();
   while (!prefill_queue_->empty() && remaining_seq_budget > 0 &&
@@ -90,7 +169,7 @@ void FixedStepsScheduler::handle_prefill_requests(
         kv_cache_manager_->deallocate(request.get());
       }
       //  release the ownership of the request
-      finished_requests.emplace_back(request);
+      finished_requests.emplace_back(std::move(request));
       // remove the request from the priority queue
       prefill_queue_->pop_top();
       continue;
@@ -106,7 +185,6 @@ void FixedStepsScheduler::handle_prefill_requests(
     // Optimization of the scheduling algorithm under multiple sequences
     size_t allocated_tokens = 0;
     size_t allocated_seqs = 0;
-    double allocated_estimate_latency = 0;
     bool can_schedule = true;
     std::vector<Sequence*> prefill_sequences;
     std::vector<size_t> prefill_sequences_budget;
@@ -125,7 +203,6 @@ void FixedStepsScheduler::handle_prefill_requests(
       if (remaining_token_budget < allocated_tokens + num_tokens ||
           remaining_seq_budget < allocated_seqs + 1) {
         can_schedule = false;
-        budget_exhausted = true;
         break;
       }
 
@@ -133,7 +210,6 @@ void FixedStepsScheduler::handle_prefill_requests(
         if (!scheduler_pipeline_->allocate_kv_cache(kv_cache_manager_,
                                                     prefill_sequence.get())) {
           can_schedule = false;
-          blocks_exhausted = true;
           break;
         }
       }
@@ -154,13 +230,15 @@ void FixedStepsScheduler::handle_prefill_requests(
     }
 
     if (prefill_sequences.empty()) {
+      prefill_queue_->pop_top();
+      finished_requests.emplace_back(std::move(request));
       continue;
     }
 
     remaining_token_budget -= allocated_tokens;
     remaining_seq_budget -= allocated_seqs;
     prefill_queue_->pop_top();
-    running_requests_.emplace_back(request);
+    running_requests_.emplace_back(std::move(request));
     running_sequences_.insert(running_sequences_.end(),
                               prefill_sequences.begin(),
                               prefill_sequences.end());
@@ -170,24 +248,30 @@ void FixedStepsScheduler::handle_prefill_requests(
   }
 
   if (running_sequences_.empty() && !prefill_queue_->empty() &&
-      decode_queue_->empty()) {
+      remaining_seq_budget > 0) {
     LOG(ERROR)
         << "Request prompt is too long, no enough budget/memory to schedule "
            "a single sequence.";
     // no enough memory to schedule single sequence, just finish the request
     std::shared_ptr<Request> request(prefill_queue_->top());
     prefill_queue_->pop_top();
-    // block_manager_->release_blocks_for(request.get());
+    if (requires_kv_cache) {
+      kv_cache_manager_->deallocate(request.get());
+    }
     response_processor_->process_failed_request(
-        request,
+        std::move(request),
         {StatusCode::RESOURCE_EXHAUSTED,
          "No enough budget to schedule single sequence."});
   }
 }
 
-RecBatchGroup FixedStepsScheduler::prepare_rec_batch() {
+RecBatchGroup RecScheduler::prepare_rec_batch() {
   Timer timer;
-  drain_prefetch_pipeline();
+  apply_cancel_requests();
+  request_admission_->drain();
+  running_requests_.clear();
+  running_sequences_.clear();
+  running_sequences_budgets_.clear();
   // propagate new requests to prefill_queue_
   // Include those requests that are preempted by others.
   auto propagate_request = [this](std::shared_ptr<Request>& request) {
@@ -199,12 +283,9 @@ RecBatchGroup FixedStepsScheduler::prepare_rec_batch() {
       request->expand_sequences(false);
     }
 
-    if (request->sequences()[0]->kv_state().kv_cache_tokens_num() == 0) {
-      prefill_queue_->push(request);
-    } else {
-      // request from prefill instance in disagge pd mode.
-      running_requests_.emplace_back(request);
-    }
+    // Restored/cache-hit requests still need a Rec execution window. Their
+    // compute budget and existing KV state are handled during admission.
+    prefill_queue_->push(std::move(request));
   };
 
   // Drain the request prefetched by the blocking wait in schedule_request().
@@ -219,67 +300,28 @@ RecBatchGroup FixedStepsScheduler::prepare_rec_batch() {
     propagate_request(request);
   }
 
-  // Select the request type before touching running requests. Disaggregated
-  // PD requests skip the prefill queue and may be the first request seen by
-  // this scheduler.
-  if (!scheduler_pipeline_) {
-    std::shared_ptr<Request> sample_request;
-    if (!prefill_queue_->empty()) {
-      sample_request = prefill_queue_->top();
-    } else {
-      for (const auto& candidate : running_requests_) {
-        if (candidate != nullptr) {
-          sample_request = candidate;
-          break;
-        }
-      }
-    }
-    if (sample_request != nullptr) {
-      const auto rec_type = sample_request->state().rec_type;
-      const bool is_rec_multi_round =
-          (rec_type == RecType::kLlmRec) && is_rec_multi_round_mode();
-      scheduler_pipeline_ =
-          create_scheduler_pipeline(rec_type, is_rec_multi_round);
-      rec_batch_factory_ = std::make_unique<RecBatchFactory>(
-          options_.dp_size(), scheduler_pipeline_->input_type());
-    }
+  // Select the Rec pipeline once from the first admitted request.
+  if (!scheduler_pipeline_ && !prefill_queue_->empty()) {
+    const RecType rec_type = prefill_queue_->top()->state().rec_type;
+    const bool is_rec_multi_round =
+        (rec_type == RecType::kLlmRec) && is_rec_multi_round_mode();
+    scheduler_pipeline_ =
+        create_scheduler_pipeline(rec_type, is_rec_multi_round);
+    rec_batch_factory_ = std::make_unique<RecBatchFactory>(
+        options_.dp_size(), scheduler_pipeline_->input_type());
   }
 
-  // handle finished/cancelled requests
   std::vector<std::shared_ptr<Request>> finished_requests;
-  for (auto it = running_requests_.rbegin(); it != running_requests_.rend();
-       ++it) {
-    if (*it == nullptr) {
-      continue;
-    }
-    std::shared_ptr<Request> request = *it;
-    request->update_connection_status();
-    if (request->finished() || request->cancelled()) {
-      if (scheduler_pipeline_->requires_kv_cache()) {
-        kv_cache_manager_->deallocate(request.get());
-      }
-      finished_requests.emplace_back(request);
-      // finished request is set to nullptr
-      *it = nullptr;
-    }
-  }
-
-  // clear previous batch
-  running_requests_.clear();
-  running_sequences_.clear();
-  running_sequences_budgets_.clear();
+  finished_requests.reserve(
+      std::min(prefill_queue_->size(),
+               static_cast<size_t>(options_.max_seqs_per_batch())));
 
   // remaining budget for the current batch
   size_t remaining_token_budget = options_.max_tokens_per_batch();
   size_t remaining_seq_budget = std::max(options_.max_seqs_per_batch(), 1);
-  size_t num_preempted_requests = 0;
 
   handle_prefill_requests(
       remaining_token_budget, remaining_seq_budget, finished_requests);
-
-  // only forward once, no decode requests
-  // handle_decode_requests(
-  //     remaining_token_budget, remaining_seq_budget, num_preempted_requests);
 
   if (!finished_requests.empty()) {
     response_processor_->process_completed_requests(finished_requests);
@@ -311,13 +353,11 @@ RecBatchGroup FixedStepsScheduler::prepare_rec_batch() {
     kv_cache_manager_->transfer_blocks();
   }
 
+  waiting_requests_.store(prefill_queue_->size(), std::memory_order_relaxed);
   GAUGE_SET(num_pending_requests,
             pending_requests_.load(std::memory_order_relaxed));
   GAUGE_SET(num_running_requests, running_requests_.size());
-  GAUGE_SET(num_waiting_requests,
-            prefill_queue_->size() + decode_queue_->size());
-
-  GAUGE_ADD(num_preempted_requests, num_preempted_requests);
+  GAUGE_SET(num_waiting_requests, get_waiting_requests_num());
 
   GAUGE_SET(num_running_sequences, running_sequences_.size());
 
@@ -331,10 +371,10 @@ RecBatchGroup FixedStepsScheduler::prepare_rec_batch() {
   return batches;
 }
 
-ScheduleResult FixedStepsScheduler::schedule_request(
+RecScheduleResult RecScheduler::schedule_request(
     const absl::Duration& timeout) {
   const auto deadline = absl::Now() + timeout;
-  ScheduleResult result;
+  RecScheduleResult result;
   while (true) {
     result.batches = prepare_rec_batch();
     bool all_empty = std::all_of(
@@ -359,12 +399,13 @@ ScheduleResult FixedStepsScheduler::schedule_request(
     std::shared_ptr<Request> request;
     const auto remaining = absl::ToChronoNanoseconds(deadline - now);
     const auto wait_duration =
-        prefetching_requests_.load(std::memory_order_relaxed) > 0
+        request_admission_->num_prefetching_requests() > 0
             ? std::min(remaining, std::chrono::nanoseconds(50'000'000))
             : remaining;
     const auto wait_deadline = std::chrono::steady_clock::now() + wait_duration;
     if (request_queue_.tryReadUntil(wait_deadline, request)) {
       prefetched_request_ = std::move(request);
+      waiting_requests_.fetch_add(1, std::memory_order_relaxed);
     }
   }
   // return empty result
@@ -373,10 +414,10 @@ ScheduleResult FixedStepsScheduler::schedule_request(
 
 // step the scheduler forward by one step
 // may get blocked if there are no requests to process
-void FixedStepsScheduler::step(const absl::Duration& timeout) {
+void RecScheduler::step(const absl::Duration& timeout) {
   if (!options_.enable_schedule_overlap()) {
     // get a new batch of requests
-    ScheduleResult result = schedule_request(timeout);
+    RecScheduleResult result = schedule_request(timeout);
     bool all_empty = std::all_of(
         result.batches.begin(),
         result.batches.end(),
@@ -404,16 +445,16 @@ void FixedStepsScheduler::step(const absl::Duration& timeout) {
 
     // Return immediately to allow the next step() call to execute in parallel
   } else {
-    LOG(ERROR) << "FixedStepsScheduler::step() not supported with "
+    LOG(ERROR) << "RecScheduler::step() not supported with "
                   "enable_schedule_overlap";
   }
 }
 
-void FixedStepsScheduler::generate() {
+void RecScheduler::generate() {
   bool batch_empty = false;
   while (num_pending_requests() > 0 || !batch_empty ||
-         request_queue_.size() > 0 || has_pending_prefetch()) {
-    ScheduleResult result = schedule_request(absl::Milliseconds(50));
+         get_waiting_requests_num() > 0) {
+    RecScheduleResult result = schedule_request(absl::Milliseconds(50));
     batch_empty =
         std::all_of(result.batches.begin(),
                     result.batches.end(),
@@ -426,7 +467,7 @@ void FixedStepsScheduler::generate() {
   response_processor_->wait_completion();
 }
 
-void FixedStepsScheduler::execute_batch(ScheduleResult result) {
+void RecScheduler::execute_batch(RecScheduleResult result) {
   rec_step_(result.batches);
 
   std::vector<std::shared_ptr<Request>> finished_requests;
@@ -447,7 +488,7 @@ void FixedStepsScheduler::execute_batch(ScheduleResult result) {
 }
 
 // Pipeline implementations
-bool FixedStepsScheduler::LlmRecSchedulerPipeline::allocate_kv_cache(
+bool RecScheduler::LlmRecSchedulerPipeline::allocate_kv_cache(
     KVCacheManager* kv_cache_manager,
     Sequence* sequence) {
   const size_t num_tokens = sequence->num_tokens();
@@ -462,7 +503,7 @@ bool FixedStepsScheduler::LlmRecSchedulerPipeline::allocate_kv_cache(
                                     num_tokens + max_generated_tokens);
 }
 
-bool FixedStepsScheduler::OneRecXAttentionSchedulerPipeline::allocate_kv_cache(
+bool RecScheduler::OneRecXAttentionSchedulerPipeline::allocate_kv_cache(
     KVCacheManager* kv_cache_manager,
     Sequence* sequence) {
   const size_t num_tokens = sequence->num_tokens();
@@ -484,9 +525,9 @@ bool FixedStepsScheduler::OneRecXAttentionSchedulerPipeline::allocate_kv_cache(
                                     num_tokens + max_generated_tokens);
 }
 
-std::unique_ptr<FixedStepsScheduler::SchedulerPipeline>
-FixedStepsScheduler::create_scheduler_pipeline(RecType rec_type,
-                                               bool is_rec_multi_round) {
+std::unique_ptr<RecScheduler::SchedulerPipeline>
+RecScheduler::create_scheduler_pipeline(RecType rec_type,
+                                        bool is_rec_multi_round) {
   if (is_rec_multi_round) {
     return std::make_unique<RecMultiRoundSchedulerPipeline>();
   }

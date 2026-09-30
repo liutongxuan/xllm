@@ -20,7 +20,7 @@ limitations under the License.
 
 #include "scheduler/continuous_scheduler.h"
 #include "scheduler/dit_scheduler.h"
-#include "scheduler/fixed_steps_scheduler.h"
+#include "scheduler/rec_scheduler.h"
 
 namespace xllm {
 
@@ -57,8 +57,8 @@ std::unique_ptr<DiTScheduler> create_dit_scheduler(
     DiTEngine* engine,
     DiTScheduler::Options options);
 
-std::unique_ptr<FixedStepsScheduler> create_fixed_steps_scheduler(
+std::unique_ptr<RecScheduler> create_rec_scheduler(
     RecEngine* engine,
-    ContinuousScheduler::Options options);
+    RecScheduler::Options options);
 
 }  // namespace xllm
