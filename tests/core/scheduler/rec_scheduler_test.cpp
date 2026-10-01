@@ -141,10 +141,6 @@ class FakeRecEngine final {
     static ModelArgs args;
     return args;
   }
-  const TokenizerArgs& tokenizer_args() const {
-    static TokenizerArgs args;
-    return args;
-  }
   std::vector<int64_t> get_active_activation_memory() const { return {}; }
   int32_t step_calls() const {
     return step_calls_.load(std::memory_order_relaxed);
