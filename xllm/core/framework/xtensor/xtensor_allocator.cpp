@@ -119,65 +119,65 @@ void XTensorAllocator::setup_multi_node_xtensor_dist(
     dones[i].store(false, std::memory_order_relaxed);
   }
 
-  // Update collective server name with server index
+  // Set the node-level collective server name.
   collective_server_name_ = "XTensorDistCollectiveServer";
 
+  // Start all local servers before waiting for the cluster rendezvous. Each
+  // server registers its address with the collective service asynchronously.
   for (size_t i = 0; i < devices.size(); ++i) {
-    // Create XTensor dist server for each device
     xtensor_dist_servers_.emplace_back(std::make_unique<XTensorDistServer>(
         i, master_node_addr, dones[i], devices[i], options));
+  }
 
-    // Only rank0 connects to other workers
-    if (::xllm::DistributedConfig::get_instance().node_rank() == 0) {
-      std::shared_ptr<CollectiveService> collective_service =
-          std::make_shared<CollectiveService>(world_size_);
-      XllmServer* collective_server =
-          ServerRegistry::get_instance().register_server(
-              collective_server_name_);
-      if (!collective_server->start(
-              collective_service, master_node_addr, collective_server_name_)) {
-        LOG(ERROR) << "failed to start collective server on address: "
-                   << master_node_addr;
-        return;
-      }
-
-      auto xtensor_dist_addrs_map = collective_service->wait();
-
-      // Initialize DP group clients mapping
-      dp_group_clients_.resize(dp_size_);
-      for (int32_t dp_rank = 0; dp_rank < dp_size_; ++dp_rank) {
-        dp_group_clients_[dp_rank].reserve(tp_size_);
-      }
-
-      for (int32_t r = 0; r < world_size_; ++r) {
-        if (xtensor_dist_addrs_map.find(r) == xtensor_dist_addrs_map.end()) {
-          LOG(FATAL) << "Not all xtensor dist servers connect to master node. "
-                        "Miss rank is "
-                     << r;
-          return;
-        }
-        auto client = std::make_shared<XTensorDistClient>(
-            r, xtensor_dist_addrs_map[r], devices[r % each_node_ranks]);
-
-        // Add to flat list
-        xtensor_dist_clients_.emplace_back(client);
-
-        // Add to DP group mapping
-        // Workers are organized as: [dp0_tp0, dp0_tp1, ..., dp1_tp0, dp1_tp1,
-        // ...]
-        int32_t dp_rank = r / tp_size_;
-        dp_group_clients_[dp_rank].emplace_back(client);
-      }
-
-      LOG(INFO) << "XTensor dist setup: world_size=" << world_size_
-                << ", dp_size=" << dp_size_ << ", tp_size=" << tp_size_;
+  // Only rank0 connects to other workers.
+  if (::xllm::DistributedConfig::get_instance().node_rank() == 0) {
+    std::shared_ptr<CollectiveService> collective_service =
+        std::make_shared<CollectiveService>(world_size_);
+    XllmServer* collective_server =
+        ServerRegistry::get_instance().register_server(collective_server_name_);
+    if (!collective_server->start(
+            collective_service, master_node_addr, collective_server_name_)) {
+      LOG(ERROR) << "failed to start collective server on address: "
+                 << master_node_addr;
+      return;
     }
 
-    // Wait for all servers to be ready
-    for (size_t idx = 0; idx < dones.size(); ++idx) {
-      while (!dones[idx].load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    auto xtensor_dist_addrs_map = collective_service->wait();
+
+    // Initialize DP group clients mapping
+    dp_group_clients_.resize(dp_size_);
+    for (int32_t dp_rank = 0; dp_rank < dp_size_; ++dp_rank) {
+      dp_group_clients_[dp_rank].reserve(tp_size_);
+    }
+
+    for (int32_t r = 0; r < world_size_; ++r) {
+      if (xtensor_dist_addrs_map.find(r) == xtensor_dist_addrs_map.end()) {
+        LOG(FATAL) << "Not all xtensor dist servers connect to master node. "
+                      "Miss rank is "
+                   << r;
+        return;
       }
+      auto client = std::make_shared<XTensorDistClient>(
+          r, xtensor_dist_addrs_map[r], devices[r % each_node_ranks]);
+
+      // Add to flat list
+      xtensor_dist_clients_.emplace_back(client);
+
+      // Add to DP group mapping
+      // Workers are organized as: [dp0_tp0, dp0_tp1, ..., dp1_tp0, dp1_tp1,
+      // ...]
+      int32_t dp_rank = r / tp_size_;
+      dp_group_clients_[dp_rank].emplace_back(client);
+    }
+
+    LOG(INFO) << "XTensor dist setup: world_size=" << world_size_
+              << ", dp_size=" << dp_size_ << ", tp_size=" << tp_size_;
+  }
+
+  // Wait for all local servers to finish initialization.
+  for (size_t idx = 0; idx < dones.size(); ++idx) {
+    while (!dones[idx].load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
   }
 }

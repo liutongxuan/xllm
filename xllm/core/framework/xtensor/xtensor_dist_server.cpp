@@ -84,6 +84,7 @@ XTensorDistServer::XTensorDistServer(int local_rank,
   int32_t global_rank =
       ::xllm::DistributedConfig::get_instance().node_rank() * each_node_ranks +
       local_rank;
+  server_name_.append(std::to_string(global_rank));
 
   server_thread_ = std::make_unique<std::thread>([this,
                                                   &options,
