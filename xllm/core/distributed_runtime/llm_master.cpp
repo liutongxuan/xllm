@@ -26,6 +26,7 @@ limitations under the License.
 
 #include "api_service/call.h"
 #include "common/metrics.h"
+#include "core/distributed_runtime/xtensor_controller.h"
 #include "core/framework/config/model_config.h"
 #include "core/framework/config/parallel_config_validation.h"
 #include "core/framework/config/speculative_config.h"
@@ -208,6 +209,7 @@ LLMMaster::LLMMaster(const Options& options)
   if (!use_ssm_engine) {
     llm_engine_ = std::make_unique<LLMEngine>(engine_options);
     distributed_worker_manager_ = llm_engine_->get_distributed_worker_manager();
+    xtensor_controller_ = llm_engine_->get_xtensor_controller();
   } else {
     const std::string draft_model_path =
         options_.draft_model_path().value_or("");
@@ -304,8 +306,10 @@ LLMMaster::LLMMaster(const Options& options)
   auto create_scheduler = [this, &scheduler_options](auto* engine) {
     scheduler_options.decode_graph_execution_shape(
         build_decode_graph_execution_shape(engine->options()));
-    return create_continuous_scheduler(
-        engine, scheduler_options, distributed_worker_manager_);
+    return create_continuous_scheduler(engine,
+                                       scheduler_options,
+                                       distributed_worker_manager_,
+                                       xtensor_controller_);
   };
   if (!use_ssm_engine) {
     scheduler_ = create_scheduler(llm_engine_.get());
@@ -588,30 +592,26 @@ std::vector<bool> LLMMaster::handle_rpc_responses(
 }
 
 bool LLMMaster::sleep() {
-  return dispatch_engine(
-      llm_engine_.get(),
-      suffix_engine_.get(),
-      speculative_engine_.get(),
-      [this](auto& engine) { return engine.sleep(master_status_); });
+  if (xtensor_controller_ == nullptr) {
+    LOG(ERROR) << "Sleep is not supported for speculative engines.";
+    return false;
+  }
+  return xtensor_controller_->sleep(master_status_);
 }
 
 bool LLMMaster::wakeup() {
   WakeupOptions options;
-  options.master_status = master_status_;
-  return dispatch_engine(
-      llm_engine_.get(),
-      suffix_engine_.get(),
-      speculative_engine_.get(),
-      [&options](auto& engine) { return engine.wakeup(options); });
+  return wakeup(options);
 }
 
 bool LLMMaster::wakeup(const WakeupOptions& options) {
+  if (xtensor_controller_ == nullptr) {
+    LOG(ERROR) << "Wakeup is not supported for speculative engines.";
+    return false;
+  }
   WakeupOptions opts = options;
   opts.master_status = master_status_;
-  return dispatch_engine(llm_engine_.get(),
-                         suffix_engine_.get(),
-                         speculative_engine_.get(),
-                         [&opts](auto& engine) { return engine.wakeup(opts); });
+  return xtensor_controller_->wakeup(opts);
 }
 
 bool LLMMaster::link_p2p(const std::vector<std::string>& remote_addrs) {

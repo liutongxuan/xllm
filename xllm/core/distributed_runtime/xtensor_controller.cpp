@@ -151,13 +151,14 @@ bool XTensorController::wakeup(const WakeupOptions& options) {
 bool XTensorController::get_xtensor_offsets_for_blocks(
     int32_t dp_rank,
     const std::vector<int32_t>& block_ids,
-    uint64_t block_size_bytes,
+    uint64_t slot_size,
     std::vector<std::pair<std::vector<uint64_t>, std::vector<uint64_t>>>&
         layer_offsets) const {
   if (!options_.enabled) {
     return false;
   }
 
+  const uint64_t block_size_bytes = slot_size * options_.block_size / 2;
   auto& allocator = XTensorAllocator::get_instance();
   if (!allocator.get_xtensor_offsets(dp_rank,
                                      options_.model_id,

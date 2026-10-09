@@ -116,7 +116,8 @@ LLMEngine::LLMEngine(
   xtensor_controller_ = std::make_shared<XTensorController>(
       XTensorController::Options{
           .enabled = KVCacheConfig::get_instance().enable_xtensor(),
-          .model_id = options_.model_id()},
+          .model_id = options_.model_id(),
+          .block_size = options_.block_size()},
       distributed_worker_manager_);
 
   dp_size_ = options_.dp_size();
@@ -749,14 +750,6 @@ void LLMEngine::get_cache_info(std::vector<uint64_t>& cluster_ids,
   }
 }
 
-void LLMEngine::get_xtensor_info(
-    std::vector<size_t>& worker_free_phy_pages,
-    std::unordered_map<std::string, std::vector<WeightSegment>>&
-        model_weight_segments) {
-  xtensor_controller_->get_xtensor_info(worker_free_phy_pages,
-                                        model_weight_segments);
-}
-
 ForwardOutput LLMEngine::step(BatchGroup& batch) {
   if (worker_clients_.empty()) {
     // empty worker, return
@@ -916,10 +909,6 @@ void LLMEngine::setup_workers(const runtime::Options& options) {
   worker_clients_ = distributed_worker_manager_->get_worker_clients();
 }
 
-bool LLMEngine::sleep(MasterStatus master_status) {
-  return xtensor_controller_->sleep(master_status);
-}
-
 bool LLMEngine::start_profile() {
   std::lock_guard<std::mutex> lock(profile_mutex_);
   LOG(INFO) << "Starting profiler on " << worker_clients_num_ << " worker(s).";
@@ -969,30 +958,6 @@ bool LLMEngine::profile_workers(bool is_start) {
   }
 
   return success;
-}
-
-bool LLMEngine::wakeup(const WakeupOptions& options) {
-  return xtensor_controller_->wakeup(options);
-}
-
-bool LLMEngine::get_xtensor_offsets_for_blocks(
-    int32_t dp_rank,
-    const std::vector<int32_t>& block_ids,
-    std::vector<std::pair<std::vector<uint64_t>, std::vector<uint64_t>>>&
-        layer_offsets) {
-  if (!KVCacheConfig::get_instance().enable_xtensor()) {
-    return false;
-  }
-  const auto* block_manager = block_manager_pool();
-  if (block_manager == nullptr) {
-    LOG(ERROR) << "BlockManagerPool not available";
-    return false;
-  }
-  const uint64_t block_size_bytes =
-      static_cast<uint64_t>(block_manager->options().slot_size()) *
-      options_.block_size() / 2;
-  return xtensor_controller_->get_xtensor_offsets_for_blocks(
-      dp_rank, block_ids, block_size_bytes, layer_offsets);
 }
 
 }  // namespace xllm
