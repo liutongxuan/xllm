@@ -29,6 +29,7 @@ limitations under the License.
 #include "core/framework/request/stopping_checker.h"
 #include "core/framework/sampling/sampling_params.h"
 #include "core/framework/speculative/mtp_utils.h"
+#include "core/runtime/options.h"
 #include "platform/platform.h"
 #include "runtime/decode_graph_bucket.h"
 #include "scheduler/profile/decode_graph_warmup_plan.h"
@@ -37,6 +38,87 @@ limitations under the License.
 
 namespace xllm {
 namespace {
+
+class ScopedDecodeGraphConfigSnapshot final {
+ public:
+  ScopedDecodeGraphConfigSnapshot()
+      : enable_graph_(ExecutionConfig::get_instance().enable_graph()),
+        enable_no_padding_(ExecutionConfig::get_instance()
+                               .enable_graph_mode_decode_no_padding()),
+        decode_batch_limit_(ExecutionConfig::get_instance()
+                                .acl_graph_decode_batch_size_limit()) {}
+
+  ~ScopedDecodeGraphConfigSnapshot() {
+    ExecutionConfig::get_instance()
+        .enable_graph(enable_graph_)
+        .enable_graph_mode_decode_no_padding(enable_no_padding_)
+        .acl_graph_decode_batch_size_limit(decode_batch_limit_);
+  }
+
+ private:
+  bool enable_graph_;
+  bool enable_no_padding_;
+  int32_t decode_batch_limit_;
+};
+
+TEST(DecodeGraphExecutionShapeTest, DefaultProfileUsesCompatibilityShape) {
+  ProfileManager::Options options;
+  const runtime::DecodeGraphExecutionShape& execution_shape =
+      options.decode_graph_execution_shape();
+
+  EXPECT_EQ(execution_shape.num_decoding_tokens, 1);
+  EXPECT_EQ(execution_shape.num_speculative_tokens, 0);
+  EXPECT_FALSE(execution_shape.enable_graph_mode_decode_no_padding);
+  EXPECT_EQ(execution_shape.max_graph_batch_size, 0);
+}
+
+TEST(DecodeGraphExecutionShapeTest, OrdinaryTargetUsesSingleTokenShape) {
+  ScopedDecodeGraphConfigSnapshot snapshot;
+  ExecutionConfig::get_instance().acl_graph_decode_batch_size_limit(7);
+  runtime::Options options;
+
+  const runtime::DecodeGraphExecutionShape execution_shape =
+      build_decode_graph_execution_shape(options);
+
+  EXPECT_EQ(execution_shape.num_decoding_tokens, 1);
+  EXPECT_EQ(execution_shape.num_speculative_tokens, 0);
+  EXPECT_FALSE(execution_shape.enable_graph_mode_decode_no_padding);
+  EXPECT_EQ(execution_shape.max_graph_batch_size, Platform::is_npu() ? 7 : 0);
+}
+
+TEST(DecodeGraphExecutionShapeTest, PreservesResolvedSpeculativeTargetWidth) {
+  ScopedDecodeGraphConfigSnapshot snapshot;
+  ExecutionConfig::get_instance().acl_graph_decode_batch_size_limit(9);
+  runtime::Options options;
+  options.num_speculative_tokens(3).num_decoding_tokens(4);
+
+  const runtime::DecodeGraphExecutionShape execution_shape =
+      build_decode_graph_execution_shape(options);
+
+  EXPECT_EQ(execution_shape.num_decoding_tokens, 4);
+  EXPECT_EQ(execution_shape.num_speculative_tokens, 3);
+  EXPECT_EQ(execution_shape.max_graph_batch_size, Platform::is_npu() ? 9 : 0);
+
+  // The resolved execution width can differ from the speculative depth.
+  options.num_decoding_tokens(6);
+  EXPECT_EQ(build_decode_graph_execution_shape(options).num_decoding_tokens, 6);
+}
+
+TEST(DecodeGraphExecutionShapeTest, PaddingFollowsTargetOptions) {
+  ScopedDecodeGraphConfigSnapshot snapshot;
+  for (bool enable_no_padding : {false, true}) {
+    ExecutionConfig::get_instance().enable_graph_mode_decode_no_padding(
+        !enable_no_padding);
+    runtime::Options options;
+    options.num_speculative_tokens(3)
+        .num_decoding_tokens(4)
+        .enable_graph_mode_decode_no_padding(enable_no_padding);
+
+    EXPECT_EQ(build_decode_graph_execution_shape(options)
+                  .enable_graph_mode_decode_no_padding,
+              enable_no_padding);
+  }
+}
 
 TEST(StepTimeProfilePlanTest, NeverExceedsConfiguredSequenceCapacity) {
   const std::vector<int32_t> batch_sizes =
@@ -132,6 +214,8 @@ class RecordingProfileEngine final : public Engine {
         .max_seqs_per_batch(/*max_seqs_per_batch=*/8);
     block_manager_ = std::make_unique<BlockManagerPool>(options, /*dp_size=*/1);
     observed_batches_.reserve(options.max_seqs_per_batch());
+    observed_kv_capacities_.reserve(options.max_seqs_per_batch());
+    observed_bootstrap_embeddings_.reserve(options.max_seqs_per_batch());
     model_args_.vocab_size(128)
         .eos_token_id(2)
         .max_position_embeddings(16)
@@ -146,6 +230,10 @@ class RecordingProfileEngine final : public Engine {
         ++sequence_count;
         all_requests_marked_ =
             all_requests_marked_ && sequence->is_graph_warmup();
+        observed_kv_capacities_.emplace_back(
+            sequence->kv_state().current_max_tokens_capacity());
+        observed_bootstrap_embeddings_.emplace_back(
+            sequence->get_mtp_bootstrap_embedding().defined());
       }
     }
     observed_batches_.emplace_back(sequence_count);
@@ -177,6 +265,12 @@ class RecordingProfileEngine final : public Engine {
   const std::vector<int32_t>& observed_batches() const {
     return observed_batches_;
   }
+  const std::vector<size_t>& observed_kv_capacities() const {
+    return observed_kv_capacities_;
+  }
+  const std::vector<bool>& observed_bootstrap_embeddings() const {
+    return observed_bootstrap_embeddings_;
+  }
 
  private:
   std::unique_ptr<BlockManagerPool> block_manager_;
@@ -185,6 +279,8 @@ class RecordingProfileEngine final : public Engine {
   bool overlap_ = false;
   int32_t pending_steps_ = 0;
   std::vector<int32_t> observed_batches_;
+  std::vector<size_t> observed_kv_capacities_;
+  std::vector<bool> observed_bootstrap_embeddings_;
 };
 
 TEST(GraphWarmupTest, BuildsCanonicalBuckets) {
@@ -587,6 +683,32 @@ TEST(GraphWarmupTest, MarksOrdinaryProfileRequestsAsSyntheticLoad) {
   profile_manager.run_request(/*token_length=*/4, /*prefix_length=*/0);
 
   EXPECT_TRUE(engine.all_requests_marked());
+}
+
+TEST(GraphWarmupTest, DecodeProfileUsesConfiguredSpeculativeGeometry) {
+  ScopedDecodeGraphConfigSnapshot snapshot;
+  ExecutionConfig::get_instance().enable_graph(false);
+  RecordingProfileEngine engine;
+  runtime::Options target_options;
+  target_options.num_speculative_tokens(3).num_decoding_tokens(4);
+  ProfileManager::Options options;
+  options.max_tokens_per_batch(5)
+      .max_seqs_per_batch(1)
+      .dp_size(1)
+      .instance_role(InstanceRole::DECODE)
+      .decode_graph_execution_shape(
+          build_decode_graph_execution_shape(target_options));
+  ProfileManager profile_manager(&engine, options);
+
+  profile_manager.profile_decode_step_time(/*token_length=*/5,
+                                           /*batch_size=*/1,
+                                           /*min_context_len=*/5,
+                                           /*max_context_len=*/5);
+
+  // Five context tokens plus four decode tokens need three four-token blocks.
+  EXPECT_EQ(engine.observed_kv_capacities(), (std::vector<size_t>{12, 12, 12}));
+  EXPECT_EQ(engine.observed_bootstrap_embeddings(),
+            (std::vector<bool>{true, true, true}));
 }
 
 TEST(GraphWarmupTest, OrdinaryStepsWarmBucketsAndDrainBeforeReleasingKv) {

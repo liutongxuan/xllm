@@ -31,7 +31,6 @@ limitations under the License.
 #include "framework/model/model_args.h"
 #include "framework/tokenizer/tokenizer.h"
 #include "framework/tokenizer/tokenizer_args.h"
-#include "runtime/decode_graph_bucket.h"
 #include "runtime/options.h"
 
 namespace xllm {
@@ -61,11 +60,6 @@ class Engine {
   virtual bool set_speculative_validate_time_predictor(
       const SpeculativeProfileRegistry::ValidateTimePredictor&) {
     return false;
-  }
-
-  virtual runtime::DecodeGraphExecutionShape decode_graph_execution_shape()
-      const {
-    return {};
   }
 
   // return the tokenizer args

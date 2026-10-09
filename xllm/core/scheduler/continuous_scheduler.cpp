@@ -87,6 +87,7 @@ ContinuousSchedulerBase::ContinuousSchedulerBase(Engine* engine,
 
   ProfileManager::Options profile_manager_options;
   profile_manager_options.dp_size(options.dp_size())
+      .decode_graph_execution_shape(options.decode_graph_execution_shape())
       .enable_schedule_overlap(options.enable_schedule_overlap())
       .enable_profile_step_time(options.enable_profile_step_time())
       .profile_max_prompt_length(options.profile_max_prompt_length())

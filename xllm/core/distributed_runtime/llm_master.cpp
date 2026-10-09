@@ -36,6 +36,7 @@ limitations under the License.
 #endif
 #include "distributed_runtime/xservice_client.h"
 #include "runtime/options.h"
+#include "scheduler/profile/profile_manager.h"
 #include "scheduler/scheduler_factory.h"
 #include "server/xllm_server_registry.h"
 #include "util/model_config_utils.h"
@@ -300,16 +301,18 @@ LLMMaster::LLMMaster(const Options& options)
       .max_global_tpot_ms(options_.max_global_tpot_ms())
       .server_idx(options_.server_idx())
       .rec_worker_max_concurrency(options_.rec_worker_max_concurrency());
+  auto create_scheduler = [this, &scheduler_options](auto* engine) {
+    scheduler_options.decode_graph_execution_shape(
+        build_decode_graph_execution_shape(engine->options()));
+    return create_continuous_scheduler(
+        engine, scheduler_options, distributed_worker_manager_);
+  };
   if (!use_ssm_engine) {
-    scheduler_ = create_continuous_scheduler(
-        llm_engine_.get(), scheduler_options, distributed_worker_manager_);
+    scheduler_ = create_scheduler(llm_engine_.get());
   } else if (options_.speculative_algorithm() == "Suffix") {
-    scheduler_ = create_continuous_scheduler(
-        suffix_engine_.get(), scheduler_options, distributed_worker_manager_);
+    scheduler_ = create_scheduler(suffix_engine_.get());
   } else {
-    scheduler_ = create_continuous_scheduler(speculative_engine_.get(),
-                                             scheduler_options,
-                                             distributed_worker_manager_);
+    scheduler_ = create_scheduler(speculative_engine_.get());
   }
 
   if (options_.enable_service_routing()) {

@@ -20,7 +20,7 @@ limitations under the License.
 
 namespace xllm::runtime {
 
-// Decode graph shape fields supplied by the owning Engine. For MTP,
+// Effective decode graph shape used to plan graph warmup. For MTP,
 // num_decoding_tokens is the number of token rows produced per sequence in a
 // decode step; it is normally num_speculative_tokens + 1.
 struct DecodeGraphExecutionShape {

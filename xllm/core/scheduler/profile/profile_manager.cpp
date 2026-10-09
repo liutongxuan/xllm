@@ -76,6 +76,20 @@ int32_t warmup_decode_seq_len(bool fia_enabled, int32_t max_context_len) {
       max_context_len);
 }
 
+runtime::DecodeGraphExecutionShape build_decode_graph_execution_shape(
+    const runtime::Options& options) {
+  runtime::DecodeGraphExecutionShape execution_shape;
+  execution_shape.num_decoding_tokens = options.num_decoding_tokens();
+  execution_shape.num_speculative_tokens = options.num_speculative_tokens();
+  execution_shape.enable_graph_mode_decode_no_padding =
+      options.enable_graph_mode_decode_no_padding();
+  if (Platform::is_npu()) {
+    execution_shape.max_graph_batch_size =
+        ExecutionConfig::get_instance().acl_graph_decode_batch_size_limit();
+  }
+  return execution_shape;
+}
+
 namespace {
 
 int32_t decode_warmup_token_bucket(const DecodeGraphWarmupPlan& plan,
@@ -126,7 +140,7 @@ ProfileManager::ProfileManager(Engine* engine,
             static_cast<uint32_t>(std::max<int32_t>(1, options_.dp_size()))));
   }
   decode_graph_warmup_plan_ =
-      build_decode_graph_warmup_plan(engine_->decode_graph_execution_shape(),
+      build_decode_graph_warmup_plan(options_.decode_graph_execution_shape(),
                                      max_decode_batch_size,
                                      options_.dp_size());
   block_manager_pool_ = engine_->block_manager_pool();
@@ -1336,7 +1350,7 @@ void ProfileManager::warmup_decode_for_graph() {
   const int32_t warmup_capacity =
       std::min(max_decode_batch_size, allocatable_sequences);
   decode_graph_warmup_plan_ =
-      build_decode_graph_warmup_plan(engine_->decode_graph_execution_shape(),
+      build_decode_graph_warmup_plan(options_.decode_graph_execution_shape(),
                                      warmup_capacity,
                                      options_.dp_size());
   const std::vector<int32_t>& decode_batch_sizes =
