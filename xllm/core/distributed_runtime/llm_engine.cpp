@@ -35,7 +35,6 @@ limitations under the License.
 #include "common/metrics.h"
 #include "common/options.h"
 #include "core/common/global_flags.h"
-#include "core/distributed_runtime/xtensor_controller.h"
 #include "core/framework/config/execution_config.h"
 #include "core/framework/config/kv_cache_config.h"
 #include "core/framework/config/parallel_config.h"
@@ -106,12 +105,6 @@ LLMEngine::LLMEngine(
 
   // setup all workers and create worker clients in nnode_rank=0 engine side.
   setup_workers(options);
-  xtensor_controller_ = std::make_shared<XTensorController>(
-      XTensorController::Options{
-          .enabled = KVCacheConfig::get_instance().enable_xtensor(),
-          .model_id = options_.model_id(),
-          .block_size = options_.block_size()},
-      distributed_worker_manager_);
 
   dp_size_ = options_.dp_size();
   const uint32_t cp_size = options_.cp_size();
@@ -161,7 +154,12 @@ void LLMEngine::process_group_test() {
 }
 
 bool LLMEngine::init(MasterStatus master_status) {
-  if (!init_model(master_status)) {
+  return init(master_status, /*prepare_model=*/{});
+}
+
+bool LLMEngine::init(MasterStatus master_status,
+                     const ModelInitCallback& prepare_model) {
+  if (!init_model(master_status, prepare_model)) {
     LOG(ERROR) << "Failed to init model from: " << options_.model_path();
     return false;
   }
@@ -179,10 +177,17 @@ bool LLMEngine::init(MasterStatus master_status) {
     LOG(INFO) << "Successfully initialized kv cache";
   }
 
-  return xtensor_controller_->finish_initialization(master_status);
+  return true;
 }
 
-bool LLMEngine::init_model(MasterStatus master_status) {
+bool LLMEngine::init_model(MasterStatus master_status,
+                           const ModelInitCallback& prepare_model) {
+  if (KVCacheConfig::get_instance().enable_xtensor() && !prepare_model) {
+    LOG(ERROR)
+        << "XTensor model initialization requires a resource preparation "
+           "callback from the master.";
+    return false;
+  }
   const std::string& model_path = options_.model_path();
   auto model_loader = ModelLoader::create(model_path);
   LOG(INFO) << "Initializing model from: " << model_path;
@@ -242,12 +247,11 @@ bool LLMEngine::init_model(MasterStatus master_status) {
   LOG(INFO) << "Initializing model with random seed: "
             << ::xllm::ExecutionConfig::get_instance().random_seed();
 
-  if (!xtensor_controller_->initialize_model(
-          *model_loader,
-          args_.n_layers(),
-          static_cast<int32_t>(dp_size_),
-          static_cast<int32_t>(dp_local_tp_size_),
-          master_status)) {
+  if (prepare_model && !prepare_model(*model_loader,
+                                      args_.n_layers(),
+                                      static_cast<int32_t>(dp_size_),
+                                      static_cast<int32_t>(dp_local_tp_size_),
+                                      master_status)) {
     return false;
   }
 

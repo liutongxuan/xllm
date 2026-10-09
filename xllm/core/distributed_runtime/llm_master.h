@@ -40,6 +40,7 @@ namespace xllm {
 
 class Call;
 class Tokenizer;
+class XTensorController;
 
 class LLMMaster : public Master {
  public:
@@ -130,6 +131,7 @@ class LLMMaster : public Master {
   // Shared workers outlive the scheduler and every engine using them.
   std::shared_ptr<DistributedWorkerManager> distributed_worker_manager_;
 
+  // Created by the master after worker setup and shared with serving consumers.
   std::shared_ptr<XTensorController> xtensor_controller_;
 
   // Exactly one of these owners is populated, depending on the configured

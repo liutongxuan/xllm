@@ -37,6 +37,8 @@ limitations under the License.
 
 namespace xllm {
 
+class XTensorController;
+
 class VLMMaster : public Master {
  public:
   explicit VLMMaster(const Options& options);
@@ -87,6 +89,9 @@ class VLMMaster : public Master {
   int get_image_limit() { return options_.limit_image_per_prompt(); }
 
  private:
+  // The LLM draft prepares XTensor pages before loading worker weights.
+  std::unique_ptr<XTensorController> draft_xtensor_controller_;
+
   // Exactly one of these owners is populated for VLM and VLM speculative
   // execution respectively.
   std::unique_ptr<VLMEngine> vlm_engine_;

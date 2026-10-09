@@ -21,6 +21,7 @@ limitations under the License.
 #include <unistd.h>
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -41,10 +42,15 @@ limitations under the License.
 namespace xllm {
 
 class EplbController;
-class XTensorController;
+class ModelLoader;
 
 class LLMEngine : public Engine {
  public:
+  // Runs synchronously before workers load weights; the engine does not retain
+  // the callback or own the resources prepared by it.
+  using ModelInitCallback = std::function<
+      bool(const ModelLoader&, int64_t, int32_t, int32_t, MasterStatus)>;
+
   // create an engine with the given devices
   LLMEngine(const runtime::Options& options,
             std::shared_ptr<DistributedWorkerManager>
@@ -57,6 +63,8 @@ class LLMEngine : public Engine {
   const runtime::Options& options() const { return options_; }
 
   bool init(MasterStatus master_status) override;
+
+  bool init(MasterStatus master_status, const ModelInitCallback& prepare_model);
 
   bool set_speculative_validate_time_predictor(
       const SpeculativeProfileRegistry::ValidateTimePredictor& predictor)
@@ -99,10 +107,6 @@ class LLMEngine : public Engine {
     return distributed_worker_manager_;
   }
 
-  std::shared_ptr<XTensorController> get_xtensor_controller() const {
-    return xtensor_controller_;
-  }
-
   bool start_profile() override;
 
   bool stop_profile() override;
@@ -115,7 +119,8 @@ class LLMEngine : public Engine {
   friend class SpeculativeEngineBase;
   // setup workers internal
   void setup_workers(const runtime::Options& options);
-  bool init_model(MasterStatus master_status = MasterStatus::WAKEUP);
+  bool init_model(MasterStatus master_status,
+                  const ModelInitCallback& prepare_model);
   KVCacheCapacity estimate_kv_cache_capacity();
   bool allocate_kv_cache(const KVCacheCapacity& kv_cache_cap);
   void process_group_test();
@@ -149,8 +154,6 @@ class LLMEngine : public Engine {
   // Engine call workers to step via these WorkerClients.
   std::shared_ptr<DistributedWorkerManager> distributed_worker_manager_ =
       nullptr;
-
-  std::shared_ptr<XTensorController> xtensor_controller_;
 
   std::unique_ptr<EplbController> eplb_controller_;
 };
