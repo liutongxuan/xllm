@@ -28,6 +28,7 @@ limitations under the License.
 namespace xllm {
 
 class DistributedWorkerManager;
+class ModelLoader;
 
 // Coordinates a model's XTensor resources and worker lifecycle operations.
 class XTensorController final {
@@ -41,6 +42,16 @@ class XTensorController final {
   XTensorController(
       Options options,
       std::shared_ptr<DistributedWorkerManager> distributed_worker_manager);
+
+  // Prepare the model's page budget before workers load its weights.
+  bool initialize_model(const ModelLoader& model_loader,
+                        int64_t num_layers,
+                        int32_t dp_size,
+                        int32_t tp_size,
+                        MasterStatus master_status);
+
+  // Apply the initial sleep state after workers allocate the KV cache.
+  bool finish_initialization(MasterStatus master_status);
 
   // Reports the shared page pool and all models' weight segments for
   // heartbeats.

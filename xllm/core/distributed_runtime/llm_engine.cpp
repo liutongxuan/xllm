@@ -38,7 +38,6 @@ limitations under the License.
 #include "core/distributed_runtime/xtensor_controller.h"
 #include "core/framework/config/execution_config.h"
 #include "core/framework/config/kv_cache_config.h"
-#include "core/framework/config/load_config.h"
 #include "core/framework/config/parallel_config.h"
 #include "core/framework/config/scheduler_config.h"
 #include "core/framework/config/service_config.h"
@@ -54,9 +53,6 @@ limitations under the License.
 #include "framework/kv_cache/kv_cache_utils.h"
 #include "framework/model/model_args.h"
 #include "framework/speculative/mtp_utils.h"
-#include "framework/xtensor/page_allocator.h"
-#include "framework/xtensor/phy_page_pool.h"
-#include "framework/xtensor/xtensor_allocator.h"
 #include "models/model_registry.h"
 #include "runtime/llm_worker_impl.h"
 #include "runtime/params_utils.h"
@@ -83,9 +79,6 @@ bool contains_graph_warmup(const BatchGroup& batches) {
 }
 
 }  // namespace
-
-// Extra weight pages reserved for mapping/alignment overhead.
-constexpr size_t kXTensorWeightPageSafetyMargin = 20;
 
 LLMEngine::LLMEngine(
     const runtime::Options& options,
@@ -186,23 +179,7 @@ bool LLMEngine::init(MasterStatus master_status) {
     LOG(INFO) << "Successfully initialized kv cache";
   }
 
-  // If master_status is not MasterStatus::WAKEUP, put the model to sleep after
-  // initialization
-  // This allows KV cache allocation to complete first, then releases resources
-  if (::xllm::KVCacheConfig::get_instance().enable_xtensor() &&
-      master_status != MasterStatus::WAKEUP) {
-    const std::string& model_id = options_.model_id();
-    if (!PageAllocator::get_instance().sleep_model(
-            model_id, /*skip_weight_release=*/true)) {
-      LOG(ERROR) << "Failed to sleep model " << model_id << " after init";
-      return false;
-    }
-    LOG(INFO) << "Model " << model_id
-              << " put to sleep after init (master_status=" << master_status
-              << ")";
-  }
-
-  return true;
+  return xtensor_controller_->finish_initialization(master_status);
 }
 
 bool LLMEngine::init_model(MasterStatus master_status) {
@@ -265,72 +242,13 @@ bool LLMEngine::init_model(MasterStatus master_status) {
   LOG(INFO) << "Initializing model with random seed: "
             << ::xllm::ExecutionConfig::get_instance().random_seed();
 
-  // Initialize PageAllocator if using XTensor mode (before using it)
-  if (::xllm::KVCacheConfig::get_instance().enable_xtensor()) {
-    auto& page_allocator = PageAllocator::get_instance();
-    if (!page_allocator.is_initialized()) {
-      auto& phy_pool = PhyPagePool::get_instance();
-      CHECK(phy_pool.is_initialized())
-          << "PhyPagePool must be initialized before PageAllocator";
-      size_t num_phy_pages = phy_pool.num_total();
-      // max_world_size = dp_size * tp_size = worker_clients_num_
-      int32_t max_world_size = worker_clients_num_;
-      page_allocator.init(num_phy_pages,
-                          dp_size_,
-                          max_world_size,
-                          /*enable_page_prealloc=*/true);
-    }
-
-    // Register model with model_id from options
-    // Each model has its own logical page_list but shares physical pages
-    const std::string& model_id = options_.model_id();
-    page_allocator.register_model(model_id, args_.n_layers(), master_status);
-
-    // Set model-specific parallel strategy for broadcast operations
-    // This is important for fork master with different dp/tp than original
-    // master (each model may have different dp_size/tp_size)
-    page_allocator.set_model_parallel_strategy(
-        model_id, dp_size_, dp_local_tp_size_);
-    auto& xtensor_allocator = XTensorAllocator::get_instance();
-    xtensor_allocator.set_model_parallel_strategy(
-        model_id, dp_size_, dp_local_tp_size_);
-
-    // Get weight size for XTensor page allocation.
-    const int64_t total_weight_size =
-        get_effective_xtensor_weight_size(*model_loader);
-    if (total_weight_size < 0) {
-      return false;
-    }
-    int64_t weight_size_per_tp =
-        (total_weight_size + dp_local_tp_size_ - 1) / dp_local_tp_size_;
-
-    size_t page_size =
-        ::xllm::KVCacheConfig::get_instance().phy_page_granularity_size();
-    size_t num_pages = (weight_size_per_tp + page_size - 1) / page_size +
-                       kXTensorWeightPageSafetyMargin;
-
-    LOG(INFO) << "XTensor weight allocation: total_weight_size="
-              << total_weight_size << ", tp_size=" << dp_local_tp_size_
-              << ", weight_size_per_tp=" << weight_size_per_tp
-              << ", num_pages=" << num_pages
-              << ", master_status=" << master_status;
-
-    if (master_status == MasterStatus::WAKEUP) {
-      // Consume physical pages for weights (global xtensor handles mapping)
-      if (!page_allocator.alloc_weight_pages(model_id, num_pages)) {
-        LOG(ERROR) << "Failed to allocate weight pages";
-        return false;
-      }
-      LOG(INFO)
-          << "master_status=0 (MasterStatus::WAKEUP): Allocated weight pages, "
-             "will load to device";
-    } else if (master_status == MasterStatus::LIGHT_SLEEP ||
-               master_status == MasterStatus::DEEP_SLEEP) {
-      // Record num_pages for later wakeup
-      page_allocator.set_weight_pages_count(model_id, num_pages);
-      LOG(INFO) << "master_status=" << master_status
-                << " (SLEEP): Recorded weight pages, num_pages=" << num_pages;
-    }
+  if (!xtensor_controller_->initialize_model(
+          *model_loader,
+          args_.n_layers(),
+          static_cast<int32_t>(dp_size_),
+          static_cast<int32_t>(dp_local_tp_size_),
+          master_status)) {
+    return false;
   }
 
   // init model for each worker in parallel
@@ -352,59 +270,6 @@ bool LLMEngine::init_model(MasterStatus master_status) {
   }
 
   return true;
-}
-
-int64_t LLMEngine::get_effective_xtensor_weight_size(
-    const ModelLoader& model_loader) const {
-  constexpr int64_t kInvalidWeightSize = -1;
-  const int64_t all_size = model_loader.get_total_weight_size();
-  if (all_size <= 0) {
-    LOG(ERROR)
-        << "Invalid total model weight size: " << all_size
-        << ". Ensure model .index.json exists and has metadata.total_size";
-    return kInvalidWeightSize;
-  }
-
-  if (!::xllm::LoadConfig::get_instance().enable_rolling_load()) {
-    return all_size;
-  }
-
-  const int64_t non_decoder_size = model_loader.get_non_decoder_weight_size();
-  if (non_decoder_size <= 0) {
-    LOG(ERROR) << "Invalid non-decoder weight size: " << non_decoder_size;
-    return kInvalidWeightSize;
-  }
-  if (non_decoder_size > all_size) {
-    LOG(ERROR) << "non_decoder_weight_size (" << non_decoder_size
-               << ") exceeds total_weight_size (" << all_size << ")";
-    return kInvalidWeightSize;
-  }
-  if (args_.n_layers() <= 0) {
-    LOG(ERROR) << "Invalid layer count: " << args_.n_layers();
-    return kInvalidWeightSize;
-  }
-
-  const int64_t all_decoder_size = all_size - non_decoder_size;
-  int64_t max_layer_size = model_loader.get_max_decoder_layer_weight_size();
-  if (max_layer_size <= 0) {
-    LOG(ERROR) << "Failed to get max decoder layer size for rolling load.";
-    return kInvalidWeightSize;
-  }
-  const int64_t rolling_buffer_size =
-      ::xllm::LoadConfig::get_instance().rolling_load_num_cached_layers() *
-      max_layer_size;
-  const int64_t total_weight_size = non_decoder_size + rolling_buffer_size;
-
-  LOG(INFO)
-      << "XTensor rolling_load weight budget: total=" << all_size
-      << ", non_decoder=" << non_decoder_size
-      << ", all_decoder=" << all_decoder_size
-      << ", max_layer=" << max_layer_size
-      << ", rolling_buffer=" << rolling_buffer_size << " ("
-      << ::xllm::LoadConfig::get_instance().rolling_load_num_cached_layers()
-      << " slots x " << max_layer_size << " bytes/max-layer)"
-      << ", effective=" << total_weight_size;
-  return total_weight_size;
 }
 
 KVCacheCapacity LLMEngine::estimate_kv_cache_capacity() {

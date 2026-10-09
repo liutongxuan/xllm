@@ -40,7 +40,6 @@ limitations under the License.
 #include "runtime/worker_client.h"
 namespace xllm {
 
-class ModelLoader;
 class EplbController;
 class XTensorController;
 
@@ -117,8 +116,6 @@ class LLMEngine : public Engine {
   // setup workers internal
   void setup_workers(const runtime::Options& options);
   bool init_model(MasterStatus master_status = MasterStatus::WAKEUP);
-  int64_t get_effective_xtensor_weight_size(
-      const ModelLoader& model_loader) const;
   KVCacheCapacity estimate_kv_cache_capacity();
   bool allocate_kv_cache(const KVCacheCapacity& kv_cache_cap);
   void process_group_test();

@@ -43,6 +43,17 @@ cc_test(
     GTest::gtest_main
 )
 
+cc_test(
+  NO_NPU_RUNTIME
+  NAME
+    xtensor_controller_test
+  SRCS
+    xtensor_controller_test.cpp
+  DEPS
+    :distributed_runtime
+    GTest::gtest_main
+)
+
 if(USE_NPU)
   cc_test(
     NAME
