@@ -83,12 +83,6 @@ SuffixSpeculativeEngine::SuffixSpeculativeEngine(
     : SpeculativeEngineBase<LLMEngine>(options, /*use_draft_engine=*/false) {}
 
 template <typename TargetEngine>
-runtime::DecodeGraphExecutionShape
-SpeculativeEngineBase<TargetEngine>::decode_graph_execution_shape() const {
-  return engine_->decode_graph_execution_shape();
-}
-
-template <typename TargetEngine>
 bool SpeculativeEngineBase<TargetEngine>::init(MasterStatus master_status) {
   if (!init_model(master_status)) {
     return false;

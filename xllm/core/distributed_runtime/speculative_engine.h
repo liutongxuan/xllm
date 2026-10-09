@@ -53,8 +53,8 @@ class SpeculativeEngineBase : public Engine {
       const SpeculativeProfileRegistry::ValidateTimePredictor& predictor)
       override;
 
-  runtime::DecodeGraphExecutionShape decode_graph_execution_shape()
-      const override;
+  // Return the options used by the target engine.
+  const runtime::Options& options() const { return engine_->options(); }
 
   std::shared_ptr<DistributedWorkerManager> get_distributed_worker_manager()
       const {

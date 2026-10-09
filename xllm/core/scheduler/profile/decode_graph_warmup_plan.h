@@ -38,7 +38,7 @@ DecodeGraphWarmupPlan get_compatibility_decode_graph_warmup_plan(
     int32_t max_global_batch_size,
     int32_t dp_size);
 
-// Builds the decode graph warmup schedule from the Engine's effective runtime
+// Builds the decode graph warmup schedule from the effective runtime
 // shape. Backends that support MTP token-bucket warmup replace the legacy
 // schedule for padded multi-token decode. With no-padding and an explicit
 // graph limit, the plan also includes intermediate sequence counts needed to

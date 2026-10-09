@@ -29,6 +29,7 @@ limitations under the License.
 
 #include "core/common/macros.h"
 #include "core/common/types.h"
+#include "core/runtime/decode_graph_bucket.h"
 #include "framework/request/request.h"
 
 namespace xllm {
@@ -69,6 +70,10 @@ struct SchedulerOptions {
 
   // the number of speculative tokens per step
   PROPERTY(int32_t, num_speculative_tokens) = 0;
+
+  // Effective target shape used by decode profiling and graph warmup.
+  PROPERTY(runtime::DecodeGraphExecutionShape, decode_graph_execution_shape) = {
+  };
 
   // the number of tp*dp*cp nodes
   PROPERTY(int32_t, nnodes) = 1;
