@@ -20,8 +20,6 @@ limitations under the License.
 #include <cstdint>
 #include <memory>
 #include <string>
-#include <unordered_map>
-#include <utility>
 #include <vector>
 
 #include "core/common/macros.h"
@@ -109,26 +107,6 @@ class Engine {
     NOT_IMPLEMENTED();
   };
 
-  // Get XTensor info for etcd registration (from dp group 0)
-  // worker_free_phy_pages: free pages per worker
-  // model_weight_segments: weight segments in GlobalXTensor per model
-  virtual void get_xtensor_info(
-      std::vector<size_t>& worker_free_phy_pages,
-      std::unordered_map<std::string, std::vector<WeightSegment>>&
-          model_weight_segments) {
-    NOT_IMPLEMENTED();
-  };
-
-  virtual bool sleep(MasterStatus master_status) {
-    LOG(FATAL) << " sleep is not implemented!";
-    return false;
-  };
-
-  virtual bool wakeup(const WakeupOptions& options) {
-    LOG(FATAL) << " wakeup is not implemented!";
-    return false;
-  };
-
   // Start/stop online timeline profiling on all workers. CUDA only for now.
   virtual bool start_profile() {
     LOG(ERROR) << "start_profile is not implemented for this engine!";
@@ -137,19 +115,6 @@ class Engine {
 
   virtual bool stop_profile() {
     LOG(ERROR) << "stop_profile is not implemented for this engine!";
-    return false;
-  };
-
-  // XTensor mode: get GlobalXTensor offsets for allocated blocks
-  // Returns per-layer K/V offsets for each block
-  // Output: offsets[layer_id] = {k_offsets, v_offsets}
-  // dp_rank: Target DP rank to query (offsets come from workers in that DP
-  // group)
-  virtual bool get_xtensor_offsets_for_blocks(
-      int32_t dp_rank,
-      const std::vector<int32_t>& block_ids,
-      std::vector<std::pair<std::vector<uint64_t>, std::vector<uint64_t>>>&
-          layer_offsets) {
     return false;
   };
 

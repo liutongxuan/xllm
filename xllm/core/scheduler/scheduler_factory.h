@@ -48,18 +48,24 @@ std::unique_ptr<Scheduler> create_continuous_scheduler(
     TargetEngine* engine,
     SchedulerOptions options,
     std::shared_ptr<DistributedWorkerManager> distributed_worker_manager =
-        nullptr) {
+        nullptr,
+    std::shared_ptr<XTensorController> xtensor_controller = nullptr) {
   switch (select_scheduler_kind(options)) {
     case SchedulerKind::DISAGG_PD:
       return std::make_unique<DisaggPDScheduler>(
-          engine, options, std::move(distributed_worker_manager));
+          engine,
+          options,
+          std::move(distributed_worker_manager),
+          std::move(xtensor_controller));
     case SchedulerKind::ZERO_EVICTION:
-      return std::make_unique<ZeroEvictionScheduler>(engine, options);
+      return std::make_unique<ZeroEvictionScheduler>(
+          engine, options, std::move(xtensor_controller));
     case SchedulerKind::CONTINUOUS:
-      return std::make_unique<ContinuousScheduler<TargetEngine>>(engine,
-                                                                 options);
+      return std::make_unique<ContinuousScheduler<TargetEngine>>(
+          engine, options, std::move(xtensor_controller));
   }
-  return std::make_unique<ContinuousScheduler<TargetEngine>>(engine, options);
+  return std::make_unique<ContinuousScheduler<TargetEngine>>(
+      engine, options, std::move(xtensor_controller));
 }
 
 std::unique_ptr<DiTScheduler> create_dit_scheduler(

@@ -35,6 +35,7 @@ class XTensorController final {
   struct Options {
     bool enabled = false;
     std::string model_id;
+    int32_t block_size = 0;
   };
 
   XTensorController(
@@ -51,11 +52,11 @@ class XTensorController final {
   bool sleep(MasterStatus master_status);
   bool wakeup(const WakeupOptions& options);
 
-  // block_size_bytes describes one K or V block in the initialized KV cache.
+  // slot_size describes one token's combined K and V cache storage.
   bool get_xtensor_offsets_for_blocks(
       int32_t dp_rank,
       const std::vector<int32_t>& block_ids,
-      uint64_t block_size_bytes,
+      uint64_t slot_size,
       std::vector<std::pair<std::vector<uint64_t>, std::vector<uint64_t>>>&
           layer_offsets) const;
 

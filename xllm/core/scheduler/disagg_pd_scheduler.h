@@ -70,11 +70,13 @@ class DisaggPDScheduler : public ContinuousScheduler<> {
   DisaggPDScheduler(
       TargetEngine* engine,
       const Options& options,
-      std::shared_ptr<DistributedWorkerManager> distributed_worker_manager)
+      std::shared_ptr<DistributedWorkerManager> distributed_worker_manager,
+      std::shared_ptr<XTensorController> xtensor_controller = nullptr)
       : DisaggPDScheduler(engine,
                           options,
                           SkipRuntimeStart{},
-                          std::move(distributed_worker_manager)) {
+                          std::move(distributed_worker_manager),
+                          std::move(xtensor_controller)) {
     CHECK(distributed_worker_manager_ != nullptr)
         << "Disaggregated PD requires a distributed worker manager.";
     dispatch_thread_ = std::make_unique<std::thread>(
@@ -166,12 +168,14 @@ class DisaggPDScheduler : public ContinuousScheduler<> {
       { engine->step(batch) } -> std::same_as<ForwardOutput>;
       { engine->update_last_step_result(batch) } -> std::same_as<void>;
     }
-  DisaggPDScheduler(TargetEngine* engine,
-                    const Options& options,
-                    SkipRuntimeStart,
-                    std::shared_ptr<DistributedWorkerManager>
-                        distributed_worker_manager = nullptr)
-      : ContinuousScheduler<>(engine, options),
+  DisaggPDScheduler(
+      TargetEngine* engine,
+      const Options& options,
+      SkipRuntimeStart,
+      std::shared_ptr<DistributedWorkerManager> distributed_worker_manager =
+          nullptr,
+      std::shared_ptr<XTensorController> xtensor_controller = nullptr)
+      : ContinuousScheduler<>(engine, options, std::move(xtensor_controller)),
         distributed_worker_manager_(std::move(distributed_worker_manager)),
         server_name_("DisaggPDServer") {
     if (!options_.instance_role().has_value()) {

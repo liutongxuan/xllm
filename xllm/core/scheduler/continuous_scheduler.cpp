@@ -28,6 +28,7 @@ limitations under the License.
 #include <vector>
 
 #include "core/distributed_runtime/engine.h"
+#include "core/distributed_runtime/xtensor_controller.h"
 #include "core/framework/batch/batch_factory.h"
 #include "core/framework/config/kv_cache_config.h"
 #include "core/framework/config/parallel_config.h"
@@ -51,15 +52,18 @@ constexpr char kDecodeRestoreTimeoutMessage[] =
 
 }  // namespace
 
-ContinuousSchedulerBase::ContinuousSchedulerBase(Engine* engine,
-                                                 const Options& options,
-                                                 StepCallback step_callback,
-                                                 ResultCallback result_callback)
+ContinuousSchedulerBase::ContinuousSchedulerBase(
+    Engine* engine,
+    const Options& options,
+    StepCallback step_callback,
+    ResultCallback result_callback,
+    std::shared_ptr<XTensorController> xtensor_controller)
     : options_(options),
       batch_mode_(create_batch_mode(options)),
       scheduler_config_(::xllm::SchedulerConfig::get_instance()),
       batch_factory_(options.dp_size()),
       resource_engine_(engine),
+      xtensor_controller_(std::move(xtensor_controller)),
       step_callback_(std::move(step_callback)),
       result_callback_(std::move(result_callback)),
       request_queue_(options.request_queue_size()) {
@@ -170,13 +174,13 @@ void ContinuousSchedulerBase::populate_heartbeat_request(
         *std::max_element(tbt.begin(), tbt.end()));
   }
 
-  if (include_xtensor_info &&
+  if (include_xtensor_info && xtensor_controller_ != nullptr &&
       ::xllm::KVCacheConfig::get_instance().enable_xtensor()) {
     std::vector<size_t> worker_free_phy_pages;
     std::unordered_map<std::string, std::vector<WeightSegment>>
         model_weight_segments;
-    resource_engine_->get_xtensor_info(worker_free_phy_pages,
-                                       model_weight_segments);
+    xtensor_controller_->get_xtensor_info(worker_free_phy_pages,
+                                          model_weight_segments);
 
     auto* xtensor_info = request.mutable_xtensor_info();
     for (size_t free_pages : worker_free_phy_pages) {

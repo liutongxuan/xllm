@@ -49,6 +49,7 @@ namespace xllm {
 class RequestPriorityQueue;
 class SchedulerConfig;
 class SchedulerPolicy;
+class XTensorController;
 struct SchedulerState;
 
 struct DecodeRestoreEntry {
@@ -124,10 +125,12 @@ class ContinuousSchedulerBase : public Scheduler {
   const InstanceInfo& get_instance_info() override { return instance_info_; }
 
  protected:
-  ContinuousSchedulerBase(Engine* engine,
-                          const Options& options,
-                          StepCallback step_callback,
-                          ResultCallback result_callback);
+  ContinuousSchedulerBase(
+      Engine* engine,
+      const Options& options,
+      StepCallback step_callback,
+      ResultCallback result_callback,
+      std::shared_ptr<XTensorController> xtensor_controller = nullptr);
 
   void clear_mtp_bootstrap(Request* request);
   void drain_prefetch_pipeline();
@@ -160,6 +163,7 @@ class ContinuousSchedulerBase : public Scheduler {
 
   // the engine to run the batch
   Engine* resource_engine_;
+  std::shared_ptr<XTensorController> xtensor_controller_;
 
   StepCallback step_callback_;
   ResultCallback result_callback_;
@@ -278,7 +282,10 @@ class ContinuousScheduler : public ContinuousSchedulerBase {
  public:
   using Options = SchedulerOptions;
 
-  ContinuousScheduler(EngineType* engine, const Options& options)
+  ContinuousScheduler(
+      EngineType* engine,
+      const Options& options,
+      std::shared_ptr<XTensorController> xtensor_controller = nullptr)
     requires requires(EngineType* typed_engine, BatchGroup& batch) {
       { typed_engine->step(batch) } -> std::same_as<ForwardOutput>;
       { typed_engine->update_last_step_result(batch) } -> std::same_as<void>;
@@ -289,7 +296,8 @@ class ContinuousScheduler : public ContinuousSchedulerBase {
             [engine](BatchGroup& batch) { return engine->step(batch); },
             [engine](BatchGroup& batch) {
               engine->update_last_step_result(batch);
-            }),
+            },
+            std::move(xtensor_controller)),
         engine_(engine) {}
 
   template <typename TargetEngine>
@@ -301,14 +309,18 @@ class ContinuousScheduler : public ContinuousSchedulerBase {
                      typed_engine->update_last_step_result(batch)
                    } -> std::same_as<void>;
                  }
-  ContinuousScheduler(TargetEngine* engine, const Options& options)
+  ContinuousScheduler(
+      TargetEngine* engine,
+      const Options& options,
+      std::shared_ptr<XTensorController> xtensor_controller = nullptr)
       : ContinuousSchedulerBase(
             static_cast<Engine*>(engine),
             options,
             [engine](BatchGroup& batch) { return engine->step(batch); },
             [engine](BatchGroup& batch) {
               engine->update_last_step_result(batch);
-            }),
+            },
+            std::move(xtensor_controller)),
         engine_(static_cast<Engine*>(engine)) {}
 
   ~ContinuousScheduler() override = default;

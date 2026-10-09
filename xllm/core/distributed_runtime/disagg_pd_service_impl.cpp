@@ -17,20 +17,28 @@ limitations under the License.
 
 #include <glog/logging.h>
 
+#include <utility>
+
 #include "common/global_flags.h"
 #include "common/types.h"
+#include "core/distributed_runtime/engine.h"
+#include "core/distributed_runtime/xtensor_controller.h"
+#include "core/framework/block/block_manager_pool.h"
 #include "core/framework/config/kv_cache_config.h"
 #include "core/framework/sampling/json_object_grammar.h"
-#include "distributed_runtime/llm_engine.h"
 #include "framework/request/request_output.h"
 #include "scheduler/disagg_pd_scheduler.h"
 #include "util/utils.h"
 
 namespace xllm {
 
-DisaggPDServiceImpl::DisaggPDServiceImpl(DisaggPDScheduler* scheduler,
-                                         Engine* engine)
-    : scheduler_(scheduler), engine_(engine) {
+DisaggPDServiceImpl::DisaggPDServiceImpl(
+    DisaggPDScheduler* scheduler,
+    Engine* engine,
+    std::shared_ptr<XTensorController> xtensor_controller)
+    : scheduler_(scheduler),
+      engine_(engine),
+      xtensor_controller_(std::move(xtensor_controller)) {
   xservice_client_ = XServiceClient::get_instance();
   if (!xservice_client_->initialize_done()) {
     LOG(FATAL) << "XServiceClient not init.";
@@ -294,12 +302,24 @@ void DisaggPDServiceImpl::decode_recv_new_requests(
         group->add_ids(static_cast<uint64_t>(linear_state_id));
       }
       // XTensor mode: calculate and return GlobalXTensor offsets
-      if (::xllm::KVCacheConfig::get_instance().enable_xtensor() &&
+      if (xtensor_controller_ != nullptr &&
+          ::xllm::KVCacheConfig::get_instance().enable_xtensor() &&
           !block_ids.empty()) {
         std::vector<std::pair<std::vector<uint64_t>, std::vector<uint64_t>>>
             layer_offsets;
-        if (engine_->get_xtensor_offsets_for_blocks(
-                dp_rank, block_ids, layer_offsets)) {
+        auto* block_manager = engine_->block_manager_pool();
+        bool offsets_available = false;
+        if (block_manager != nullptr) {
+          offsets_available =
+              xtensor_controller_->get_xtensor_offsets_for_blocks(
+                  dp_rank,
+                  block_ids,
+                  static_cast<uint64_t>(block_manager->options().slot_size()),
+                  layer_offsets);
+        } else {
+          LOG(ERROR) << "BlockManagerPool not available";
+        }
+        if (offsets_available) {
           // Fill proto with per-layer offsets
           for (const auto& [k_offsets, v_offsets] : layer_offsets) {
             auto* layer_proto = resp->add_xtensor_layer_offsets();

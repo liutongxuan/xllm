@@ -95,31 +95,18 @@ class LLMEngine : public Engine {
                       std::vector<std::string>& addrs,
                       std::vector<uint16_t>& ports) override;
 
-  void get_xtensor_info(
-      std::vector<size_t>& worker_free_phy_pages,
-      std::unordered_map<std::string, std::vector<WeightSegment>>&
-          model_weight_segments) override;
-
   std::shared_ptr<DistributedWorkerManager> get_distributed_worker_manager()
       const {
     return distributed_worker_manager_;
   }
 
-  bool sleep(MasterStatus master_status) override;
-
-  bool wakeup(const WakeupOptions& options) override;
+  std::shared_ptr<XTensorController> get_xtensor_controller() const {
+    return xtensor_controller_;
+  }
 
   bool start_profile() override;
 
   bool stop_profile() override;
-
-  // XTensor mode: get GlobalXTensor offsets for allocated blocks via RPC
-  // Calls worker in the specified DP group to compute offsets
-  bool get_xtensor_offsets_for_blocks(
-      int32_t dp_rank,
-      const std::vector<int32_t>& block_ids,
-      std::vector<std::pair<std::vector<uint64_t>, std::vector<uint64_t>>>&
-          layer_offsets) override;
 
  private:
   bool profile_workers(bool is_start);
