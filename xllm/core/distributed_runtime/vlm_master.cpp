@@ -28,6 +28,8 @@ limitations under the License.
 
 #include "common/metrics.h"
 #include "core/common/message.h"
+#include "core/distributed_runtime/xtensor_controller.h"
+#include "core/framework/config/kv_cache_config.h"
 #include "core/framework/config/model_config.h"
 #include "core/framework/config/parallel_config_validation.h"
 #include "core/framework/multimodal/mm_data.h"
@@ -276,6 +278,12 @@ VLMMaster::VLMMaster(const Options& options) : Master(options) {
         .kv_cache_dtype(options_.kv_cache_dtype());
     speculative_engine_ =
         std::make_unique<SpeculativeEngineBase<VLMEngine>>(engine_options);
+    draft_xtensor_controller_ = std::make_unique<XTensorController>(
+        XTensorController::Options{
+            .enabled = KVCacheConfig::get_instance().enable_xtensor(),
+            .model_id = engine_options.model_id(),
+            .block_size = engine_options.block_size()},
+        speculative_engine_->get_distributed_worker_manager());
   } else {
     vlm_engine_ = std::make_unique<VLMEngine>(engine_options);
   }
@@ -283,8 +291,7 @@ VLMMaster::VLMMaster(const Options& options) : Master(options) {
     return;
   }
 
-  auto initialize_engine = [this](auto* engine) {
-    CHECK(engine->init(options_.master_status()));
+  auto finish_engine_initialization = [this](auto* engine) {
     model_args_ = engine->model_args();
     if (options_.enable_service_routing()) {
       XServiceClient* xservice_client = XServiceClient::get_instance();
@@ -295,9 +302,20 @@ VLMMaster::VLMMaster(const Options& options) : Master(options) {
     }
   };
   if (use_speculative_engine) {
-    initialize_engine(speculative_engine_.get());
+    const LLMEngine::ModelInitCallback prepare_draft =
+        [this](const ModelLoader& model_loader,
+               int64_t num_layers,
+               int32_t dp_size,
+               int32_t tp_size,
+               MasterStatus master_status) {
+          return draft_xtensor_controller_->initialize_model(
+              model_loader, num_layers, dp_size, tp_size, master_status);
+        };
+    CHECK(speculative_engine_->init(options_.master_status(), prepare_draft));
+    finish_engine_initialization(speculative_engine_.get());
   } else {
-    initialize_engine(vlm_engine_.get());
+    CHECK(vlm_engine_->init(options_.master_status()));
+    finish_engine_initialization(vlm_engine_.get());
   }
 
   SchedulerOptions scheduler_options;

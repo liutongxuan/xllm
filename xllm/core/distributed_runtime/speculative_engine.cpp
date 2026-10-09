@@ -84,7 +84,14 @@ SuffixSpeculativeEngine::SuffixSpeculativeEngine(
 
 template <typename TargetEngine>
 bool SpeculativeEngineBase<TargetEngine>::init(MasterStatus master_status) {
-  if (!init_model(master_status)) {
+  return init(master_status, /*prepare_model=*/{});
+}
+
+template <typename TargetEngine>
+bool SpeculativeEngineBase<TargetEngine>::init(
+    MasterStatus master_status,
+    const LLMEngine::ModelInitCallback& prepare_model) {
+  if (!init_model(master_status, prepare_model)) {
     return false;
   }
 
@@ -97,15 +104,23 @@ bool SpeculativeEngineBase<TargetEngine>::init(MasterStatus master_status) {
 
 template <typename TargetEngine>
 bool SpeculativeEngineBase<TargetEngine>::init_model(
-    MasterStatus master_status) {
-  if (!engine_->init_model(master_status)) {
-    return false;
+    MasterStatus master_status,
+    const LLMEngine::ModelInitCallback& prepare_model) {
+  if constexpr (std::is_same_v<TargetEngine, LLMEngine>) {
+    if (!engine_->init_model(master_status, prepare_model)) {
+      return false;
+    }
+  } else {
+    if (!engine_->init_model(master_status)) {
+      return false;
+    }
   }
 
   model_args_ = engine_->model_args();
 
   if (use_draft_engine_) {
-    if (!draft_engine_->init_model()) {
+    if (!draft_engine_->init_model(/*master_status=*/MasterStatus::WAKEUP,
+                                   prepare_model)) {
       return false;
     }
 

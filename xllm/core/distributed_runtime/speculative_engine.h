@@ -38,6 +38,9 @@ class SpeculativeEngineBase : public Engine {
 
   bool init(MasterStatus master_status) override;
 
+  bool init(MasterStatus master_status,
+            const LLMEngine::ModelInitCallback& prepare_model);
+
   // step the engine forward
   ForwardOutput step(BatchGroup& batch);
 
@@ -86,7 +89,8 @@ class SpeculativeEngineBase : public Engine {
   SpeculativeEngineBase(const runtime::Options& options, bool use_draft_engine);
 
  private:
-  bool init_model(MasterStatus master_status);
+  bool init_model(MasterStatus master_status,
+                  const LLMEngine::ModelInitCallback& prepare_model);
 
   bool allocate_kv_cache();
 

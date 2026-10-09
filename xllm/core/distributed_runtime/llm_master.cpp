@@ -27,6 +27,7 @@ limitations under the License.
 #include "api_service/call.h"
 #include "common/metrics.h"
 #include "core/distributed_runtime/xtensor_controller.h"
+#include "core/framework/config/kv_cache_config.h"
 #include "core/framework/config/model_config.h"
 #include "core/framework/config/parallel_config_validation.h"
 #include "core/framework/config/speculative_config.h"
@@ -209,7 +210,6 @@ LLMMaster::LLMMaster(const Options& options)
   if (!use_ssm_engine) {
     llm_engine_ = std::make_unique<LLMEngine>(engine_options);
     distributed_worker_manager_ = llm_engine_->get_distributed_worker_manager();
-    xtensor_controller_ = llm_engine_->get_xtensor_controller();
   } else {
     const std::string draft_model_path =
         options_.draft_model_path().value_or("");
@@ -249,12 +249,30 @@ LLMMaster::LLMMaster(const Options& options)
           speculative_engine_->get_distributed_worker_manager();
     }
   }
+  xtensor_controller_ = std::make_shared<XTensorController>(
+      XTensorController::Options{
+          .enabled = KVCacheConfig::get_instance().enable_xtensor(),
+          .model_id = engine_options.model_id(),
+          .block_size = engine_options.block_size()},
+      distributed_worker_manager_);
   if (!is_leader()) {
     return;
   }
 
-  auto initialize_engine = [this](auto* engine) {
-    CHECK(engine->init(master_status_));
+  const LLMEngine::ModelInitCallback prepare_model =
+      [this](const ModelLoader& model_loader,
+             int64_t num_layers,
+             int32_t dp_size,
+             int32_t tp_size,
+             MasterStatus master_status) {
+        return xtensor_controller_->initialize_model(
+            model_loader, num_layers, dp_size, tp_size, master_status);
+      };
+  auto initialize_engine = [this, &prepare_model](auto* engine) {
+    CHECK(engine->init(master_status_, prepare_model));
+    if (llm_engine_ != nullptr) {
+      CHECK(xtensor_controller_->finish_initialization(master_status_));
+    }
     model_args_ = engine->model_args();
     if (options_.enable_service_routing()) {
       xservice_client_ = XServiceClient::get_instance();
@@ -306,10 +324,11 @@ LLMMaster::LLMMaster(const Options& options)
   auto create_scheduler = [this, &scheduler_options](auto* engine) {
     scheduler_options.decode_graph_execution_shape(
         build_decode_graph_execution_shape(engine->options()));
-    return create_continuous_scheduler(engine,
-                                       scheduler_options,
-                                       distributed_worker_manager_,
-                                       xtensor_controller_);
+    return create_continuous_scheduler(
+        engine,
+        scheduler_options,
+        distributed_worker_manager_,
+        llm_engine_ != nullptr ? xtensor_controller_ : nullptr);
   };
   if (!use_ssm_engine) {
     scheduler_ = create_scheduler(llm_engine_.get());
@@ -592,7 +611,7 @@ std::vector<bool> LLMMaster::handle_rpc_responses(
 }
 
 bool LLMMaster::sleep() {
-  if (xtensor_controller_ == nullptr) {
+  if (llm_engine_ == nullptr) {
     LOG(ERROR) << "Sleep is not supported for speculative engines.";
     return false;
   }
@@ -605,7 +624,7 @@ bool LLMMaster::wakeup() {
 }
 
 bool LLMMaster::wakeup(const WakeupOptions& options) {
-  if (xtensor_controller_ == nullptr) {
+  if (llm_engine_ == nullptr) {
     LOG(ERROR) << "Wakeup is not supported for speculative engines.";
     return false;
   }
