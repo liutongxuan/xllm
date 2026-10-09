@@ -35,6 +35,7 @@ limitations under the License.
 #include "common/metrics.h"
 #include "common/options.h"
 #include "core/common/global_flags.h"
+#include "core/distributed_runtime/xtensor_controller.h"
 #include "core/framework/config/execution_config.h"
 #include "core/framework/config/kv_cache_config.h"
 #include "core/framework/config/load_config.h"
@@ -112,6 +113,11 @@ LLMEngine::LLMEngine(
 
   // setup all workers and create worker clients in nnode_rank=0 engine side.
   setup_workers(options);
+  xtensor_controller_ = std::make_shared<XTensorController>(
+      XTensorController::Options{
+          .enabled = KVCacheConfig::get_instance().enable_xtensor(),
+          .model_id = options_.model_id()},
+      distributed_worker_manager_);
 
   dp_size_ = options_.dp_size();
   const uint32_t cp_size = options_.cp_size();
@@ -747,23 +753,8 @@ void LLMEngine::get_xtensor_info(
     std::vector<size_t>& worker_free_phy_pages,
     std::unordered_map<std::string, std::vector<WeightSegment>>&
         model_weight_segments) {
-  if (!::xllm::KVCacheConfig::get_instance().enable_xtensor()) {
-    return;
-  }
-
-  // Worker 0 is in the same process as Master, no RPC needed.
-  // Both PageAllocator and XTensorAllocator are singletons.
-
-  // Get free phy pages from PageAllocator
-  auto& page_allocator = PageAllocator::get_instance();
-  if (page_allocator.is_initialized()) {
-    worker_free_phy_pages = page_allocator.get_all_worker_free_pages();
-  }
-
-  // Get model weight segments from XTensorAllocator directly (no RPC)
-  // Worker 0 is always in dp group 0, weights are duplicated across dp groups
-  auto& xtensor_allocator = XTensorAllocator::get_instance();
-  model_weight_segments = xtensor_allocator.get_all_model_weight_segments();
+  xtensor_controller_->get_xtensor_info(worker_free_phy_pages,
+                                        model_weight_segments);
 }
 
 ForwardOutput LLMEngine::step(BatchGroup& batch) {
@@ -926,47 +917,7 @@ void LLMEngine::setup_workers(const runtime::Options& options) {
 }
 
 bool LLMEngine::sleep(MasterStatus master_status) {
-  return xtensor_sleep(master_status);
-}
-
-bool LLMEngine::xtensor_sleep(MasterStatus master_status) {
-  // sleep/wakeup/fork_master (xtensor path) requires
-  // ::xllm::KVCacheConfig::get_instance().enable_xtensor()
-  if (!::xllm::KVCacheConfig::get_instance().enable_xtensor()) {
-    LOG(WARNING) << "sleep requires --enable_xtensor=true";
-    return false;
-  }
-
-  LOG(INFO) << "Starting to sleep. Worker clients count: "
-            << worker_clients_num_;
-  if (worker_clients_.empty()) {
-    LOG(ERROR) << "No worker clients available to sleep.";
-    return false;
-  }
-
-  // Put the model to sleep in PageAllocator (xtensor path).
-  // This releases both weight pages and KV cache pages.
-  const std::string& model_id = options_.model_id();
-  auto& page_allocator = PageAllocator::get_instance();
-  if (!page_allocator.sleep_model(model_id)) {
-    LOG(ERROR) << "PageAllocator sleep_model failed, aborting sleep flow";
-    return false;
-  }
-
-  std::vector<folly::SemiFuture<bool>> futures;
-  futures.reserve(worker_clients_num_);
-  for (auto& worker : worker_clients_) {
-    futures.push_back(worker->sleep_async(master_status));
-  }
-
-  auto results = folly::collectAll(futures).get();
-  for (const auto& result : results) {
-    if (!result.value()) {
-      LOG(ERROR) << "Sleep failed.";
-      return false;
-    }
-  }
-  return true;
+  return xtensor_controller_->sleep(master_status);
 }
 
 bool LLMEngine::start_profile() {
@@ -1020,68 +971,8 @@ bool LLMEngine::profile_workers(bool is_start) {
   return success;
 }
 
-bool LLMEngine::xtensor_wakeup(const WakeupOptions& options) {
-  // sleep/wakeup/fork_master (xtensor path) requires
-  // ::xllm::KVCacheConfig::get_instance().enable_xtensor()
-  if (!::xllm::KVCacheConfig::get_instance().enable_xtensor()) {
-    LOG(WARNING) << "wakeup requires --enable_xtensor=true";
-    return false;
-  }
-
-  LOG(INFO) << "Starting to wakeup. Worker clients count: "
-            << worker_clients_num_;
-  if (worker_clients_.empty()) {
-    LOG(ERROR) << "No worker clients available to wakeup.";
-    return false;
-  }
-
-  // Wake up the model in PageAllocator (xtensor path).
-  // This re-allocates both KV cache pages and weight pages.
-  const std::string& model_id = options_.model_id();
-  auto& page_allocator = PageAllocator::get_instance();
-  if (!page_allocator.wakeup_model(model_id)) {
-    LOG(ERROR) << "PageAllocator wakeup_model failed, aborting wakeup flow";
-    return false;
-  }
-
-  LOG(INFO) << "Waking up LLM engine, remote_addrs.size()="
-            << options.remote_addrs.size();
-  std::vector<folly::SemiFuture<bool>> futures;
-  futures.reserve(worker_clients_num_);
-
-  if (!options.remote_addrs.empty() &&
-      options.remote_addrs.size() == worker_clients_num_) {
-    // P2P mode with TP: each worker pulls only from its corresponding source
-    for (size_t i = 0; i < worker_clients_num_; ++i) {
-      WakeupOptions per_worker_options;
-      per_worker_options.master_status = options.master_status;
-      per_worker_options.remote_addrs = {options.remote_addrs[i]};
-      if (i < options.src_weight_segments.size()) {
-        per_worker_options.src_weight_segments = {
-            options.src_weight_segments[i]};
-      }
-      futures.push_back(worker_clients_[i]->wakeup_async(per_worker_options));
-    }
-  } else {
-    // H2D mode or non-TP: pass options as-is
-    for (auto& worker : worker_clients_) {
-      futures.push_back(worker->wakeup_async(options));
-    }
-  }
-
-  auto results = folly::collectAll(futures).get();
-  for (const auto& result : results) {
-    if (!result.value()) {
-      LOG(ERROR) << "Wakeup failed.";
-      return false;
-    }
-  }
-  LOG(INFO) << "Wakeup finished for LLM engine.";
-  return true;
-}
-
 bool LLMEngine::wakeup(const WakeupOptions& options) {
-  return xtensor_wakeup(options);
+  return xtensor_controller_->wakeup(options);
 }
 
 bool LLMEngine::get_xtensor_offsets_for_blocks(
@@ -1089,41 +980,19 @@ bool LLMEngine::get_xtensor_offsets_for_blocks(
     const std::vector<int32_t>& block_ids,
     std::vector<std::pair<std::vector<uint64_t>, std::vector<uint64_t>>>&
         layer_offsets) {
-  if (!::xllm::KVCacheConfig::get_instance().enable_xtensor()) {
+  if (!KVCacheConfig::get_instance().enable_xtensor()) {
     return false;
   }
-
-  const std::string& model_id = options_.model_id();
-
-  // Calculate block size in bytes: block_size * slot_size
-  // slot_size is stored in kv_cache_manager (BlockManagerPool)
-  auto* block_manager = block_manager_pool();
-  if (!block_manager) {
+  const auto* block_manager = block_manager_pool();
+  if (block_manager == nullptr) {
     LOG(ERROR) << "BlockManagerPool not available";
     return false;
   }
-
-  // Note: Currently, xtensor only supports the traditional attention mechanism,
-  // meaning both K and V must be present and have identical shapes.
-  uint64_t block_size_bytes =
+  const uint64_t block_size_bytes =
       static_cast<uint64_t>(block_manager->options().slot_size()) *
       options_.block_size() / 2;
-
-  // Use RPC to call worker in the specified DP group
-  auto& allocator = XTensorAllocator::get_instance();
-  bool success = allocator.get_xtensor_offsets(
-      dp_rank, model_id, block_ids, block_size_bytes, layer_offsets);
-
-  if (!success) {
-    LOG(ERROR) << "get_xtensor_offsets_for_blocks via RPC failed for dp_rank="
-               << dp_rank << ", model_id=" << model_id;
-    return false;
-  }
-
-  VLOG(1) << "get_xtensor_offsets_for_blocks: dp_rank=" << dp_rank
-          << ", num_blocks=" << block_ids.size()
-          << ", num_layers=" << layer_offsets.size();
-  return true;
+  return xtensor_controller_->get_xtensor_offsets_for_blocks(
+      dp_rank, block_ids, block_size_bytes, layer_offsets);
 }
 
 }  // namespace xllm

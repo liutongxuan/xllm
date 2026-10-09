@@ -42,6 +42,7 @@ namespace xllm {
 
 class ModelLoader;
 class EplbController;
+class XTensorController;
 
 class LLMEngine : public Engine {
  public:
@@ -124,9 +125,6 @@ class LLMEngine : public Engine {
   bool profile_workers(bool is_start);
   std::mutex profile_mutex_;
 
-  bool xtensor_sleep(MasterStatus master_status);
-  bool xtensor_wakeup(const WakeupOptions& options);
-
   template <typename TargetEngine>
   friend class SpeculativeEngineBase;
   // setup workers internal
@@ -167,6 +165,8 @@ class LLMEngine : public Engine {
   // Engine call workers to step via these WorkerClients.
   std::shared_ptr<DistributedWorkerManager> distributed_worker_manager_ =
       nullptr;
+
+  std::shared_ptr<XTensorController> xtensor_controller_;
 
   std::unique_ptr<EplbController> eplb_controller_;
 };

@@ -32,6 +32,7 @@ cc_library(
     shm_channel.h
     heartbeat_callback_registry.h
     xservice_client.h
+    xtensor_controller.h
   SRCS
     master.cpp
     master_factory.cpp
@@ -53,6 +54,7 @@ cc_library(
     comm_channel.cpp
     shm_channel.cpp
     xservice_client.cpp
+    xtensor_controller.cpp
   DEPS
     :api_service
     :models
