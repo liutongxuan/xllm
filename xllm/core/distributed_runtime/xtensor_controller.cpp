@@ -22,16 +22,168 @@ limitations under the License.
 #include <vector>
 
 #include "core/distributed_runtime/distributed_worker_manager.h"
+#include "core/framework/config/kv_cache_config.h"
+#include "core/framework/config/load_config.h"
+#include "core/framework/model_loader/model_loader.h"
 #include "core/framework/xtensor/page_allocator.h"
+#include "core/framework/xtensor/phy_page_pool.h"
 #include "core/framework/xtensor/xtensor_allocator.h"
 
 namespace xllm {
+
+namespace {
+
+constexpr size_t kXTensorWeightPageSafetyMargin = 20;
+
+int64_t get_effective_xtensor_weight_size(const ModelLoader& model_loader,
+                                          int64_t num_layers) {
+  constexpr int64_t kInvalidWeightSize = -1;
+  const int64_t all_size = model_loader.get_total_weight_size();
+  if (all_size <= 0) {
+    LOG(ERROR)
+        << "Invalid total model weight size: " << all_size
+        << ". Ensure model .index.json exists and has metadata.total_size";
+    return kInvalidWeightSize;
+  }
+
+  if (!LoadConfig::get_instance().enable_rolling_load()) {
+    return all_size;
+  }
+
+  const int64_t non_decoder_size = model_loader.get_non_decoder_weight_size();
+  if (non_decoder_size <= 0) {
+    LOG(ERROR) << "Invalid non-decoder weight size: " << non_decoder_size;
+    return kInvalidWeightSize;
+  }
+  if (non_decoder_size > all_size) {
+    LOG(ERROR) << "non_decoder_weight_size (" << non_decoder_size
+               << ") exceeds total_weight_size (" << all_size << ")";
+    return kInvalidWeightSize;
+  }
+  if (num_layers <= 0) {
+    LOG(ERROR) << "Invalid layer count: " << num_layers;
+    return kInvalidWeightSize;
+  }
+
+  const int64_t all_decoder_size = all_size - non_decoder_size;
+  const int64_t max_layer_size =
+      model_loader.get_max_decoder_layer_weight_size();
+  if (max_layer_size <= 0) {
+    LOG(ERROR) << "Failed to get max decoder layer size for rolling load.";
+    return kInvalidWeightSize;
+  }
+  const int64_t rolling_buffer_size =
+      LoadConfig::get_instance().rolling_load_num_cached_layers() *
+      max_layer_size;
+  const int64_t total_weight_size = non_decoder_size + rolling_buffer_size;
+
+  LOG(INFO) << "XTensor rolling_load weight budget: total=" << all_size
+            << ", non_decoder=" << non_decoder_size
+            << ", all_decoder=" << all_decoder_size
+            << ", max_layer=" << max_layer_size
+            << ", rolling_buffer=" << rolling_buffer_size << " ("
+            << LoadConfig::get_instance().rolling_load_num_cached_layers()
+            << " slots x " << max_layer_size << " bytes/max-layer)"
+            << ", effective=" << total_weight_size;
+  return total_weight_size;
+}
+
+}  // namespace
 
 XTensorController::XTensorController(
     Options options,
     std::shared_ptr<DistributedWorkerManager> distributed_worker_manager)
     : options_(std::move(options)),
       distributed_worker_manager_(std::move(distributed_worker_manager)) {}
+
+bool XTensorController::initialize_model(const ModelLoader& model_loader,
+                                         int64_t num_layers,
+                                         int32_t dp_size,
+                                         int32_t tp_size,
+                                         MasterStatus master_status) {
+  if (!options_.enabled) {
+    return true;
+  }
+  if (distributed_worker_manager_ == nullptr ||
+      distributed_worker_manager_->get_worker_clients().empty()) {
+    LOG(ERROR) << "No worker clients available to initialize XTensor model.";
+    return false;
+  }
+
+  auto& page_allocator = PageAllocator::get_instance();
+  if (!page_allocator.is_initialized()) {
+    auto& phy_pool = PhyPagePool::get_instance();
+    CHECK(phy_pool.is_initialized())
+        << "PhyPagePool must be initialized before PageAllocator";
+    const size_t num_phy_pages = phy_pool.num_total();
+    const int32_t max_world_size = static_cast<int32_t>(
+        distributed_worker_manager_->get_worker_clients().size());
+    page_allocator.init(num_phy_pages,
+                        dp_size,
+                        max_world_size,
+                        /*enable_page_prealloc=*/true);
+  }
+
+  // Each model owns its logical page list and shares the physical page pool.
+  const std::string& model_id = options_.model_id;
+  page_allocator.register_model(model_id, num_layers, master_status);
+  page_allocator.set_model_parallel_strategy(model_id, dp_size, tp_size);
+  auto& xtensor_allocator = XTensorAllocator::get_instance();
+  xtensor_allocator.set_model_parallel_strategy(model_id, dp_size, tp_size);
+
+  const int64_t total_weight_size =
+      get_effective_xtensor_weight_size(model_loader, num_layers);
+  if (total_weight_size < 0) {
+    return false;
+  }
+  const int64_t weight_size_per_tp =
+      (total_weight_size + tp_size - 1) / tp_size;
+  const size_t page_size =
+      KVCacheConfig::get_instance().phy_page_granularity_size();
+  const size_t num_pages = (weight_size_per_tp + page_size - 1) / page_size +
+                           kXTensorWeightPageSafetyMargin;
+
+  LOG(INFO) << "XTensor weight allocation: total_weight_size="
+            << total_weight_size << ", tp_size=" << tp_size
+            << ", weight_size_per_tp=" << weight_size_per_tp
+            << ", num_pages=" << num_pages
+            << ", master_status=" << master_status;
+
+  if (master_status == MasterStatus::WAKEUP) {
+    if (!page_allocator.alloc_weight_pages(model_id, num_pages)) {
+      LOG(ERROR) << "Failed to allocate weight pages";
+      return false;
+    }
+    LOG(INFO)
+        << "master_status=0 (MasterStatus::WAKEUP): Allocated weight pages, "
+           "will load to device";
+  } else if (master_status == MasterStatus::LIGHT_SLEEP ||
+             master_status == MasterStatus::DEEP_SLEEP) {
+    page_allocator.set_weight_pages_count(model_id, num_pages);
+    LOG(INFO) << "master_status=" << master_status
+              << " (SLEEP): Recorded weight pages, num_pages=" << num_pages;
+  }
+
+  return true;
+}
+
+bool XTensorController::finish_initialization(MasterStatus master_status) {
+  if (!options_.enabled || master_status == MasterStatus::WAKEUP) {
+    return true;
+  }
+
+  // KV cache allocation must finish before releasing initial resources.
+  if (!PageAllocator::get_instance().sleep_model(
+          options_.model_id, /*skip_weight_release=*/true)) {
+    LOG(ERROR) << "Failed to sleep model " << options_.model_id
+               << " after init";
+    return false;
+  }
+  LOG(INFO) << "Model " << options_.model_id
+            << " put to sleep after init (master_status=" << master_status
+            << ")";
+  return true;
+}
 
 void XTensorController::get_xtensor_info(
     std::vector<size_t>& worker_free_phy_pages,
