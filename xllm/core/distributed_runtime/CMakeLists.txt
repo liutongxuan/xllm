@@ -31,6 +31,7 @@ cc_library(
     comm_channel.h
     shm_channel.h
     heartbeat_callback_registry.h
+    kv_transfer_topology.h
     xservice_client.h
     xtensor_controller.h
   SRCS
