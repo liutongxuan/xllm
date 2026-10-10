@@ -90,12 +90,13 @@ bool SpeculativeEngineBase<TargetEngine>::init(MasterStatus master_status) {
 template <typename TargetEngine>
 bool SpeculativeEngineBase<TargetEngine>::init(
     MasterStatus master_status,
-    const LLMEngine::ModelInitCallback& prepare_model) {
+    const LLMEngine::ModelInitCallback& prepare_model,
+    std::shared_ptr<KVCacheTransferCoordinatorBase> transfer_coordinator) {
   if (!init_model(master_status, prepare_model)) {
     return false;
   }
 
-  if (!allocate_kv_cache()) {
+  if (!allocate_kv_cache(std::move(transfer_coordinator))) {
     return false;
   }
 
@@ -157,18 +158,27 @@ bool SpeculativeEngineBase<TargetEngine>::init_model(
 }
 
 template <typename TargetEngine>
-bool SpeculativeEngineBase<TargetEngine>::allocate_kv_cache() {
+bool SpeculativeEngineBase<TargetEngine>::allocate_kv_cache(
+    std::shared_ptr<KVCacheTransferCoordinatorBase> transfer_coordinator) {
   KVCacheCapacity target_kv_cache_cap = engine_->estimate_kv_cache_capacity();
+  const auto allocate_target_cache =
+      [this, &transfer_coordinator](const KVCacheCapacity& capacity) {
+        if constexpr (std::is_same_v<TargetEngine, LLMEngine>) {
+          return engine_->allocate_kv_cache(capacity, transfer_coordinator);
+        } else {
+          return engine_->allocate_kv_cache(capacity);
+        }
+      };
 
   if (!use_draft_engine_) {
-    return engine_->allocate_kv_cache(target_kv_cache_cap);
+    return allocate_target_cache(target_kv_cache_cap);
   }
 
   // Some MLA Eagle3 targets keep the draft worker inside the target engine and
   // allocate its full-attention KV cache with a separate shape. Do not compare
   // that shape with the target MLA cache or allocate the external draft here.
   if (should_skip_external_draft_kv_cache()) {
-    return engine_->allocate_kv_cache(target_kv_cache_cap);
+    return allocate_target_cache(target_kv_cache_cap);
   }
 
   KVCacheCapacity draft_kv_cache_cap =
@@ -177,8 +187,9 @@ bool SpeculativeEngineBase<TargetEngine>::allocate_kv_cache() {
   if (target_kv_cache_cap.c4_count() > 0 ||
       target_kv_cache_cap.c128_count() > 0) {
     draft_kv_cache_cap.n_blocks() = target_kv_cache_cap.n_blocks();
-    return engine_->allocate_kv_cache(target_kv_cache_cap) &&
-           draft_engine_->allocate_kv_cache(draft_kv_cache_cap);
+    return allocate_target_cache(target_kv_cache_cap) &&
+           draft_engine_->allocate_kv_cache(draft_kv_cache_cap,
+                                            std::move(transfer_coordinator));
   }
 
   const int64_t kv_cache_size =
@@ -196,8 +207,9 @@ bool SpeculativeEngineBase<TargetEngine>::allocate_kv_cache() {
   target_kv_cache_cap.cache_size_in_bytes() = kv_cache_size;
   draft_kv_cache_cap.n_blocks() = n_blocks;
   draft_kv_cache_cap.cache_size_in_bytes() = kv_cache_size;
-  return engine_->allocate_kv_cache(target_kv_cache_cap) &&
-         draft_engine_->allocate_kv_cache(draft_kv_cache_cap);
+  return allocate_target_cache(target_kv_cache_cap) &&
+         draft_engine_->allocate_kv_cache(draft_kv_cache_cap,
+                                          std::move(transfer_coordinator));
 }
 
 template <typename TargetEngine>
@@ -312,36 +324,6 @@ void SpeculativeEngineBase<TargetEngine>::update_last_step_result(
     BatchGroup& batch) {
   engine_->update_last_step_result(batch);
 }
-
-template <typename TargetEngine>
-std::vector<int64_t>
-SpeculativeEngineBase<TargetEngine>::get_active_activation_memory() const {
-  return engine_->get_active_activation_memory();
-}
-
-template <typename TargetEngine>
-bool SpeculativeEngineBase<TargetEngine>::pull_kv_blocks(
-    const int32_t src_dp_size,
-    const int32_t src_dp_rank,
-    const std::vector<uint64_t>& src_cluster_ids,
-    const std::vector<std::string>& src_addrs,
-    const int32_t dst_dp_rank,
-    const std::vector<KVTransferMapping>& mappings) {
-  return engine_->pull_kv_blocks(src_dp_size,
-                                 src_dp_rank,
-                                 src_cluster_ids,
-                                 src_addrs,
-                                 dst_dp_rank,
-                                 mappings);
-};
-
-template <typename TargetEngine>
-void SpeculativeEngineBase<TargetEngine>::get_cache_info(
-    std::vector<uint64_t>& cluster_ids,
-    std::vector<std::string>& addrs,
-    std::vector<uint16_t>& ports) {
-  engine_->get_cache_info(cluster_ids, addrs, ports);
-};
 
 template class SpeculativeEngineBase<LLMEngine>;
 template class SpeculativeEngineBase<VLMEngine>;

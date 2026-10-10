@@ -32,6 +32,7 @@ cc_library(
     shm_channel.h
     heartbeat_callback_registry.h
     kv_transfer_topology.h
+    kv_cache_transfer_coordinator.h
     xservice_client.h
     xtensor_controller.h
   SRCS
@@ -49,6 +50,7 @@ cc_library(
     disagg_pd_service.cpp
     disagg_pd_service_impl.cpp
     distributed_worker_manager.cpp
+    kv_cache_transfer_coordinator.cpp
     remote_worker.cpp
     worker_server.cpp
     worker_service.cpp

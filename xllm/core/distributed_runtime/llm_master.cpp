@@ -26,6 +26,7 @@ limitations under the License.
 
 #include "api_service/call.h"
 #include "common/metrics.h"
+#include "core/distributed_runtime/kv_cache_transfer_coordinator.h"
 #include "core/distributed_runtime/xtensor_controller.h"
 #include "core/framework/config/kv_cache_config.h"
 #include "core/framework/config/model_config.h"
@@ -259,6 +260,12 @@ LLMMaster::LLMMaster(const Options& options)
     return;
   }
 
+  kv_transfer_coordinator_ = std::make_shared<KVCacheTransferCoordinator>(
+      KVCacheTransferCoordinator::Options{
+          .dp_size = options_.dp_size(),
+          .prefetch_timeout_ms = options_.prefetch_timeout()},
+      distributed_worker_manager_);
+
   const LLMEngine::ModelInitCallback prepare_model =
       [this](const ModelLoader& model_loader,
              int64_t num_layers,
@@ -269,7 +276,8 @@ LLMMaster::LLMMaster(const Options& options)
             model_loader, num_layers, dp_size, tp_size, master_status);
       };
   auto initialize_engine = [this, &prepare_model](auto* engine) {
-    CHECK(engine->init(master_status_, prepare_model));
+    CHECK(
+        engine->init(master_status_, prepare_model, kv_transfer_coordinator_));
     if (llm_engine_ != nullptr) {
       CHECK(xtensor_controller_->finish_initialization(master_status_));
     }
@@ -328,7 +336,8 @@ LLMMaster::LLMMaster(const Options& options)
         engine,
         scheduler_options,
         distributed_worker_manager_,
-        llm_engine_ != nullptr ? xtensor_controller_ : nullptr);
+        llm_engine_ != nullptr ? xtensor_controller_ : nullptr,
+        kv_transfer_coordinator_);
   };
   if (!use_ssm_engine) {
     scheduler_ = create_scheduler(llm_engine_.get());

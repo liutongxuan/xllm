@@ -54,9 +54,6 @@ class VLMEngine : public Engine {
 
   void update_last_step_result(BatchGroup& batch);
 
-  // return the active activation memory
-  std::vector<int64_t> get_active_activation_memory() const override;
-
  private:
   template <typename TargetEngine>
   friend class SpeculativeEngineBase;

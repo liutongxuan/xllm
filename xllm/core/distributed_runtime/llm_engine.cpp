@@ -35,7 +35,6 @@ limitations under the License.
 #include "common/metrics.h"
 #include "common/options.h"
 #include "core/common/global_flags.h"
-#include "core/distributed_runtime/kv_transfer_topology.h"
 #include "core/framework/config/execution_config.h"
 #include "core/framework/config/kv_cache_config.h"
 #include "core/framework/config/parallel_config.h"
@@ -158,8 +157,10 @@ bool LLMEngine::init(MasterStatus master_status) {
   return init(master_status, /*prepare_model=*/{});
 }
 
-bool LLMEngine::init(MasterStatus master_status,
-                     const ModelInitCallback& prepare_model) {
+bool LLMEngine::init(
+    MasterStatus master_status,
+    const ModelInitCallback& prepare_model,
+    std::shared_ptr<KVCacheTransferCoordinatorBase> transfer_coordinator) {
   if (!init_model(master_status, prepare_model)) {
     LOG(ERROR) << "Failed to init model from: " << options_.model_path();
     return false;
@@ -171,7 +172,7 @@ bool LLMEngine::init(MasterStatus master_status,
 
   auto kv_cache_cap = estimate_kv_cache_capacity();
 
-  if (!allocate_kv_cache(kv_cache_cap)) {
+  if (!allocate_kv_cache(kv_cache_cap, std::move(transfer_coordinator))) {
     LOG(ERROR) << "Failed to initialize kv cache";
     return false;
   } else {
@@ -276,7 +277,9 @@ KVCacheCapacity LLMEngine::estimate_kv_cache_capacity() {
       args_, options_, dtype_, dp_local_tp_size_, worker_clients_);
 }
 
-bool LLMEngine::allocate_kv_cache(const KVCacheCapacity& kv_cache_cap) {
+bool LLMEngine::allocate_kv_cache(
+    const KVCacheCapacity& kv_cache_cap,
+    std::shared_ptr<KVCacheTransferCoordinatorBase> transfer_coordinator) {
   const KVCacheConfig& kv_cache_config = KVCacheConfig::get_instance();
 
   const bool enable_state_cache = has_linear_attention_layers(args_) ||
@@ -473,7 +476,7 @@ bool LLMEngine::allocate_kv_cache(const KVCacheCapacity& kv_cache_cap) {
                                     args_,
                                     dp_local_tp_size_,
                                     std::move(options),
-                                    this,
+                                    std::move(transfer_coordinator),
                                     dp_size_,
                                     std::move(host_cache_validation_options));
   factory_result.shape.print_shapes();
@@ -518,125 +521,6 @@ bool LLMEngine::set_speculative_validate_time_predictor(
     }
   }
   return success;
-}
-
-bool LLMEngine::pull_kv_blocks(const int32_t src_dp_size,
-                               const int32_t src_dp_rank,
-                               const std::vector<uint64_t>& src_cluster_ids,
-                               const std::vector<std::string>& src_addrs,
-                               const int32_t dst_dp_rank,
-                               const std::vector<KVTransferMapping>& mappings) {
-  if (src_addrs.size() != src_cluster_ids.size()) {
-    LOG(ERROR) << "Source cache endpoint counts do not match.";
-    return false;
-  }
-  const auto routes =
-      KVTransferTopology::get_pull_worker_routes(src_cluster_ids.size(),
-                                                 src_dp_size,
-                                                 src_dp_rank,
-                                                 worker_clients_.size(),
-                                                 options_.dp_size(),
-                                                 dst_dp_rank);
-  if (!routes.has_value()) {
-    LOG(ERROR) << "Invalid or heterogeneous topology for KV cache PULL.";
-    return false;
-  }
-
-  std::vector<bool> results;
-  results.reserve(routes->size());
-  // Pull the KV cache for all workers in the current DP rank.
-  for (const KVWorkerRoute& route : *routes) {
-    results.emplace_back(worker_clients_[route.dst_rank]->pull_kv_blocks(
-        src_cluster_ids[route.src_rank], src_addrs[route.src_rank], mappings));
-  }
-
-  for (bool result : results) {
-    if (!result) {
-      return false;
-    }
-  }
-  return true;
-}
-
-std::vector<folly::SemiFuture<uint32_t>> LLMEngine::transfer_kv_blocks(
-    const uint32_t dp_rank,
-    const std::vector<BlockTransferInfo>& block_transfer_info) {
-  const auto workers =
-      KVTransferTopology::get_dp_worker_range(worker_clients_.size(),
-                                              options_.dp_size(),
-                                              static_cast<int32_t>(dp_rank));
-  CHECK(workers.has_value()) << "Invalid DP topology for KV cache transfer.";
-  std::vector<folly::SemiFuture<uint32_t>> futures;
-  futures.reserve(workers->count);
-
-  for (size_t local_rank = 0; local_rank < workers->count; ++local_rank) {
-    futures.emplace_back(
-        worker_clients_[workers->begin + local_rank]->transfer_kv_blocks(
-            block_transfer_info));
-  }
-
-  return futures;
-}
-
-void LLMEngine::transfer_kv_blocks(
-    const uint32_t dp_rank,
-    const uint64_t batch_id,
-    const std::vector<BlockTransferInfo>& block_transfer_info) {
-  const auto workers =
-      KVTransferTopology::get_dp_worker_range(worker_clients_.size(),
-                                              options_.dp_size(),
-                                              static_cast<int32_t>(dp_rank));
-  CHECK(workers.has_value()) << "Invalid DP topology for KV cache transfer.";
-  for (size_t local_rank = 0; local_rank < workers->count; ++local_rank) {
-    worker_clients_[workers->begin + local_rank]->transfer_kv_blocks(
-        batch_id, block_transfer_info);
-  }
-}
-
-void LLMEngine::prefetch_from_storage(
-    const uint32_t dp_rank,
-    std::shared_ptr<const StoragePrefetchRequest> request,
-    PrefetchResult::StopPredicate stop_requested,
-    PrefetchResult::DoneCallback done) {
-  CHECK(request != nullptr);
-  CHECK(request->valid());
-  const auto workers =
-      KVTransferTopology::get_dp_worker_range(worker_clients_.size(),
-                                              options_.dp_size(),
-                                              static_cast<int32_t>(dp_rank));
-  CHECK(workers.has_value()) << "Invalid DP topology for storage prefetch.";
-  const uint32_t configured_timeout_ms = options_.prefetch_timeout();
-  const int64_t timeout_ms = configured_timeout_ms == 0
-                                 ? -1
-                                 : static_cast<int64_t>(configured_timeout_ms);
-  auto result =
-      std::make_shared<PrefetchResult>(workers->count,
-                                       request->batch_end_unit_offsets,
-                                       timeout_ms,
-                                       std::move(stop_requested),
-                                       std::move(done));
-  for (size_t local_rank = 0; local_rank < workers->count; ++local_rank) {
-    worker_clients_[workers->begin + local_rank]->prefetch_from_storage(
-        request, result, local_rank);
-  }
-}
-
-void LLMEngine::get_cache_info(std::vector<uint64_t>& cluster_ids,
-                               std::vector<std::string>& addrs,
-                               std::vector<uint16_t>& ports) {
-  cluster_ids.reserve(worker_clients_num_);
-  addrs.reserve(worker_clients_num_);
-  ports.reserve(worker_clients_num_);
-  for (size_t worker_rank = 0; worker_rank < worker_clients_num_;
-       ++worker_rank) {
-    uint64_t cluster_id = 0;
-    std::string addr;
-    uint16_t port = 0;
-    worker_clients_[worker_rank]->get_cache_info(cluster_id, addr, port);
-    cluster_ids.emplace_back(cluster_id);
-    addrs.emplace_back(std::move(addr));
-    ports.emplace_back(port);
-  }
 }
 
 ForwardOutput LLMEngine::step(BatchGroup& batch) {
@@ -770,24 +654,6 @@ void LLMEngine::update_last_step_result(BatchGroup& last_batch) {
     // Keep Batch::sequences_ aligned with SequencesGroup after beam updates.
     last_batch[i].refresh_sequences_from_groups();
   }
-}
-
-std::vector<int64_t> LLMEngine::get_active_activation_memory() const {
-  // call worker to get active activation memory
-  std::vector<folly::SemiFuture<int64_t>> futures;
-  futures.reserve(worker_clients_num_);
-  for (auto& worker : worker_clients_) {
-    futures.push_back(worker->get_active_activation_memory_async());
-  }
-
-  // wait for all futures to complete
-  auto results = folly::collectAll(futures).get();
-  std::vector<int64_t> active_activation_memories;
-  active_activation_memories.reserve(worker_clients_num_);
-  for (auto& result : results) {
-    active_activation_memories.push_back(result.value());
-  }
-  return active_activation_memories;
 }
 
 void LLMEngine::setup_workers(const runtime::Options& options) {

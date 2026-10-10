@@ -271,12 +271,13 @@ bool VLMEngine::allocate_kv_cache(const KVCacheCapacity& kv_cache_cap) {
     options.linear_state_num_slots(
         static_cast<int32_t>(kv_cache_cap.num_linear_state_blocks()));
   }
-  auto factory_result = KVCacheManagerFactory::create(kv_cache_cap,
-                                                      args_,
-                                                      dp_local_tp_size_,
-                                                      std::move(options),
-                                                      this,
-                                                      dp_size_);
+  auto factory_result =
+      KVCacheManagerFactory::create(kv_cache_cap,
+                                    args_,
+                                    dp_local_tp_size_,
+                                    std::move(options),
+                                    /*transfer_coordinator=*/nullptr,
+                                    dp_size_);
   factory_result.shape.print_shapes();
   KVCacheShape kv_cache_shape = std::move(factory_result.shape);
   kv_cache_manager_ = std::move(factory_result.manager);
@@ -408,24 +409,6 @@ void VLMEngine::setup_workers(const runtime::Options& options) {
         std::make_shared<DistributedWorkerManager>(options);
   }
   worker_clients_ = distributed_worker_manager_->get_worker_clients();
-}
-
-std::vector<int64_t> VLMEngine::get_active_activation_memory() const {
-  // call worker to get active activation memory
-  std::vector<folly::SemiFuture<int64_t>> futures;
-  futures.reserve(worker_clients_num_);
-  for (auto& worker : worker_clients_) {
-    futures.push_back(worker->get_active_activation_memory_async());
-  }
-
-  // wait for all futures to complete
-  auto results = folly::collectAll(futures).get();
-  std::vector<int64_t> active_activation_memories;
-  active_activation_memories.reserve(worker_clients_num_);
-  for (auto& result : results) {
-    active_activation_memories.push_back(result.value());
-  }
-  return active_activation_memories;
 }
 
 }  // namespace xllm

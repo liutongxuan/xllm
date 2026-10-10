@@ -19,18 +19,17 @@ limitations under the License.
 #include <deque>
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 
 #include "block_manager_pool.h"
 #include "composite_block_manager.h"
+#include "core/framework/kv_cache_transfer/kv_cache_transfer_coordinator_base.h"
 #include "core/framework/kv_cache_transfer/kv_transfer_completion.h"
-#include "distributed_runtime/engine.h"
 #include "util/blockingconcurrentqueue.h"
 #include "util/timer.h"
 
 namespace xllm {
-
-class Engine;
 
 // OffloadBlockPair carries the src/dst blocks (device + host) plus the block
 // type so the completion callback can publish success to the correct Host leaf.
@@ -45,9 +44,10 @@ class HierarchyBlockManagerPool : public BlockManagerPool {
   using OffloadBlockPairQueue =
       moodycamel::BlockingConcurrentQueue<std::shared_ptr<OffloadBlockPair>>;
 
-  explicit HierarchyBlockManagerPool(const BlockManagerPool::Options& options,
-                                     Engine* engine,
-                                     int32_t dp_size = 1);
+  explicit HierarchyBlockManagerPool(
+      const BlockManagerPool::Options& options,
+      std::shared_ptr<KVCacheTransferCoordinatorBase> transfer_coordinator,
+      int32_t dp_size = 1);
   ~HierarchyBlockManagerPool() override;
 
   bool allocate(Sequence* sequence, size_t num_tokens) override;
@@ -90,7 +90,7 @@ class HierarchyBlockManagerPool : public BlockManagerPool {
   BlockManager* leaf_of(BlockType type, int32_t dp_rank) const;
 
  private:
-  Engine* engine_;
+  std::shared_ptr<KVCacheTransferCoordinatorBase> transfer_coordinator_;
   // Per-DP Host block managers discovered from the device prefix-cache leaves.
   std::vector<CompositeBlockManager::LeafMap> host_block_managers_;
 

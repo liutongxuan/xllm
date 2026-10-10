@@ -30,6 +30,7 @@ limitations under the License.
 
 #include "common/global_flags.h"
 #include "common/macros.h"
+#include "core/distributed_runtime/kv_cache_transfer_coordinator.h"
 #include "core/framework/config/disagg_pd_config.h"
 #include "core/framework/config/kv_cache_config.h"
 #include "core/framework/config/scheduler_config.h"
@@ -1258,12 +1259,14 @@ bool DisaggPDScheduler::decode_recv_first_generation(
     }
 
     const int32_t dst_dp_rank = sequence->dp_rank();
-    const bool pulled = engine_->pull_kv_blocks(src_dp_size,
-                                                src_dp_rank,
-                                                src_cluster_ids,
-                                                src_addrs,
-                                                dst_dp_rank,
-                                                source_mappings);
+    CHECK(kv_transfer_coordinator_ != nullptr);
+    const bool pulled =
+        kv_transfer_coordinator_->pull_kv_blocks(src_dp_size,
+                                                 src_dp_rank,
+                                                 src_cluster_ids,
+                                                 src_addrs,
+                                                 dst_dp_rank,
+                                                 source_mappings);
     if (!pulled) {
       LOG(ERROR) << "Failed to pull KV blocks, request_id: " << req_id;
       kv_cache_manager_->deallocate(request.get());

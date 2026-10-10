@@ -20,10 +20,10 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
-#include "core/distributed_runtime/engine.h"
 #include "core/framework/batch/batch_group.h"
 #include "core/framework/block/composite_block_manager.h"
 #include "core/framework/block/hierarchy_block_manager_pool.h"
+#include "core/framework/kv_cache_transfer/kv_cache_transfer_coordinator_base.h"
 #include "core/framework/request/request.h"
 #include "core/framework/request/sequence.h"
 
@@ -60,11 +60,8 @@ BlockManager::Options mtp_options() {
 
 // Replace worker RPCs only; the Sequence, block pools, cache identities, and
 // restore/offload decisions under test are real framework objects.
-class CacheTransferEngine final : public Engine {
+class CacheTransferCoordinator final : public KVCacheTransferCoordinatorBase {
  public:
-  std::vector<int64_t> get_active_activation_memory() const override {
-    return {0};
-  }
   void prefetch_from_storage(
       uint32_t /*dp_rank*/,
       std::shared_ptr<const StoragePrefetchRequest> request,
@@ -90,6 +87,7 @@ class CacheTransferEngine final : public Engine {
       const std::vector<BlockTransferInfo>& infos) override {
     offloads_ = infos;
     std::vector<folly::SemiFuture<uint32_t>> results;
+    results.reserve(1);
     results.emplace_back(
         folly::makeSemiFuture(static_cast<uint32_t>(infos.size())));
     return results;
@@ -388,9 +386,20 @@ TEST(CompositeMtpPrefixCacheTest, NeverPublishesOverlapPlaceholderIdentity) {
   manager.deallocate_for_sequence(&sequence);
 }
 
+TEST(HierarchyMtpPrefixCacheTest, KeepsCoordinatorAliveForPoolLifetime) {
+  auto coordinator = std::make_shared<CacheTransferCoordinator>();
+  std::weak_ptr<KVCacheTransferCoordinatorBase> weak_coordinator = coordinator;
+  {
+    HierarchyBlockManagerPool pool(hierarchy_mtp_options(), coordinator);
+    coordinator.reset();
+    EXPECT_FALSE(weak_coordinator.expired());
+  }
+  EXPECT_TRUE(weak_coordinator.expired());
+}
+
 TEST(HierarchyMtpPrefixCacheTest, RestoresEveryBlockProvenByStoreHash) {
-  CacheTransferEngine engine;
-  HierarchyBlockManagerPool pool(hierarchy_mtp_options(), &engine);
+  auto coordinator = std::make_shared<CacheTransferCoordinator>();
+  HierarchyBlockManagerPool pool(hierarchy_mtp_options(), coordinator);
   const std::vector<int32_t> tokens(33, 7);
   auto request = make_mtp_request(tokens);
   Sequence* sequence = request->sequences().front().get();
@@ -399,9 +408,9 @@ TEST(HierarchyMtpPrefixCacheTest, RestoresEveryBlockProvenByStoreHash) {
     EXPECT_EQ(completed, request);
     request_done = true;
   });
-  ASSERT_EQ(engine.queries().size(), 2u);
+  ASSERT_EQ(coordinator->queries().size(), 2u);
   EXPECT_FALSE(request_done);
-  engine.finish_prefetch();
+  coordinator->finish_prefetch();
   pool.drain_prefetch_completions();
   ASSERT_TRUE(request_done);
   pool.allocate_shared(sequence);
@@ -409,22 +418,22 @@ TEST(HierarchyMtpPrefixCacheTest, RestoresEveryBlockProvenByStoreHash) {
   ASSERT_TRUE(pool.allocate(sequence, tokens.size()));
   BatchGroup batches(1);
   pool.transfer_blocks(batches);
-  EXPECT_EQ(engine.loads().size(), 2u);
+  EXPECT_EQ(coordinator->loads().size(), 2u);
   EXPECT_EQ(sequence->kv_state().num_cached_blocks(BlockType::KV), 2u);
   pool.deallocate(sequence);
   pool.transfer_blocks();
 }
 
 TEST(HierarchyMtpPrefixCacheTest, StoreDoesNotQueryWithoutNextToken) {
-  CacheTransferEngine engine;
-  HierarchyBlockManagerPool pool(hierarchy_mtp_options(), &engine);
+  auto coordinator = std::make_shared<CacheTransferCoordinator>();
+  HierarchyBlockManagerPool pool(hierarchy_mtp_options(), coordinator);
   auto request = make_mtp_request(std::vector<int32_t>(16, 7));
   bool request_done = false;
   pool.prefetch_from_storage(request, [&](std::shared_ptr<Request> completed) {
     EXPECT_EQ(completed, request);
     request_done = true;
   });
-  EXPECT_TRUE(engine.queries().empty());
+  EXPECT_TRUE(coordinator->queries().empty());
   pool.drain_prefetch_completions();
   EXPECT_TRUE(request_done);
   pool.deallocate(request->sequences().front().get());
@@ -466,24 +475,24 @@ TEST(TypedMtpPrefixCacheTest, CompressedCheckpointRequiresNextToken) {
 }
 
 TEST(TypedMtpPrefixCacheTest, DecodeOffloadWaitsForCompletedLookahead) {
-  CacheTransferEngine engine;
+  auto coordinator = std::make_shared<CacheTransferCoordinator>();
   BlockManagerPool::Options options = typed_hierarchy_options();
   options.instance_is_decode(true);
-  HierarchyBlockManagerPool pool(options, &engine);
+  HierarchyBlockManagerPool pool(options, coordinator);
   Sequence sequence = make_mtp_sequence(std::vector<int32_t>(16, 7));
   sequence.kv_state().set_kv_cache_tokens_num(16);
   ASSERT_TRUE(pool.allocate(&sequence, /*num_tokens=*/16));
   sequence.kv_state().set_kv_cache_tokens_num(16);
   pool.deallocate(&sequence);
   pool.transfer_blocks();
-  EXPECT_TRUE(engine.offloads().empty());
+  EXPECT_TRUE(coordinator->offloads().empty());
 }
 
 TEST(TypedMtpPrefixCacheTest, DecodeOffloadUsesConfirmedMtpIdentity) {
-  CacheTransferEngine engine;
+  auto coordinator = std::make_shared<CacheTransferCoordinator>();
   BlockManagerPool::Options options = typed_hierarchy_options();
   options.instance_is_decode(true);
-  HierarchyBlockManagerPool pool(options, &engine);
+  HierarchyBlockManagerPool pool(options, coordinator);
   Sequence sequence = make_mtp_sequence(std::vector<int32_t>(16, 7));
   sequence.kv_state().set_kv_cache_tokens_num(16);
   ASSERT_TRUE(pool.allocate(&sequence, /*num_tokens=*/16));
@@ -496,16 +505,16 @@ TEST(TypedMtpPrefixCacheTest, DecodeOffloadUsesConfirmedMtpIdentity) {
   const XXH3Key expected_hash = sequence.block_hashes()[0];
   pool.deallocate(&sequence);
   pool.transfer_blocks();
-  ASSERT_EQ(engine.offloads().size(), 1u);
-  EXPECT_EQ(engine.offloads()[0].block_type, BlockType::SWA);
-  EXPECT_EQ(XXH3Key(engine.offloads()[0].hash_key), expected_hash);
+  ASSERT_EQ(coordinator->offloads().size(), 1u);
+  EXPECT_EQ(coordinator->offloads()[0].block_type, BlockType::SWA);
+  EXPECT_EQ(XXH3Key(coordinator->offloads()[0].hash_key), expected_hash);
 }
 
 TEST(TypedPrefixCacheTest, DecodeOffloadUsesContentIdentityWithoutDeviceStamp) {
-  CacheTransferEngine engine;
+  auto coordinator = std::make_shared<CacheTransferCoordinator>();
   BlockManagerPool::Options options = typed_hierarchy_options();
   options.instance_is_decode(true).hasher_type(BlockHasherType::TEXT);
-  HierarchyBlockManagerPool pool(options, &engine);
+  HierarchyBlockManagerPool pool(options, coordinator);
   const PrefixHash unstamped_hash{};
   XXH3Key previous_hash(unstamped_hash.data());
   for (int32_t token : {7, 8}) {
@@ -532,17 +541,17 @@ TEST(TypedPrefixCacheTest, DecodeOffloadUsesContentIdentityWithoutDeviceStamp) {
     EXPECT_NE(expected_hash, previous_hash);
     pool.deallocate(&sequence);
     pool.transfer_blocks();
-    ASSERT_EQ(engine.offloads().size(), 1u);
-    EXPECT_EQ(engine.offloads()[0].block_type, BlockType::SWA);
-    EXPECT_EQ(XXH3Key(engine.offloads()[0].hash_key), expected_hash);
+    ASSERT_EQ(coordinator->offloads().size(), 1u);
+    EXPECT_EQ(coordinator->offloads()[0].block_type, BlockType::SWA);
+    EXPECT_EQ(XXH3Key(coordinator->offloads()[0].hash_key), expected_hash);
     previous_hash = expected_hash;
   }
 }
 
 TEST(HierarchyMtpPrefixCacheTest,
      OffloadPreservesDeviceStampAndCompletedBoundary) {
-  CacheTransferEngine engine;
-  HierarchyBlockManagerPool pool(hierarchy_mtp_options(), &engine);
+  auto coordinator = std::make_shared<CacheTransferCoordinator>();
+  HierarchyBlockManagerPool pool(hierarchy_mtp_options(), coordinator);
   Sequence sequence = make_mtp_sequence(std::vector<int32_t>(16, 7));
   ASSERT_TRUE(pool.allocate(&sequence, /*num_tokens=*/16));
   sequence.kv_state().set_kv_cache_tokens_num(16);
@@ -557,14 +566,14 @@ TEST(HierarchyMtpPrefixCacheTest,
   EXPECT_EQ(device_hash, sequence.block_hashes()[0]);
   pool.deallocate(&sequence);
   pool.transfer_blocks();
-  ASSERT_EQ(engine.offloads().size(), 1u);
-  EXPECT_EQ(engine.offloads()[0].block_type, BlockType::KV);
-  EXPECT_EQ(XXH3Key(engine.offloads()[0].hash_key), device_hash);
+  ASSERT_EQ(coordinator->offloads().size(), 1u);
+  EXPECT_EQ(coordinator->offloads()[0].block_type, BlockType::KV);
+  EXPECT_EQ(XXH3Key(coordinator->offloads()[0].hash_key), device_hash);
 }
 
 TEST(HierarchyMtpPrefixCacheTest, HostMatchRejectsDifferentNextToken) {
-  CacheTransferEngine engine;
-  HierarchyBlockManagerPool pool(hierarchy_mtp_options(), &engine);
+  auto coordinator = std::make_shared<CacheTransferCoordinator>();
+  HierarchyBlockManagerPool pool(hierarchy_mtp_options(), coordinator);
   const std::vector<int32_t> tokens(33, 7);
   auto source = make_mtp_request(tokens);
   bool source_done = false;
@@ -572,7 +581,7 @@ TEST(HierarchyMtpPrefixCacheTest, HostMatchRejectsDifferentNextToken) {
     EXPECT_EQ(completed, source);
     source_done = true;
   });
-  engine.finish_prefetch();
+  coordinator->finish_prefetch();
   pool.drain_prefetch_completions();
   ASSERT_TRUE(source_done);
   pool.deallocate(source->sequences().front().get());
@@ -595,15 +604,15 @@ TEST(HierarchyMtpPrefixCacheTest, HostMatchRejectsDifferentNextToken) {
 }
 
 TEST(TypedMtpPrefixCacheTest, StoreQueriesOnlyCompleteDependencyUnits) {
-  CacheTransferEngine engine;
-  HierarchyBlockManagerPool pool(typed_hierarchy_options(), &engine);
+  auto coordinator = std::make_shared<CacheTransferCoordinator>();
+  HierarchyBlockManagerPool pool(typed_hierarchy_options(), coordinator);
   auto exact = make_mtp_request(std::vector<int32_t>(2048, 7));
   bool exact_done = false;
   pool.prefetch_from_storage(exact, [&](std::shared_ptr<Request> completed) {
     EXPECT_EQ(completed, exact);
     exact_done = true;
   });
-  EXPECT_TRUE(engine.queries().empty());
+  EXPECT_TRUE(coordinator->queries().empty());
   pool.drain_prefetch_completions();
   EXPECT_TRUE(exact_done);
   pool.deallocate(exact->sequences().front().get());
@@ -615,9 +624,9 @@ TEST(TypedMtpPrefixCacheTest, StoreQueriesOnlyCompleteDependencyUnits) {
     ready_done = true;
   });
   // One C128 checkpoint, 32 C4 blocks, and its two-block SWA window.
-  ASSERT_EQ(engine.queries().size(), 35u);
+  ASSERT_EQ(coordinator->queries().size(), 35u);
   EXPECT_FALSE(ready_done);
-  engine.finish_prefetch();
+  coordinator->finish_prefetch();
   pool.drain_prefetch_completions();
   ASSERT_TRUE(ready_done);
   Sequence* sequence = ready->sequences().front().get();

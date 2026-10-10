@@ -254,10 +254,6 @@ class RecordingProfileEngine final : public Engine {
 
   const ModelArgs& model_args() const override { return model_args_; }
 
-  std::vector<int64_t> get_active_activation_memory() const override {
-    return {};
-  }
-
   void reset_profile_markers() { all_requests_marked_ = true; }
 
   bool all_requests_marked() const { return all_requests_marked_; }

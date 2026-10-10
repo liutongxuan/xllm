@@ -42,6 +42,8 @@ limitations under the License.
 
 namespace xllm {
 
+class KVCacheTransferCoordinator;
+
 inline constexpr int32_t kDecodeAddNewPromptTooLongStatusCode = 413;
 
 bool is_permanent_rejection(int32_t status_code);
@@ -71,14 +73,19 @@ class DisaggPDScheduler : public ContinuousScheduler<> {
       TargetEngine* engine,
       const Options& options,
       std::shared_ptr<DistributedWorkerManager> distributed_worker_manager,
-      std::shared_ptr<XTensorController> xtensor_controller = nullptr)
+      std::shared_ptr<XTensorController> xtensor_controller = nullptr,
+      std::shared_ptr<KVCacheTransferCoordinator> kv_transfer_coordinator =
+          nullptr)
       : DisaggPDScheduler(engine,
                           options,
                           SkipRuntimeStart{},
                           std::move(distributed_worker_manager),
-                          std::move(xtensor_controller)) {
+                          std::move(xtensor_controller),
+                          std::move(kv_transfer_coordinator)) {
     CHECK(distributed_worker_manager_ != nullptr)
         << "Disaggregated PD requires a distributed worker manager.";
+    CHECK(kv_transfer_coordinator_ != nullptr)
+        << "Disaggregated PD requires a KV cache transfer coordinator.";
     dispatch_thread_ = std::make_unique<std::thread>(
         &DisaggPDScheduler::dispatch_requests, this);
     server_name_.append(std::to_string(options_.server_idx()));
@@ -174,11 +181,14 @@ class DisaggPDScheduler : public ContinuousScheduler<> {
       SkipRuntimeStart,
       std::shared_ptr<DistributedWorkerManager> distributed_worker_manager =
           nullptr,
-      std::shared_ptr<XTensorController> xtensor_controller = nullptr)
+      std::shared_ptr<XTensorController> xtensor_controller = nullptr,
+      std::shared_ptr<KVCacheTransferCoordinator> kv_transfer_coordinator =
+          nullptr)
       : ContinuousScheduler<>(engine,
                               options,
                               std::move(xtensor_controller),
                               std::move(distributed_worker_manager)),
+        kv_transfer_coordinator_(std::move(kv_transfer_coordinator)),
         server_name_("DisaggPDServer") {
     if (!options_.instance_role().has_value()) {
       LOG(FATAL) << "Instance type is not set in disagg pd mode.";
@@ -227,6 +237,8 @@ class DisaggPDScheduler : public ContinuousScheduler<> {
   // Register instance information including name, RPC address, type, and cache
   // info
   void register_instance_info(const std::string& server_name);
+
+  std::shared_ptr<KVCacheTransferCoordinator> kv_transfer_coordinator_;
 
   // remote instance name(ID) -> instance info
   std::unordered_map<std::string, InstanceInfo> remote_instances_info_;

@@ -42,6 +42,7 @@ limitations under the License.
 namespace xllm {
 
 class EplbController;
+class KVCacheTransferCoordinatorBase;
 class ModelLoader;
 
 class LLMEngine : public Engine {
@@ -67,43 +68,16 @@ class LLMEngine : public Engine {
   // initializing without a preparation callback.
   bool init(MasterStatus master_status) override;
 
-  bool init(MasterStatus master_status, const ModelInitCallback& prepare_model);
+  bool init(MasterStatus master_status,
+            const ModelInitCallback& prepare_model,
+            std::shared_ptr<KVCacheTransferCoordinatorBase>
+                transfer_coordinator = nullptr);
 
   bool set_speculative_validate_time_predictor(
       const SpeculativeProfileRegistry::ValidateTimePredictor& predictor)
       override;
 
   void update_last_step_result(BatchGroup& batch);
-
-  // return the active activation memory
-  std::vector<int64_t> get_active_activation_memory() const override;
-
-  // P/D
-  bool pull_kv_blocks(const int32_t src_dp_size,
-                      const int32_t src_dp_rank,
-                      const std::vector<uint64_t>& src_cluster_ids,
-                      const std::vector<std::string>& src_addrs,
-                      const int32_t dst_dp_rank,
-                      const std::vector<KVTransferMapping>& mappings) override;
-
-  std::vector<folly::SemiFuture<uint32_t>> transfer_kv_blocks(
-      const uint32_t dp_rank,
-      const std::vector<BlockTransferInfo>& block_transfer_info) override;
-
-  void transfer_kv_blocks(
-      const uint32_t dp_rank,
-      const uint64_t batch_id,
-      const std::vector<BlockTransferInfo>& block_transfer_info) override;
-
-  void prefetch_from_storage(
-      const uint32_t dp_rank,
-      std::shared_ptr<const StoragePrefetchRequest> request,
-      PrefetchResult::StopPredicate stop_requested,
-      PrefetchResult::DoneCallback done) override;
-
-  void get_cache_info(std::vector<uint64_t>& cluster_ids,
-                      std::vector<std::string>& addrs,
-                      std::vector<uint16_t>& ports) override;
 
   std::shared_ptr<DistributedWorkerManager> get_distributed_worker_manager()
       const {
@@ -125,7 +99,9 @@ class LLMEngine : public Engine {
   bool init_model(MasterStatus master_status,
                   const ModelInitCallback& prepare_model);
   KVCacheCapacity estimate_kv_cache_capacity();
-  bool allocate_kv_cache(const KVCacheCapacity& kv_cache_cap);
+  bool allocate_kv_cache(
+      const KVCacheCapacity& kv_cache_cap,
+      std::shared_ptr<KVCacheTransferCoordinatorBase> transfer_coordinator);
   void process_group_test();
 
  protected:

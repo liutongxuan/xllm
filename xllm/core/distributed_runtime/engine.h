@@ -15,17 +15,12 @@ limitations under the License.
 
 #pragma once
 
-#include <folly/futures/Future.h>
+#include <glog/logging.h>
 
-#include <cstdint>
 #include <memory>
-#include <string>
-#include <vector>
 
-#include "core/common/macros.h"
 #include "core/framework/speculative/speculative_profile_registry.h"
 #include "framework/block/block_manager_pool.h"
-#include "framework/kv_cache_transfer/prefetch_result.h"
 #include "framework/model/model_args.h"
 #include "framework/tokenizer/tokenizer.h"
 #include "framework/tokenizer/tokenizer_args.h"
@@ -64,48 +59,6 @@ class Engine {
   virtual const TokenizerArgs& tokenizer_args() const {
     return tokenizer_args_;
   }
-
-  // return the active activation memory
-  virtual std::vector<int64_t> get_active_activation_memory() const = 0;
-
-  // P/D
-  virtual bool pull_kv_blocks(const int32_t src_dp_size,
-                              const int32_t src_dp_rank,
-                              const std::vector<uint64_t>& src_cluster_ids,
-                              const std::vector<std::string>& src_addrs,
-                              const int32_t dst_dp_rank,
-                              const std::vector<KVTransferMapping>& mappings) {
-    NOT_IMPLEMENTED();
-    return false;
-  };
-
-  virtual std::vector<folly::SemiFuture<uint32_t>> transfer_kv_blocks(
-      const uint32_t dp_rank,
-      const std::vector<BlockTransferInfo>& block_transfer_info) {
-    NOT_IMPLEMENTED();
-    return {};
-  };
-
-  virtual void transfer_kv_blocks(
-      const uint32_t dp_rank,
-      const uint64_t batch_id,
-      const std::vector<BlockTransferInfo>& block_transfer_info) {
-    NOT_IMPLEMENTED();
-  };
-
-  virtual void prefetch_from_storage(
-      const uint32_t dp_rank,
-      std::shared_ptr<const StoragePrefetchRequest> request,
-      PrefetchResult::StopPredicate stop_requested,
-      PrefetchResult::DoneCallback done) {
-    NOT_IMPLEMENTED();
-  };
-
-  virtual void get_cache_info(std::vector<uint64_t>& cluster_ids,
-                              std::vector<std::string>& addrs,
-                              std::vector<uint16_t>& ports) {
-    NOT_IMPLEMENTED();
-  };
 
   // Start/stop online timeline profiling on all workers. CUDA only for now.
   virtual bool start_profile() {

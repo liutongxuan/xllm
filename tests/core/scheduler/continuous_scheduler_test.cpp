@@ -122,7 +122,6 @@ class FakeEngine : public Engine {
   }
   const ModelArgs& model_args() const { return model_args_; }
   const TokenizerArgs& tokenizer_args() const { NOT_IMPLEMENTED(); }
-  std::vector<int64_t> get_active_activation_memory() const { return {0}; }
   bool init() override { return true; }
 
   void set_prefetch_ready(bool ready) {
