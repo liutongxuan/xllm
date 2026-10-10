@@ -15,6 +15,8 @@ limitations under the License.
 
 #pragma once
 
+#include <cstdint>
+#include <memory>
 #include <mutex>
 #include <vector>
 
@@ -22,16 +24,17 @@ limitations under the License.
 
 namespace xllm {
 
-class Engine;
 class KVCacheManager;
+class DistributedWorkerManager;
 
 class SchedulerMetrics final {
  public:
-  SchedulerMetrics(Engine* engine,
-                   KVCacheManager* kv_cache_manager,
-                   int32_t dp_size,
-                   int32_t num_speculative_tokens,
-                   bool collect_recent_latency);
+  SchedulerMetrics(
+      std::shared_ptr<DistributedWorkerManager> distributed_worker_manager,
+      KVCacheManager* kv_cache_manager,
+      int32_t dp_size,
+      int32_t num_speculative_tokens,
+      bool collect_recent_latency);
 
   SchedulerMetrics(const SchedulerMetrics&) = delete;
   SchedulerMetrics& operator=(const SchedulerMetrics&) = delete;
@@ -46,6 +49,8 @@ class SchedulerMetrics final {
   static int64_t amortized_token_latency(int64_t latency, size_t num_tokens);
 
  private:
+  friend class SchedulerMetricsTestPeer;
+
   void update_token_latency_metrics_impl(
       const std::vector<Sequence*>& sequences);
   void update_memory_metrics(const std::vector<Sequence*>& sequences);
@@ -53,7 +58,7 @@ class SchedulerMetrics final {
       const std::vector<Sequence*>& sequences) const;
   std::vector<int64_t> get_active_activation_in_bytes() const;
 
-  Engine* engine_;
+  std::shared_ptr<DistributedWorkerManager> distributed_worker_manager_;
   KVCacheManager* kv_cache_manager_;
   int32_t dp_size_;
   int32_t num_speculative_tokens_;

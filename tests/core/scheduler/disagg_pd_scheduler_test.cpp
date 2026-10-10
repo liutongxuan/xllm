@@ -172,7 +172,11 @@ class TestDisaggPDScheduler final : public DisaggPDScheduler {
 
   template <typename TargetEngine>
   TestDisaggPDScheduler(TargetEngine* engine, const Options& options)
-      : DisaggPDScheduler(engine, options, SkipRuntimeStart{}) {}
+      : DisaggPDScheduler(engine,
+                          options,
+                          SkipRuntimeStart{},
+                          /*distributed_worker_manager=*/nullptr,
+                          /*xtensor_controller=*/nullptr) {}
 
   void admit_prefill(std::shared_ptr<Request> request,
                      proto::DisaggPDService_Stub* stub = nullptr) {

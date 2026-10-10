@@ -59,13 +59,22 @@ std::unique_ptr<Scheduler> create_continuous_scheduler(
           std::move(xtensor_controller));
     case SchedulerKind::ZERO_EVICTION:
       return std::make_unique<ZeroEvictionScheduler>(
-          engine, options, std::move(xtensor_controller));
+          engine,
+          options,
+          std::move(xtensor_controller),
+          std::move(distributed_worker_manager));
     case SchedulerKind::CONTINUOUS:
       return std::make_unique<ContinuousScheduler<TargetEngine>>(
-          engine, options, std::move(xtensor_controller));
+          engine,
+          options,
+          std::move(xtensor_controller),
+          std::move(distributed_worker_manager));
   }
   return std::make_unique<ContinuousScheduler<TargetEngine>>(
-      engine, options, std::move(xtensor_controller));
+      engine,
+      options,
+      std::move(xtensor_controller),
+      std::move(distributed_worker_manager));
 }
 
 std::unique_ptr<DiTScheduler> create_dit_scheduler(

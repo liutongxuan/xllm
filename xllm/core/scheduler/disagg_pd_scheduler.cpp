@@ -217,8 +217,7 @@ void DisaggPDScheduler::initialize_rpc_server(const std::string& server_name) {
   xservice_client_->clear_heartbeat_callback(previous_registration);
 }
 
-void DisaggPDScheduler::register_instance_info(const std::string& server_name,
-                                               Engine* engine) {
+void DisaggPDScheduler::register_instance_info(const std::string& server_name) {
   // register instance info
   instance_info_.name = xservice_client_->get_instance_name();
   auto rpc_server = ServerRegistry::get_instance().get_server(server_name);
@@ -228,7 +227,7 @@ void DisaggPDScheduler::register_instance_info(const std::string& server_name,
             << ", instance rpc_address = " << instance_info_.rpc_address
             << ", instance type = " << instance_info_.type;
 
-  engine->get_cache_info(
+  distributed_worker_manager_->get_cache_info(
       instance_info_.cluster_ids, instance_info_.addrs, instance_info_.ports);
   instance_info_.dp_size = options_.dp_size();
 

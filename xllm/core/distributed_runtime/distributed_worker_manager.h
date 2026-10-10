@@ -32,6 +32,8 @@ class WorkerServer;
 class ThreadPool;
 class DistributedWorkerManagerTest;
 class XTensorControllerTest;
+class KVCacheTransferCoordinatorTest;
+class SchedulerMetricsTestPeer;
 
 // Owns worker servers, cluster rendezvous, and worker clients. Multiple engines
 // can share the manager to use the same distributed workers.
@@ -44,6 +46,15 @@ class DistributedWorkerManager final {
   const std::vector<std::shared_ptr<WorkerClient>>& get_worker_clients() const {
     return worker_clients_;
   }
+
+  // Appends the transport endpoints in global worker rank order.
+  void get_cache_info(std::vector<uint64_t>& cluster_ids,
+                      std::vector<std::string>& addrs,
+                      std::vector<uint16_t>& ports) const;
+
+  // Queries every worker before waiting, then returns bytes in worker rank
+  // order.
+  std::vector<int64_t> get_active_activation_memory() const;
 
   bool link_cluster(const std::vector<uint64_t>& cluster_ids,
                     const std::vector<std::string>& addrs,
@@ -63,6 +74,8 @@ class DistributedWorkerManager final {
  private:
   friend class DistributedWorkerManagerTest;
   friend class XTensorControllerTest;
+  friend class KVCacheTransferCoordinatorTest;
+  friend class SchedulerMetricsTestPeer;
 
   DISALLOW_COPY_AND_ASSIGN(DistributedWorkerManager);
 

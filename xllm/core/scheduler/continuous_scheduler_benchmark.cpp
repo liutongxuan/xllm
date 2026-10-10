@@ -129,7 +129,10 @@ class BenchContinuousScheduler final : public ContinuousScheduler<> {
  public:
   template <typename TargetEngine>
   BenchContinuousScheduler(TargetEngine* engine, const Options& options)
-      : ContinuousScheduler<>(engine, options) {}
+      : ContinuousScheduler<>(engine,
+                              options,
+                              /*xtensor_controller=*/nullptr,
+                              /*distributed_worker_manager=*/nullptr) {}
 
   BatchGroup prepare_batch_test() { return prepare_batch(); }
 

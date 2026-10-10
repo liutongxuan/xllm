@@ -85,7 +85,7 @@ class DisaggPDScheduler : public ContinuousScheduler<> {
     rpc_server_thread_ = std::make_unique<std::thread>(
         &DisaggPDScheduler::start_rpc_server, this);
     initialize_rpc_server(server_name_);
-    register_instance_info(server_name_, engine_);
+    register_instance_info(server_name_);
     if (!options_.disable_ttft_profiling() &&
         options_.instance_role().value() == InstanceRole::MIX) {
       profile_ttft();
@@ -175,8 +175,10 @@ class DisaggPDScheduler : public ContinuousScheduler<> {
       std::shared_ptr<DistributedWorkerManager> distributed_worker_manager =
           nullptr,
       std::shared_ptr<XTensorController> xtensor_controller = nullptr)
-      : ContinuousScheduler<>(engine, options, std::move(xtensor_controller)),
-        distributed_worker_manager_(std::move(distributed_worker_manager)),
+      : ContinuousScheduler<>(engine,
+                              options,
+                              std::move(xtensor_controller),
+                              std::move(distributed_worker_manager)),
         server_name_("DisaggPDServer") {
     if (!options_.instance_role().has_value()) {
       LOG(FATAL) << "Instance type is not set in disagg pd mode.";
@@ -224,9 +226,7 @@ class DisaggPDScheduler : public ContinuousScheduler<> {
 
   // Register instance information including name, RPC address, type, and cache
   // info
-  void register_instance_info(const std::string& server_name, Engine* engine);
-
-  std::shared_ptr<DistributedWorkerManager> distributed_worker_manager_;
+  void register_instance_info(const std::string& server_name);
 
   // remote instance name(ID) -> instance info
   std::unordered_map<std::string, InstanceInfo> remote_instances_info_;
