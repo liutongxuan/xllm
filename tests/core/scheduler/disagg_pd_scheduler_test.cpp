@@ -31,11 +31,14 @@ limitations under the License.
 #include <optional>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "common/metrics.h"
 #include "core/util/scope_guard.h"
+#include "distributed_runtime/distributed_worker_manager.h"
 #include "distributed_runtime/engine.h"
+#include "distributed_runtime/kv_cache_transfer_coordinator.h"
 #include "framework/block/block_manager_impl.h"
 #include "framework/block/block_manager_pool.h"
 #include "framework/kv_cache_transfer/kv_transfer_completion.h"
@@ -45,7 +48,43 @@ limitations under the License.
 #include "framework/tokenizer/tokenizer.h"
 
 namespace xllm {
+
+class DisaggPDSchedulerTestPeer final {
+ public:
+  static std::shared_ptr<KVCacheTransferCoordinator> make_transfer_coordinator(
+      std::vector<std::shared_ptr<WorkerClient>> worker_clients) {
+    auto manager = std::shared_ptr<DistributedWorkerManager>(
+        new DistributedWorkerManager(std::move(worker_clients)));
+    return std::make_shared<KVCacheTransferCoordinator>(
+        KVCacheTransferCoordinator::Options{}, std::move(manager));
+  }
+};
+
 namespace {
+
+class RecordingPullWorkerClient final : public WorkerClient {
+ public:
+  explicit RecordingPullWorkerClient(bool pull_result = true)
+      : pull_result_(pull_result) {}
+
+  bool pull_kv_blocks(uint64_t src_cluster_id,
+                      const std::string& src_addr,
+                      const std::vector<KVTransferMapping>& mappings) override {
+    ++pull_calls_;
+    src_cluster_id_ = src_cluster_id;
+    src_addr_ = src_addr;
+    pulled_mappings_ = mappings;
+    return pull_result_;
+  }
+
+  int32_t pull_calls_ = 0;
+  uint64_t src_cluster_id_ = 0;
+  std::string src_addr_;
+  std::vector<KVTransferMapping> pulled_mappings_;
+
+ private:
+  const bool pull_result_;
+};
 
 class FakeTokenizer final : public Tokenizer {
  public:
@@ -137,27 +176,11 @@ class FakeEngine final : public Engine {
 
   const TokenizerArgs& tokenizer_args() const override { NOT_IMPLEMENTED(); }
 
-  std::vector<int64_t> get_active_activation_memory() const override {
-    return {0};
-  }
-
   bool init() override { return true; }
 
   void set_storage_prefetch_enabled(bool enabled) {
     block_manager_->set_storage_prefetch_enabled(enabled);
   }
-
-  bool pull_kv_blocks(int32_t /*src_dp_size*/,
-                      int32_t /*src_dp_rank*/,
-                      const std::vector<uint64_t>& /*src_cluster_ids*/,
-                      const std::vector<std::string>& /*src_addrs*/,
-                      int32_t /*dst_dp_rank*/,
-                      const std::vector<KVTransferMapping>& mappings) override {
-    pulled_mappings = mappings;
-    return true;
-  }
-
-  std::vector<KVTransferMapping> pulled_mappings;
 
  private:
   std::unique_ptr<Tokenizer> tokenizer_;
@@ -171,12 +194,16 @@ class TestDisaggPDScheduler final : public DisaggPDScheduler {
   using DisaggPDScheduler::prepare_batch;
 
   template <typename TargetEngine>
-  TestDisaggPDScheduler(TargetEngine* engine, const Options& options)
+  TestDisaggPDScheduler(TargetEngine* engine,
+                        const Options& options,
+                        std::shared_ptr<KVCacheTransferCoordinator>
+                            transfer_coordinator = nullptr)
       : DisaggPDScheduler(engine,
                           options,
                           SkipRuntimeStart{},
                           /*distributed_worker_manager=*/nullptr,
-                          /*xtensor_controller=*/nullptr) {}
+                          /*xtensor_controller=*/nullptr,
+                          std::move(transfer_coordinator)) {}
 
   void admit_prefill(std::shared_ptr<Request> request,
                      proto::DisaggPDService_Stub* stub = nullptr) {
@@ -649,7 +676,11 @@ TEST(DisaggPDSchedulerTest, MtpFirstGenerationStoresBootstrapThenQueues) {
 
 TEST(DisaggPDSchedulerTest, GroupedPullAlignsActiveSwaSuffix) {
   FakeEngine engine(/*num_blocks=*/8, /*block_size=*/2);
-  TestDisaggPDScheduler scheduler(&engine, make_decode_options());
+  auto worker = std::make_shared<RecordingPullWorkerClient>();
+  TestDisaggPDScheduler scheduler(
+      &engine,
+      make_decode_options(),
+      DisaggPDSchedulerTestPeer::make_transfer_coordinator({worker}));
   std::shared_ptr<Request> request = make_request({1, 2, 3, 4});
   Sequence* sequence = request->sequences()[0].get();
   ASSERT_TRUE(engine.block_manager_pool()->allocate(sequence));
@@ -685,19 +716,70 @@ TEST(DisaggPDSchedulerTest, GroupedPullAlignsActiveSwaSuffix) {
       /*src_dp_size=*/1,
       /*src_dp_rank=*/0));
 
-  ASSERT_EQ(engine.pulled_mappings.size(), 1U);
-  EXPECT_EQ(engine.pulled_mappings[0].group_id, cache_group_id(BlockType::SWA));
+  EXPECT_EQ(worker->pull_calls_, 1);
+  EXPECT_EQ(worker->src_cluster_id_, 1u);
+  EXPECT_EQ(worker->src_addr_, "remote");
+  ASSERT_EQ(worker->pulled_mappings_.size(), 1U);
+  EXPECT_EQ(worker->pulled_mappings_[0].group_id,
+            cache_group_id(BlockType::SWA));
   EXPECT_EQ(
-      engine.pulled_mappings[0].local_ids,
+      worker->pulled_mappings_[0].local_ids,
       (std::vector<uint64_t>{static_cast<uint64_t>(live_swa_blocks[0].id()),
                              static_cast<uint64_t>(live_swa_blocks[1].id())}));
-  EXPECT_EQ(engine.pulled_mappings[0].remote_ids,
+  EXPECT_EQ(worker->pulled_mappings_[0].remote_ids,
             (std::vector<uint64_t>{101, 102}));
 
   std::shared_ptr<Request> queued;
   ASSERT_TRUE(scheduler.pop_decode_request_for_test(&queued));
   engine.block_manager_pool()->deallocate(queued.get());
   queued->sequences()[0]->kv_state().erase_blocks(BlockType::SWA);
+}
+
+TEST(DisaggPDSchedulerTest, FailedPullReleasesBlocksWithoutEnqueueingDecode) {
+  FakeEngine engine(/*num_blocks=*/8, /*block_size=*/2);
+  auto failed_worker =
+      std::make_shared<RecordingPullWorkerClient>(/*pull_result=*/false);
+  auto healthy_worker = std::make_shared<RecordingPullWorkerClient>();
+  TestDisaggPDScheduler scheduler(
+      &engine,
+      make_decode_options(),
+      DisaggPDSchedulerTestPeer::make_transfer_coordinator(
+          {failed_worker, healthy_worker}));
+  BlockManagerPool* pool = engine.block_manager_pool();
+  const auto free_before = pool->num_free_blocks();
+  std::shared_ptr<Request> request = make_request({1, 2, 3, 4});
+  Sequence* sequence = request->sequences()[0].get();
+  ASSERT_TRUE(pool->allocate(sequence));
+  ASSERT_TRUE(scheduler.decode_schedule(request, "prefill"));
+
+  KVTransferMapping source_mapping;
+  source_mapping.group_id = cache_group_id(BlockType::KV);
+  source_mapping.remote_ids = {101, 102};
+  EXPECT_FALSE(scheduler.decode_recv_first_generation(
+      "req",
+      /*reservation_id=*/"",
+      /*token_id=*/42,
+      /*has_logprob=*/false,
+      /*logprob=*/0.0f,
+      /*time_to_first_token_latency_seconds=*/0.1,
+      /*upstream_elapsed_seconds=*/0.0,
+      /*top_tokens=*/{},
+      /*top_logprobs=*/{},
+      /*kv_cache_transfer_mode=*/"PULL",
+      /*src_cluster_ids=*/{1, 2},
+      /*src_addrs=*/{"remote-0", "remote-1"},
+      /*source_mappings=*/{source_mapping},
+      /*src_dp_size=*/1,
+      /*src_dp_rank=*/0));
+
+  EXPECT_EQ(failed_worker->pull_calls_, 1);
+  EXPECT_EQ(healthy_worker->pull_calls_, 1);
+  EXPECT_TRUE(scheduler.reservations_empty());
+  EXPECT_FALSE(sequence->has_any_blocks());
+  EXPECT_EQ(pool->num_used_blocks(), (std::vector<size_t>{0}));
+  EXPECT_EQ(pool->num_free_blocks(), free_before);
+  std::shared_ptr<Request> queued;
+  EXPECT_FALSE(scheduler.pop_decode_request_for_test(&queued));
 }
 
 TEST(DisaggPDSchedulerTest, FirstDecodeTokenLatencyIsNonNegative) {

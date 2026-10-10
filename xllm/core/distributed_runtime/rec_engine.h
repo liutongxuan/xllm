@@ -54,7 +54,7 @@ class RecEngine : public Engine {
   // LlmRec otherwise creates DistributedWorkerManager only inside init().
   void setup_distributed_workers();
 
-  std::vector<int64_t> get_active_activation_memory() const override;
+  virtual std::vector<int64_t> get_active_activation_memory() const;
 
  private:
   // ============================================================

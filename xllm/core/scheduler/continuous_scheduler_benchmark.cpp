@@ -113,9 +113,6 @@ class FakeEngine final : public Engine {
     return block_manager_pool_.get();
   }
   const ModelArgs& model_args() const override { return model_args_; }
-  std::vector<int64_t> get_active_activation_memory() const override {
-    return {0};
-  }
 
  private:
   FakeTokenizer fake_tokenizer_;

@@ -22,6 +22,7 @@ limitations under the License.
 #include <limits>
 #include <tuple>
 #include <unordered_map>
+#include <utility>
 
 #include "block_manager_impl.h"
 #include "composite_block_manager.h"
@@ -490,9 +491,10 @@ void finalize_prefetch(Sequence* sequence,
 
 HierarchyBlockManagerPool::HierarchyBlockManagerPool(
     const BlockManagerPool::Options& options,
-    Engine* engine,
+    std::shared_ptr<KVCacheTransferCoordinatorBase> transfer_coordinator,
     int32_t dp_size)
-    : engine_(engine), BlockManagerPool(options, dp_size) {
+    : BlockManagerPool(options, dp_size),
+      transfer_coordinator_(std::move(transfer_coordinator)) {
   CHECK(dp_size > 0) << "dp_size must be greater than 0";
   host_block_managers_.reserve(dp_size);
 
@@ -1149,8 +1151,9 @@ void HierarchyBlockManagerPool::prefetch_from_storage(
     }
 
     CHECK(storage_request.valid());
-    CHECK(engine_ != nullptr) << "Mooncake prefetch requires an Engine.";
-    engine_->prefetch_from_storage(
+    CHECK(transfer_coordinator_ != nullptr)
+        << "Mooncake prefetch requires a KV cache transfer coordinator.";
+    transfer_coordinator_->prefetch_from_storage(
         dp_rank,
         std::make_shared<const StoragePrefetchRequest>(
             std::move(storage_request)),
@@ -1178,7 +1181,7 @@ void HierarchyBlockManagerPool::transfer_blocks(BatchGroup& batches) {
     CHECK_LT(i, batches.size())
         << "Missing batch for pending H2D transfer at dp_rank=" << i;
     batches[i].set_batch_id();
-    engine_->transfer_kv_blocks(
+    transfer_coordinator_->transfer_kv_blocks(
         i, batches[i].batch_id(), load_block_transfer_infos_[i]);
     load_block_transfer_infos_[i].clear();
   }
@@ -1194,7 +1197,7 @@ void HierarchyBlockManagerPool::transfer_blocks(RecBatchGroup& batches) {
     CHECK_LT(i, batches.size())
         << "Missing batch for pending H2D transfer at dp_rank=" << i;
     batches[i].set_batch_id();
-    engine_->transfer_kv_blocks(
+    transfer_coordinator_->transfer_kv_blocks(
         i, batches[i].batch_id(), load_block_transfer_infos_[i]);
     load_block_transfer_infos_[i].clear();
   }
@@ -1233,9 +1236,8 @@ void HierarchyBlockManagerPool::transfer_offload_blocks() {
                             dst_blocks.back().get_immutable_hash_value(),
                             TransferType::D2H2G));
       // Preserve the BlockType so the completion callback publishes to the
-      // right host leaf. The engine transfer path stamps the outbound info's
-      // block_type from device layer coverage; this side just needs it to
-      // route publish/free.
+      // right host leaf. The transfer coordinator preserves this type while
+      // dispatching to workers; the pool uses it to route publish/free.
       transfer_infos.back().block_type = block_pair->block_type;
       block_types.emplace_back(block_pair->block_type);
       block_pair.reset();
@@ -1250,7 +1252,8 @@ void HierarchyBlockManagerPool::transfer_offload_blocks() {
       }
       std::shared_ptr<KVTransferTracker::Completion> completion =
           offload_transfers_.track();
-      folly::collectAll(engine_->transfer_kv_blocks(i, transfer_infos))
+      folly::collectAll(
+          transfer_coordinator_->transfer_kv_blocks(i, transfer_infos))
           .via(&folly::InlineExecutor::instance())
           .thenValue([device_blocks = std::move(src_blocks),
                       host_blocks = std::move(dst_blocks),

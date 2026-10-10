@@ -23,7 +23,6 @@ limitations under the License.
 
 #include "core/common/device_monitor.h"
 #include "core/common/metrics.h"
-#include "core/distributed_runtime/engine.h"
 #include "core/framework/block/hierarchy_block_manager_pool.h"
 #include "core/framework/config/kv_cache_config.h"
 #include "core/framework/kv_cache/kv_cache_estimation.h"
@@ -89,7 +88,7 @@ KVCacheManagerFactoryResult KVCacheManagerFactory::create(
     const ModelArgs& model_args,
     int64_t world_size,
     BlockManagerPool::Options options,
-    Engine* engine,
+    std::shared_ptr<KVCacheTransferCoordinatorBase> transfer_coordinator,
     int32_t dp_size,
     std::optional<HostCacheValidationOptions> host_validation_options) {
   CHECK_GT(world_size, 0) << "world_size must be greater than 0";
@@ -131,10 +130,11 @@ KVCacheManagerFactoryResult KVCacheManagerFactory::create(
 
   std::unique_ptr<KVCacheManager> manager;
   if (options.enable_host_offload()) {
-    CHECK(engine != nullptr)
-        << "Engine is required for host-offload KV cache manager";
-    manager =
-        std::make_unique<HierarchyBlockManagerPool>(options, engine, dp_size);
+    CHECK(transfer_coordinator != nullptr)
+        << "KV cache transfer coordinator is required for host-offload KV "
+           "cache manager";
+    manager = std::make_unique<HierarchyBlockManagerPool>(
+        options, std::move(transfer_coordinator), dp_size);
   } else {
     manager = std::make_unique<BlockManagerPool>(options, dp_size);
   }

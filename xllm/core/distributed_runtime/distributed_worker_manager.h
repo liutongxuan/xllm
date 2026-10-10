@@ -33,6 +33,7 @@ class ThreadPool;
 class DistributedWorkerManagerTest;
 class XTensorControllerTest;
 class KVCacheTransferCoordinatorTest;
+class DisaggPDSchedulerTestPeer;
 class SchedulerMetricsTestPeer;
 
 // Owns worker servers, cluster rendezvous, and worker clients. Multiple engines
@@ -75,6 +76,7 @@ class DistributedWorkerManager final {
   friend class DistributedWorkerManagerTest;
   friend class XTensorControllerTest;
   friend class KVCacheTransferCoordinatorTest;
+  friend class DisaggPDSchedulerTestPeer;
   friend class SchedulerMetricsTestPeer;
 
   DISALLOW_COPY_AND_ASSIGN(DistributedWorkerManager);

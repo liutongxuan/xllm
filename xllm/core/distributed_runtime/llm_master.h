@@ -41,6 +41,7 @@ namespace xllm {
 class Call;
 class Tokenizer;
 class XTensorController;
+class KVCacheTransferCoordinator;
 
 class LLMMaster : public Master {
  public:
@@ -125,6 +126,8 @@ class LLMMaster : public Master {
   bool stop_profile();
 
  private:
+  std::shared_ptr<KVCacheTransferCoordinator> kv_transfer_coordinator_;
+
   MasterStatus master_status_;
   XServiceClient* xservice_client_ = nullptr;
 

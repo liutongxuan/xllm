@@ -28,7 +28,7 @@ limitations under the License.
 
 namespace xllm {
 
-class Engine;
+class KVCacheTransferCoordinatorBase;
 class ModelArgs;
 class WorkerClient;
 namespace runtime {
@@ -55,7 +55,7 @@ class KVCacheManagerFactory final {
       const ModelArgs& model_args,
       int64_t world_size,
       BlockManagerPool::Options options,
-      Engine* engine,
+      std::shared_ptr<KVCacheTransferCoordinatorBase> transfer_coordinator,
       int32_t dp_size = 1,
       std::optional<HostCacheValidationOptions> host_validation_options =
           std::nullopt);

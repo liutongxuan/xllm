@@ -56,6 +56,17 @@ cc_test(
 cc_test(
   NO_NPU_RUNTIME
   NAME
+    kv_cache_transfer_coordinator_test
+  SRCS
+    kv_cache_transfer_coordinator_test.cpp
+  DEPS
+    :distributed_runtime
+    GTest::gtest_main
+)
+
+cc_test(
+  NO_NPU_RUNTIME
+  NAME
     xtensor_controller_test
   SRCS
     xtensor_controller_test.cpp

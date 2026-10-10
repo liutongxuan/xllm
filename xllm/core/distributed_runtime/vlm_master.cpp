@@ -28,6 +28,7 @@ limitations under the License.
 
 #include "common/metrics.h"
 #include "core/common/message.h"
+#include "core/distributed_runtime/kv_cache_transfer_coordinator.h"
 #include "core/distributed_runtime/xtensor_controller.h"
 #include "core/framework/config/kv_cache_config.h"
 #include "core/framework/config/model_config.h"
@@ -164,6 +165,9 @@ VLMMaster::VLMMaster(const Options& options) : Master(options) {
   resolve_npu_kernel_backend(&options_);
 #endif
   configure_disaggregated_pd_options(&options_);
+  CHECK(!options_.enable_disagg_pd() ||
+        options_.kv_cache_transfer_mode() != "PULL")
+      << "VLM disaggregated PD does not support KV cache PULL.";
   const bool use_speculative_engine =
       should_use_vlm_speculative_engine(options_);
   const std::string model_type =
@@ -295,6 +299,14 @@ VLMMaster::VLMMaster(const Options& options) : Master(options) {
     return;
   }
 
+  kv_transfer_coordinator_ = std::make_shared<KVCacheTransferCoordinator>(
+      KVCacheTransferCoordinator::Options{
+          .dp_size = options_.dp_size(),
+          .prefetch_timeout_ms = options_.prefetch_timeout()},
+      use_speculative_engine
+          ? speculative_engine_->get_distributed_worker_manager()
+          : vlm_engine_->get_distributed_worker_manager());
+
   auto finish_engine_initialization = [this](auto* engine) {
     model_args_ = engine->model_args();
     if (options_.enable_service_routing()) {
@@ -315,7 +327,8 @@ VLMMaster::VLMMaster(const Options& options) : Master(options) {
           return draft_xtensor_controller_->initialize_model(
               model_loader, num_layers, dp_size, tp_size, master_status);
         };
-    CHECK(speculative_engine_->init(options_.master_status(), prepare_draft));
+    CHECK(speculative_engine_->init(
+        options_.master_status(), prepare_draft, kv_transfer_coordinator_));
     finish_engine_initialization(speculative_engine_.get());
   } else {
     CHECK(vlm_engine_->init(options_.master_status()));
@@ -345,12 +358,16 @@ VLMMaster::VLMMaster(const Options& options) : Master(options) {
     scheduler_ = create_continuous_scheduler(
         speculative_engine_.get(),
         scheduler_options,
-        speculative_engine_->get_distributed_worker_manager());
+        speculative_engine_->get_distributed_worker_manager(),
+        /*xtensor_controller=*/nullptr,
+        kv_transfer_coordinator_);
   } else {
     scheduler_ = create_continuous_scheduler(
         vlm_engine_.get(),
         scheduler_options,
-        vlm_engine_->get_distributed_worker_manager());
+        vlm_engine_->get_distributed_worker_manager(),
+        /*xtensor_controller=*/nullptr,
+        kv_transfer_coordinator_);
   }
 
   if (options_.enable_service_routing()) {

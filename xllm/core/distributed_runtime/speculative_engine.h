@@ -39,7 +39,9 @@ class SpeculativeEngineBase : public Engine {
   bool init(MasterStatus master_status) override;
 
   bool init(MasterStatus master_status,
-            const LLMEngine::ModelInitCallback& prepare_model);
+            const LLMEngine::ModelInitCallback& prepare_model,
+            std::shared_ptr<KVCacheTransferCoordinatorBase>
+                transfer_coordinator = nullptr);
 
   // step the engine forward
   ForwardOutput step(BatchGroup& batch);
@@ -70,21 +72,6 @@ class SpeculativeEngineBase : public Engine {
 
   void update_last_step_result(BatchGroup& batch);
 
-  // return the active activation memory
-  std::vector<int64_t> get_active_activation_memory() const override;
-
-  // P/D
-  bool pull_kv_blocks(const int32_t src_dp_size,
-                      const int32_t src_dp_rank,
-                      const std::vector<uint64_t>& src_cluster_ids,
-                      const std::vector<std::string>& src_addrs,
-                      const int32_t dst_dp_rank,
-                      const std::vector<KVTransferMapping>& mappings) override;
-
-  void get_cache_info(std::vector<uint64_t>& cluster_ids,
-                      std::vector<std::string>& addrs,
-                      std::vector<uint16_t>& ports) override;
-
  protected:
   SpeculativeEngineBase(const runtime::Options& options, bool use_draft_engine);
 
@@ -92,7 +79,8 @@ class SpeculativeEngineBase : public Engine {
   bool init_model(MasterStatus master_status,
                   const LLMEngine::ModelInitCallback& prepare_model);
 
-  bool allocate_kv_cache();
+  bool allocate_kv_cache(
+      std::shared_ptr<KVCacheTransferCoordinatorBase> transfer_coordinator);
 
   bool should_skip_external_draft_kv_cache() const;
 

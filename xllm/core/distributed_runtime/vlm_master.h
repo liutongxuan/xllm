@@ -38,6 +38,7 @@ limitations under the License.
 namespace xllm {
 
 class XTensorController;
+class KVCacheTransferCoordinator;
 
 class VLMMaster : public Master {
  public:
@@ -89,6 +90,8 @@ class VLMMaster : public Master {
   int get_image_limit() { return options_.limit_image_per_prompt(); }
 
  private:
+  std::shared_ptr<KVCacheTransferCoordinator> kv_transfer_coordinator_;
+
   // The LLM draft prepares XTensor pages before loading worker weights.
   std::unique_ptr<XTensorController> draft_xtensor_controller_;
 

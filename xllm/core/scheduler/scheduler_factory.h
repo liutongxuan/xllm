@@ -49,14 +49,17 @@ std::unique_ptr<Scheduler> create_continuous_scheduler(
     SchedulerOptions options,
     std::shared_ptr<DistributedWorkerManager> distributed_worker_manager =
         nullptr,
-    std::shared_ptr<XTensorController> xtensor_controller = nullptr) {
+    std::shared_ptr<XTensorController> xtensor_controller = nullptr,
+    std::shared_ptr<KVCacheTransferCoordinator> kv_transfer_coordinator =
+        nullptr) {
   switch (select_scheduler_kind(options)) {
     case SchedulerKind::DISAGG_PD:
       return std::make_unique<DisaggPDScheduler>(
           engine,
           options,
           std::move(distributed_worker_manager),
-          std::move(xtensor_controller));
+          std::move(xtensor_controller),
+          std::move(kv_transfer_coordinator));
     case SchedulerKind::ZERO_EVICTION:
       return std::make_unique<ZeroEvictionScheduler>(
           engine,
