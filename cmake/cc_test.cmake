@@ -123,8 +123,30 @@ function(cc_test)
 
   add_dependencies(all_tests ${CC_TEST_NAME})
 
+  # The GoogleTest source scanner does not match multiline test declarations.
+  # Normalize whitespace only in discovery copies; compile the original sources
+  # and watch them for changes so adding a test still regenerates CTest entries.
+  set(_cc_test_discovery_sources "")
+  foreach(src IN LISTS _CC_TEST_SRCS)
+    get_filename_component(_original_source "${src}" ABSOLUTE
+      BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    file(READ "${_original_source}" _discovery_contents)
+    string(REGEX REPLACE "[\r\n\t]" " "
+      _discovery_contents "${_discovery_contents}")
+    string(SHA256 _source_hash "${_original_source}")
+    set(_discovery_source
+      "${CMAKE_CURRENT_BINARY_DIR}/gtest-discovery/${_source_hash}.cpp")
+    file(CONFIGURE OUTPUT "${_discovery_source}"
+      CONTENT "@_discovery_contents@" @ONLY)
+    list(APPEND _cc_test_discovery_sources "${_discovery_source}")
+    set_property(DIRECTORY APPEND PROPERTY
+      CMAKE_CONFIGURE_DEPENDS "${_original_source}")
+  endforeach()
+
   gtest_add_tests(
     TARGET ${CC_TEST_NAME}
+    SOURCES ${_cc_test_discovery_sources}
+    SKIP_DEPENDENCY
     EXTRA_ARGS ${CC_TEST_ARGS}
     TEST_LIST _cc_test_${CC_TEST_NAME}_tests
   )
