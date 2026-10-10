@@ -187,7 +187,7 @@ class XTensorControllerTest : public ::testing::Test {
 TEST_F(XTensorControllerTest, DisabledOperationsPreserveOutputsAndModelState) {
   auto worker = std::make_shared<RecordingWorkerClient>(model_id_);
   auto controller = make_controller(/*enabled=*/false, make_manager({worker}));
-  const MetadataModelLoader model_loader;
+  const MetadataModelLoader model_loader{};
   EXPECT_TRUE(controller.initialize_model(model_loader,
                                           /*num_layers=*/0,
                                           /*dp_size=*/0,
@@ -220,7 +220,7 @@ TEST_F(XTensorControllerTest, DisabledOperationsPreserveOutputsAndModelState) {
 TEST_F(XTensorControllerTest, RecordsSleepingWeightPagesWithoutAllocation) {
   const int64_t page_size =
       KVCacheConfig::get_instance().phy_page_granularity_size();
-  MetadataModelLoader model_loader;
+  MetadataModelLoader model_loader{};
   model_loader.total_weight_size_ = 5 * page_size + 1;
   const std::vector<MasterStatus> statuses = {MasterStatus::LIGHT_SLEEP,
                                               MasterStatus::DEEP_SLEEP};
@@ -264,7 +264,7 @@ TEST_F(XTensorControllerTest, RollingLoadBudgetsOnlyCachedDecoderLayers) {
       .rolling_load_num_cached_layers(2);
   const int64_t page_size =
       KVCacheConfig::get_instance().phy_page_granularity_size();
-  MetadataModelLoader model_loader;
+  MetadataModelLoader model_loader{};
   model_loader.total_weight_size_ = 100 * page_size;
   model_loader.non_decoder_weight_size_ = page_size + 1;
   model_loader.max_decoder_layer_weight_size_ = 3 * page_size + 1;
@@ -301,7 +301,7 @@ TEST_F(XTensorControllerTest, InvalidWeightMetadataDoesNotAllocatePages) {
       {0, 16, 32}, {128, 0, 32}, {128, 129, 32}, {128, 16, 0}, {128, 16, -1}};
 
   for (size_t index = 0; index < invalid_metadata.size(); ++index) {
-    MetadataModelLoader model_loader;
+    MetadataModelLoader model_loader{};
     model_loader.total_weight_size_ = invalid_metadata[index].total_size;
     model_loader.non_decoder_weight_size_ =
         invalid_metadata[index].non_decoder_size;
@@ -333,7 +333,7 @@ TEST_F(XTensorControllerTest, AwakeInitializationLeavesModelAwake) {
 
 TEST_F(XTensorControllerTest, MissingWorkerManagerPreservesModelState) {
   auto controller = make_controller(/*enabled=*/true, nullptr);
-  MetadataModelLoader model_loader;
+  MetadataModelLoader model_loader{};
   model_loader.total_weight_size_ = 1;
   EXPECT_FALSE(controller.initialize_model(model_loader,
                                            /*num_layers=*/2,
@@ -351,7 +351,7 @@ TEST_F(XTensorControllerTest, MissingWorkerManagerPreservesModelState) {
 
 TEST_F(XTensorControllerTest, EmptyWorkerManagerPreservesModelState) {
   auto controller = make_controller(/*enabled=*/true, make_manager({}));
-  MetadataModelLoader model_loader;
+  MetadataModelLoader model_loader{};
   model_loader.total_weight_size_ = 1;
   EXPECT_FALSE(controller.initialize_model(model_loader,
                                            /*num_layers=*/2,

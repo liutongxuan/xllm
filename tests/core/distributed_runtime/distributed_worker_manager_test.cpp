@@ -97,6 +97,10 @@ class DistributedWorkerManagerTest : public ::testing::Test {
         new DistributedWorkerManager(std::move(worker_clients)));
   }
 
+  static bool has_link_threadpool(const DistributedWorkerManager& manager) {
+    return manager.link_threadpool_ != nullptr;
+  }
+
   static std::vector<uint64_t> cluster_ids() { return {11, 22}; }
   static std::vector<std::string> addrs() {
     return {"127.0.0.1:1001", "127.0.0.1:1002"};
@@ -108,13 +112,13 @@ TEST_F(DistributedWorkerManagerTest, LinksAndUnlinksAllWorkers) {
   auto first = std::make_shared<RecordingWorkerClient>();
   auto second = std::make_shared<RecordingWorkerClient>();
   auto manager = make_manager({first, second});
-  EXPECT_FALSE(manager->link_threadpool_);
+  EXPECT_FALSE(has_link_threadpool(*manager));
 
   EXPECT_TRUE(manager->link_cluster(cluster_ids(),
                                     addrs(),
                                     ports(),
                                     /*src_dp_size=*/1));
-  EXPECT_TRUE(manager->link_threadpool_);
+  EXPECT_TRUE(has_link_threadpool(*manager));
   EXPECT_TRUE(manager->unlink_cluster(cluster_ids(),
                                       addrs(),
                                       ports(),
@@ -167,7 +171,7 @@ TEST_F(DistributedWorkerManagerTest, ReportsWorkerFailures) {
 TEST_F(DistributedWorkerManagerTest, RejectsInvalidTopologyWithoutDispatch) {
   auto client = std::make_shared<RecordingWorkerClient>();
   auto manager = make_manager({client});
-  EXPECT_FALSE(manager->link_threadpool_);
+  EXPECT_FALSE(has_link_threadpool(*manager));
 
   const auto expect_rejected = [&manager](
                                    const std::vector<uint64_t>& ids,
@@ -213,7 +217,7 @@ TEST_F(DistributedWorkerManagerTest, RejectsInvalidTopologyWithoutDispatch) {
                   /*kv_split_size=*/1);
   EXPECT_FALSE(manager->link_p2p({}));
   EXPECT_FALSE(manager->unlink_p2p({"one", "two"}));
-  EXPECT_FALSE(manager->link_threadpool_);
+  EXPECT_FALSE(has_link_threadpool(*manager));
   EXPECT_EQ(client->link_cluster_calls_, 0);
   EXPECT_EQ(client->unlink_cluster_calls_, 0);
   EXPECT_EQ(client->link_p2p_calls_, 0);
