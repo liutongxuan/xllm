@@ -4,6 +4,16 @@
 include(cc_test)
 
 cc_test(
+  NO_NPU_RUNTIME
+  NAME
+    kv_transfer_topology_test
+  SRCS
+    kv_transfer_topology_test.cpp
+  DEPS
+    GTest::gtest_main
+)
+
+cc_test(
   NAME
     spawn_worker_protocol_test
   SRCS

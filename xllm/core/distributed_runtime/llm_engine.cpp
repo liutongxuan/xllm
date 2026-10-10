@@ -35,6 +35,7 @@ limitations under the License.
 #include "common/metrics.h"
 #include "common/options.h"
 #include "core/common/global_flags.h"
+#include "core/distributed_runtime/kv_transfer_topology.h"
 #include "core/framework/config/execution_config.h"
 #include "core/framework/config/kv_cache_config.h"
 #include "core/framework/config/parallel_config.h"
@@ -525,24 +526,28 @@ bool LLMEngine::pull_kv_blocks(const int32_t src_dp_size,
                                const std::vector<std::string>& src_addrs,
                                const int32_t dst_dp_rank,
                                const std::vector<KVTransferMapping>& mappings) {
-  int32_t src_world_size = src_cluster_ids.size();
-  int32_t src_tp_size = src_world_size / src_dp_size;
-  int32_t dst_world_size = options_.nnodes();
-  int32_t dst_tp_size = dst_world_size / dp_size_;
+  if (src_addrs.size() != src_cluster_ids.size()) {
+    LOG(ERROR) << "Source cache endpoint counts do not match.";
+    return false;
+  }
+  const auto routes =
+      KVTransferTopology::get_pull_worker_routes(src_cluster_ids.size(),
+                                                 src_dp_size,
+                                                 src_dp_rank,
+                                                 worker_clients_.size(),
+                                                 options_.dp_size(),
+                                                 dst_dp_rank);
+  if (!routes.has_value()) {
+    LOG(ERROR) << "Invalid or heterogeneous topology for KV cache PULL.";
+    return false;
+  }
 
   std::vector<bool> results;
-  results.reserve(dst_tp_size);
+  results.reserve(routes->size());
   // Pull the KV cache for all workers in the current DP rank.
-  for (size_t tp_rank = 0; tp_rank < dst_tp_size; ++tp_rank) {
-    int32_t dst_worker_rank = dst_dp_rank * dst_tp_size + tp_rank;
-    // Determine the ranks of the remote workers connected to the current
-    // worker.
-    int32_t src_dp_worker_rank = dst_worker_rank % src_tp_size;
-    int32_t src_worker_rank = src_dp_rank * src_tp_size + src_dp_worker_rank;
-    results.push_back(worker_clients_[dst_worker_rank]->pull_kv_blocks(
-        src_cluster_ids[src_worker_rank],
-        src_addrs[src_worker_rank],
-        mappings));
+  for (const KVWorkerRoute& route : *routes) {
+    results.emplace_back(worker_clients_[route.dst_rank]->pull_kv_blocks(
+        src_cluster_ids[route.src_rank], src_addrs[route.src_rank], mappings));
   }
 
   for (bool result : results) {
@@ -556,23 +561,34 @@ bool LLMEngine::pull_kv_blocks(const int32_t src_dp_size,
 std::vector<folly::SemiFuture<uint32_t>> LLMEngine::transfer_kv_blocks(
     const uint32_t dp_rank,
     const std::vector<BlockTransferInfo>& block_transfer_info) {
+  const auto workers =
+      KVTransferTopology::get_dp_worker_range(worker_clients_.size(),
+                                              options_.dp_size(),
+                                              static_cast<int32_t>(dp_rank));
+  CHECK(workers.has_value()) << "Invalid DP topology for KV cache transfer.";
   std::vector<folly::SemiFuture<uint32_t>> futures;
-  futures.reserve(dp_local_tp_size_);
+  futures.reserve(workers->count);
 
-  for (uint32_t tp_rank = 0; tp_rank < dp_local_tp_size_; ++tp_rank) {
-    futures.emplace_back(worker_clients_[tp_rank + dp_local_tp_size_ * dp_rank]
-                             ->transfer_kv_blocks(block_transfer_info));
+  for (size_t local_rank = 0; local_rank < workers->count; ++local_rank) {
+    futures.emplace_back(
+        worker_clients_[workers->begin + local_rank]->transfer_kv_blocks(
+            block_transfer_info));
   }
 
-  return std::move(futures);
+  return futures;
 }
 
 void LLMEngine::transfer_kv_blocks(
     const uint32_t dp_rank,
     const uint64_t batch_id,
     const std::vector<BlockTransferInfo>& block_transfer_info) {
-  for (uint32_t tp_rank = 0; tp_rank < dp_local_tp_size_; ++tp_rank) {
-    worker_clients_[tp_rank + dp_local_tp_size_ * dp_rank]->transfer_kv_blocks(
+  const auto workers =
+      KVTransferTopology::get_dp_worker_range(worker_clients_.size(),
+                                              options_.dp_size(),
+                                              static_cast<int32_t>(dp_rank));
+  CHECK(workers.has_value()) << "Invalid DP topology for KV cache transfer.";
+  for (size_t local_rank = 0; local_rank < workers->count; ++local_rank) {
+    worker_clients_[workers->begin + local_rank]->transfer_kv_blocks(
         batch_id, block_transfer_info);
   }
 }
@@ -584,19 +600,24 @@ void LLMEngine::prefetch_from_storage(
     PrefetchResult::DoneCallback done) {
   CHECK(request != nullptr);
   CHECK(request->valid());
+  const auto workers =
+      KVTransferTopology::get_dp_worker_range(worker_clients_.size(),
+                                              options_.dp_size(),
+                                              static_cast<int32_t>(dp_rank));
+  CHECK(workers.has_value()) << "Invalid DP topology for storage prefetch.";
   const uint32_t configured_timeout_ms = options_.prefetch_timeout();
   const int64_t timeout_ms = configured_timeout_ms == 0
                                  ? -1
                                  : static_cast<int64_t>(configured_timeout_ms);
   auto result =
-      std::make_shared<PrefetchResult>(dp_local_tp_size_,
+      std::make_shared<PrefetchResult>(workers->count,
                                        request->batch_end_unit_offsets,
                                        timeout_ms,
                                        std::move(stop_requested),
                                        std::move(done));
-  for (uint32_t tp_rank = 0; tp_rank < dp_local_tp_size_; ++tp_rank) {
-    worker_clients_[tp_rank + dp_local_tp_size_ * dp_rank]
-        ->prefetch_from_storage(request, result, tp_rank);
+  for (size_t local_rank = 0; local_rank < workers->count; ++local_rank) {
+    worker_clients_[workers->begin + local_rank]->prefetch_from_storage(
+        request, result, local_rank);
   }
 }
 
