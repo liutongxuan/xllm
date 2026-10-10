@@ -182,12 +182,6 @@ bool LLMEngine::init(MasterStatus master_status,
 
 bool LLMEngine::init_model(MasterStatus master_status,
                            const ModelInitCallback& prepare_model) {
-  if (KVCacheConfig::get_instance().enable_xtensor() && !prepare_model) {
-    LOG(ERROR)
-        << "XTensor model initialization requires a resource preparation "
-           "callback from the master.";
-    return false;
-  }
   const std::string& model_path = options_.model_path();
   auto model_loader = ModelLoader::create(model_path);
   LOG(INFO) << "Initializing model from: " << model_path;

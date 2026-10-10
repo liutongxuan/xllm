@@ -46,8 +46,9 @@ class ModelLoader;
 
 class LLMEngine : public Engine {
  public:
-  // Runs synchronously before workers load weights; the engine does not retain
-  // the callback or own the resources prepared by it.
+  // Optional hook that runs synchronously before workers load weights. The
+  // caller supplies any required resource preparation; the engine does not
+  // retain the callback or own the resources prepared by it.
   using ModelInitCallback = std::function<
       bool(const ModelLoader&, int64_t, int32_t, int32_t, MasterStatus)>;
 
@@ -62,6 +63,8 @@ class LLMEngine : public Engine {
 
   const runtime::Options& options() const { return options_; }
 
+  // The caller must prepare any required external model resources before
+  // initializing without a preparation callback.
   bool init(MasterStatus master_status) override;
 
   bool init(MasterStatus master_status, const ModelInitCallback& prepare_model);
