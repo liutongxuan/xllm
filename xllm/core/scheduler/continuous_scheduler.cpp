@@ -27,6 +27,7 @@ limitations under the License.
 #include <memory>
 #include <vector>
 
+#include "core/distributed_runtime/distributed_worker_manager.h"
 #include "core/distributed_runtime/engine.h"
 #include "core/distributed_runtime/xtensor_controller.h"
 #include "core/framework/batch/batch_factory.h"
@@ -57,12 +58,14 @@ ContinuousSchedulerBase::ContinuousSchedulerBase(
     const Options& options,
     StepCallback step_callback,
     ResultCallback result_callback,
-    std::shared_ptr<XTensorController> xtensor_controller)
+    std::shared_ptr<XTensorController> xtensor_controller,
+    std::shared_ptr<DistributedWorkerManager> distributed_worker_manager)
     : options_(options),
       batch_mode_(create_batch_mode(options)),
       scheduler_config_(::xllm::SchedulerConfig::get_instance()),
       batch_factory_(options.dp_size()),
       resource_engine_(engine),
+      distributed_worker_manager_(std::move(distributed_worker_manager)),
       xtensor_controller_(std::move(xtensor_controller)),
       step_callback_(std::move(step_callback)),
       result_callback_(std::move(result_callback)),
@@ -74,7 +77,7 @@ ContinuousSchedulerBase::ContinuousSchedulerBase(
   kv_cache_manager_ = resource_engine_->block_manager_pool();
   CHECK(kv_cache_manager_ != nullptr);
   scheduler_metrics_ =
-      std::make_unique<SchedulerMetrics>(resource_engine_,
+      std::make_unique<SchedulerMetrics>(distributed_worker_manager_,
                                          kv_cache_manager_,
                                          options_.dp_size(),
                                          options_.num_speculative_tokens(),
@@ -135,9 +138,10 @@ ContinuousSchedulerBase::ContinuousSchedulerBase(
         });
     if (::xllm::KVCacheConfig::get_instance().enable_xtensor() &&
         !options_.enable_disagg_pd()) {
-      resource_engine_->get_cache_info(instance_info_.cluster_ids,
-                                       instance_info_.addrs,
-                                       instance_info_.ports);
+      CHECK(distributed_worker_manager_ != nullptr);
+      distributed_worker_manager_->get_cache_info(instance_info_.cluster_ids,
+                                                  instance_info_.addrs,
+                                                  instance_info_.ports);
     }
   }
 

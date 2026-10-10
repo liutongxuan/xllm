@@ -165,7 +165,10 @@ class TestableContinuousScheduler final : public ContinuousScheduler<> {
  public:
   template <typename TargetEngine>
   TestableContinuousScheduler(TargetEngine* engine, const Options& options)
-      : ContinuousScheduler<>(engine, options) {}
+      : ContinuousScheduler<>(engine,
+                              options,
+                              /*xtensor_controller=*/nullptr,
+                              /*distributed_worker_manager=*/nullptr) {}
 
   BatchGroup prepare_batch_test() { return prepare_batch(); }
 
@@ -205,7 +208,10 @@ class TestableContinuousScheduler final : public ContinuousScheduler<> {
 class RejectingReadyScheduler final : public ContinuousScheduler<> {
  public:
   RejectingReadyScheduler(FakeEngine* engine, const Options& options)
-      : ContinuousScheduler<>(engine, options) {}
+      : ContinuousScheduler<>(engine,
+                              options,
+                              /*xtensor_controller=*/nullptr,
+                              /*distributed_worker_manager=*/nullptr) {}
 
  protected:
   bool enqueue_ready_request(std::shared_ptr<Request> /*request*/) override {
@@ -770,7 +776,11 @@ TEST(ContinuousSchedulerFactoryTest, ChunkedPrefillCreatesContinuousScheduler) {
   opt.enable_chunked_prefill() = true;
 
   auto engine = std::make_unique<FakeEngine>(32, 32);
-  auto scheduler = create_continuous_scheduler(engine.get(), opt);
+  auto scheduler =
+      create_continuous_scheduler(engine.get(),
+                                  opt,
+                                  /*distributed_worker_manager=*/nullptr,
+                                  /*xtensor_controller=*/nullptr);
 
   // All non-PD paths now create ContinuousScheduler with BatchMode routing.
   EXPECT_NE(dynamic_cast<ContinuousScheduler<FakeEngine>*>(scheduler.get()),
@@ -783,7 +793,11 @@ TEST(ContinuousSchedulerFactoryTest,
   opt.enable_chunked_prefill() = true;
 
   auto engine = std::make_unique<FakeEngine>(32, 32);
-  auto scheduler = create_continuous_scheduler(engine.get(), opt);
+  auto scheduler =
+      create_continuous_scheduler(engine.get(),
+                                  opt,
+                                  /*distributed_worker_manager=*/nullptr,
+                                  /*xtensor_controller=*/nullptr);
 
   // All non-PD paths now create ContinuousScheduler with BatchMode routing.
   EXPECT_NE(dynamic_cast<ContinuousScheduler<FakeEngine>*>(scheduler.get()),

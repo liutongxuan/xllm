@@ -97,6 +97,41 @@ DistributedWorkerManager::~DistributedWorkerManager() {
   }
 }
 
+void DistributedWorkerManager::get_cache_info(
+    std::vector<uint64_t>& cluster_ids,
+    std::vector<std::string>& addrs,
+    std::vector<uint16_t>& ports) const {
+  cluster_ids.reserve(cluster_ids.size() + worker_clients_.size());
+  addrs.reserve(addrs.size() + worker_clients_.size());
+  ports.reserve(ports.size() + worker_clients_.size());
+  for (const auto& worker : worker_clients_) {
+    uint64_t cluster_id = 0;
+    std::string addr;
+    uint16_t port = 0;
+    worker->get_cache_info(cluster_id, addr, port);
+    cluster_ids.emplace_back(cluster_id);
+    addrs.emplace_back(std::move(addr));
+    ports.emplace_back(port);
+  }
+}
+
+std::vector<int64_t> DistributedWorkerManager::get_active_activation_memory()
+    const {
+  std::vector<folly::SemiFuture<int64_t>> futures;
+  futures.reserve(worker_clients_.size());
+  for (const auto& worker : worker_clients_) {
+    futures.emplace_back(worker->get_active_activation_memory_async());
+  }
+
+  auto results = folly::collectAll(futures).get();
+  std::vector<int64_t> active_activation_memories;
+  active_activation_memories.reserve(worker_clients_.size());
+  for (const auto& result : results) {
+    active_activation_memories.emplace_back(result.value());
+  }
+  return active_activation_memories;
+}
+
 void DistributedWorkerManager::ensure_link_threadpool() {
   if (link_threadpool_ != nullptr) {
     return;
