@@ -40,7 +40,7 @@ namespace xllm {
 
 class Call;
 class Tokenizer;
-class XTensorController;
+class VirtualMemoryController;
 
 class LLMMaster : public Master {
  public:
@@ -132,7 +132,7 @@ class LLMMaster : public Master {
   std::shared_ptr<DistributedWorkerManager> distributed_worker_manager_;
 
   // Created by the master after worker setup and shared with serving consumers.
-  std::shared_ptr<XTensorController> xtensor_controller_;
+  std::shared_ptr<VirtualMemoryController> virtual_memory_controller_;
 
   // Exactly one of these owners is populated, depending on the configured
   // LLM execution mode.

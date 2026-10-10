@@ -71,12 +71,13 @@ class DisaggPDScheduler : public ContinuousScheduler<> {
       TargetEngine* engine,
       const Options& options,
       std::shared_ptr<DistributedWorkerManager> distributed_worker_manager,
-      std::shared_ptr<XTensorController> xtensor_controller = nullptr)
+      std::shared_ptr<VirtualMemoryController> virtual_memory_controller =
+          nullptr)
       : DisaggPDScheduler(engine,
                           options,
                           SkipRuntimeStart{},
                           std::move(distributed_worker_manager),
-                          std::move(xtensor_controller)) {
+                          std::move(virtual_memory_controller)) {
     CHECK(distributed_worker_manager_ != nullptr)
         << "Disaggregated PD requires a distributed worker manager.";
     dispatch_thread_ = std::make_unique<std::thread>(
@@ -138,8 +139,9 @@ class DisaggPDScheduler : public ContinuousScheduler<> {
   bool try_allocate(Sequence* sequence);
 
   // Classifies a failed allocation as permanently oversized.
-  // DSV4 multi-manager and XTensor layouts conservatively return false because
-  // their effective token capacity cannot be derived from the flat KV count.
+  // DSV4 multi-manager and VirtualMemory layouts conservatively return false
+  // because their effective token capacity cannot be derived from the flat KV
+  // count.
   bool exceeds_decode_capacity(Sequence* sequence) const;
 
   bool enable_schedule_overlap() { return options_.enable_schedule_overlap(); };
@@ -174,8 +176,11 @@ class DisaggPDScheduler : public ContinuousScheduler<> {
       SkipRuntimeStart,
       std::shared_ptr<DistributedWorkerManager> distributed_worker_manager =
           nullptr,
-      std::shared_ptr<XTensorController> xtensor_controller = nullptr)
-      : ContinuousScheduler<>(engine, options, std::move(xtensor_controller)),
+      std::shared_ptr<VirtualMemoryController> virtual_memory_controller =
+          nullptr)
+      : ContinuousScheduler<>(engine,
+                              options,
+                              std::move(virtual_memory_controller)),
         distributed_worker_manager_(std::move(distributed_worker_manager)),
         server_name_("DisaggPDServer") {
     if (!options_.instance_role().has_value()) {

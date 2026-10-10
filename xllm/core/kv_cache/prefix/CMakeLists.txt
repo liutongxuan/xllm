@@ -15,14 +15,17 @@ cc_library(
     linear_state_prefix_cache.cpp
     prefix_cache_factory.cpp
   DEPS
-    $<$<BOOL:${USE_NPU}>:torch_npu>
-    $<$<BOOL:${USE_NPU}>:graph>
-    :request
+    :config
+    :kv_cache_block_types
+    :multimodal
     :common
     glog::glog
+    absl::strings
+    absl::time
     Boost::serialization
     SMHasherSupport
     torch
+    xxHash
 )
 
 
@@ -37,7 +40,7 @@ cc_binary(
     torch_python
     :kv_cache
     :prefix_cache
-    :block
+    :kv_cache_block
     benchmark::benchmark
     benchmark::benchmark_main
     :xllm_server
