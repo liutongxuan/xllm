@@ -21,9 +21,9 @@ limitations under the License.
 #include <map>
 #include <mutex>
 
-#include "block_manager_pool.h"
-#include "composite_block_manager.h"
-#include "core/framework/kv_cache_transfer/kv_transfer_completion.h"
+#include "core/framework/block/block_manager_pool.h"
+#include "core/framework/block/composite_block_manager.h"
+#include "core/kv_cache/transfer/kv_transfer_completion.h"
 #include "distributed_runtime/engine.h"
 #include "util/blockingconcurrentqueue.h"
 #include "util/timer.h"

@@ -24,8 +24,8 @@ limitations under the License.
 
 #include "core/common/macros.h"
 #include "core/framework/speculative/speculative_profile_registry.h"
+#include "core/kv_cache/transfer/prefetch_result.h"
 #include "framework/block/block_manager_pool.h"
-#include "framework/kv_cache_transfer/prefetch_result.h"
 #include "framework/model/model_args.h"
 #include "framework/tokenizer/tokenizer.h"
 #include "framework/tokenizer/tokenizer_args.h"
