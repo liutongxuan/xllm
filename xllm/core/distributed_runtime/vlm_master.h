@@ -37,7 +37,7 @@ limitations under the License.
 
 namespace xllm {
 
-class VirtualMemoryController;
+class ModelMemoryController;
 
 class VLMMaster : public Master {
  public:
@@ -90,7 +90,7 @@ class VLMMaster : public Master {
 
  private:
   // The LLM draft prepares VirtualMemory pages before loading worker weights.
-  std::unique_ptr<VirtualMemoryController> draft_virtual_memory_controller_;
+  std::unique_ptr<ModelMemoryController> draft_model_memory_controller_;
 
   // Exactly one of these owners is populated for VLM and VLM speculative
   // execution respectively.

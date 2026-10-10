@@ -24,13 +24,13 @@ limitations under the License.
 #include "core/common/device_monitor.h"
 #include "core/common/metrics.h"
 #include "core/distributed_runtime/engine.h"
+#include "core/framework/allocator/virtual_memory/physical_page_pool.h"
 #include "core/framework/block/hierarchy_block_manager_pool.h"
 #include "core/framework/config/kv_cache_config.h"
 #include "core/kv_cache/layout/kv_cache_estimation.h"
 #include "core/kv_cache/storage/kv_cache_utils.h"
 #include "core/runtime/options.h"
 #include "core/runtime/worker_client.h"
-#include "core/virtual_memory/physical_page_pool.h"
 #include "models/model_registry.h"
 
 namespace xllm {

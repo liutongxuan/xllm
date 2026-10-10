@@ -31,7 +31,7 @@ namespace xllm {
 class WorkerServer;
 class ThreadPool;
 class DistributedWorkerManagerTest;
-class VirtualMemoryControllerTest;
+class ModelMemoryControllerTest;
 
 // Owns worker servers, cluster rendezvous, and worker clients. Multiple engines
 // can share the manager to use the same distributed workers.
@@ -62,7 +62,7 @@ class DistributedWorkerManager final {
 
  private:
   friend class DistributedWorkerManagerTest;
-  friend class VirtualMemoryControllerTest;
+  friend class ModelMemoryControllerTest;
 
   DISALLOW_COPY_AND_ASSIGN(DistributedWorkerManager);
 

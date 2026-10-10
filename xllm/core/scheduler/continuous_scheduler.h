@@ -49,7 +49,7 @@ namespace xllm {
 class RequestPriorityQueue;
 class SchedulerConfig;
 class SchedulerPolicy;
-class VirtualMemoryController;
+class ModelMemoryController;
 struct SchedulerState;
 
 struct DecodeRestoreEntry {
@@ -125,12 +125,12 @@ class ContinuousSchedulerBase : public Scheduler {
   const InstanceInfo& get_instance_info() override { return instance_info_; }
 
  protected:
-  ContinuousSchedulerBase(Engine* engine,
-                          const Options& options,
-                          StepCallback step_callback,
-                          ResultCallback result_callback,
-                          std::shared_ptr<VirtualMemoryController>
-                              virtual_memory_controller = nullptr);
+  ContinuousSchedulerBase(
+      Engine* engine,
+      const Options& options,
+      StepCallback step_callback,
+      ResultCallback result_callback,
+      std::shared_ptr<ModelMemoryController> model_memory_controller = nullptr);
 
   void clear_mtp_bootstrap(Request* request);
   void drain_prefetch_pipeline();
@@ -163,7 +163,7 @@ class ContinuousSchedulerBase : public Scheduler {
 
   // the engine to run the batch
   Engine* resource_engine_;
-  std::shared_ptr<VirtualMemoryController> virtual_memory_controller_;
+  std::shared_ptr<ModelMemoryController> model_memory_controller_;
 
   StepCallback step_callback_;
   ResultCallback result_callback_;
@@ -282,10 +282,10 @@ class ContinuousScheduler : public ContinuousSchedulerBase {
  public:
   using Options = SchedulerOptions;
 
-  ContinuousScheduler(EngineType* engine,
-                      const Options& options,
-                      std::shared_ptr<VirtualMemoryController>
-                          virtual_memory_controller = nullptr)
+  ContinuousScheduler(
+      EngineType* engine,
+      const Options& options,
+      std::shared_ptr<ModelMemoryController> model_memory_controller = nullptr)
     requires requires(EngineType* typed_engine, BatchGroup& batch) {
       { typed_engine->step(batch) } -> std::same_as<ForwardOutput>;
       { typed_engine->update_last_step_result(batch) } -> std::same_as<void>;
@@ -297,7 +297,7 @@ class ContinuousScheduler : public ContinuousSchedulerBase {
             [engine](BatchGroup& batch) {
               engine->update_last_step_result(batch);
             },
-            std::move(virtual_memory_controller)),
+            std::move(model_memory_controller)),
         engine_(engine) {}
 
   template <typename TargetEngine>
@@ -309,10 +309,10 @@ class ContinuousScheduler : public ContinuousSchedulerBase {
                      typed_engine->update_last_step_result(batch)
                    } -> std::same_as<void>;
                  }
-  ContinuousScheduler(TargetEngine* engine,
-                      const Options& options,
-                      std::shared_ptr<VirtualMemoryController>
-                          virtual_memory_controller = nullptr)
+  ContinuousScheduler(
+      TargetEngine* engine,
+      const Options& options,
+      std::shared_ptr<ModelMemoryController> model_memory_controller = nullptr)
       : ContinuousSchedulerBase(
             static_cast<Engine*>(engine),
             options,
@@ -320,7 +320,7 @@ class ContinuousScheduler : public ContinuousSchedulerBase {
             [engine](BatchGroup& batch) {
               engine->update_last_step_result(batch);
             },
-            std::move(virtual_memory_controller)),
+            std::move(model_memory_controller)),
         engine_(static_cast<Engine*>(engine)) {}
 
   ~ContinuousScheduler() override = default;

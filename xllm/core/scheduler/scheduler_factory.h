@@ -49,24 +49,23 @@ std::unique_ptr<Scheduler> create_continuous_scheduler(
     SchedulerOptions options,
     std::shared_ptr<DistributedWorkerManager> distributed_worker_manager =
         nullptr,
-    std::shared_ptr<VirtualMemoryController> virtual_memory_controller =
-        nullptr) {
+    std::shared_ptr<ModelMemoryController> model_memory_controller = nullptr) {
   switch (select_scheduler_kind(options)) {
     case SchedulerKind::DISAGG_PD:
       return std::make_unique<DisaggPDScheduler>(
           engine,
           options,
           std::move(distributed_worker_manager),
-          std::move(virtual_memory_controller));
+          std::move(model_memory_controller));
     case SchedulerKind::ZERO_EVICTION:
       return std::make_unique<ZeroEvictionScheduler>(
-          engine, options, std::move(virtual_memory_controller));
+          engine, options, std::move(model_memory_controller));
     case SchedulerKind::CONTINUOUS:
       return std::make_unique<ContinuousScheduler<TargetEngine>>(
-          engine, options, std::move(virtual_memory_controller));
+          engine, options, std::move(model_memory_controller));
   }
   return std::make_unique<ContinuousScheduler<TargetEngine>>(
-      engine, options, std::move(virtual_memory_controller));
+      engine, options, std::move(model_memory_controller));
 }
 
 std::unique_ptr<DiTScheduler> create_dit_scheduler(
