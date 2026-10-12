@@ -142,7 +142,7 @@ POST /v1/chat/completions
        build inputs -> dispatch to worker ranks
   -> LLMWorkerImpl / Executor
        model forward -> logits -> sampling -> token results
-  -> update sequences / AsyncResponseProcessor
+  -> update sequences / RequestOutputDispatcher
        token IDs -> text -> RequestOutput
   -> ChatServiceImpl callback -> JSON response or SSE stream
 ```
@@ -186,7 +186,7 @@ POST /v1/chat/completions
 
 6. **Return output and continue or finish.** Engine results update sequence
    state. The scheduler processes batch output and completion;
-   [`AsyncResponseProcessor`](https://github.com/xLLM-AI/xllm/blob/main/xllm/core/scheduler/async_response_processor.cpp)
+   [`RequestOutputDispatcher`](https://github.com/xLLM-AI/xllm/blob/main/xllm/core/scheduler/request_output_dispatcher.cpp)
    produces decoded `RequestOutput` values and invokes callbacks. The chat
    service formats a complete JSON response or Server-Sent Events (SSE).
    Reasoning and tool-call parsers participate when configured. Follow

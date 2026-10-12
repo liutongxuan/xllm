@@ -59,9 +59,8 @@ FixedStepsScheduler::FixedStepsScheduler(RecEngine* engine,
       ::xllm::KVCacheConfig::get_instance().enable_prefix_cache();
 
   cancel_request_queue_ = std::make_shared<CancelRequestQueue>();
-  response_processor_ = std::make_unique<AsyncResponseProcessor>(
+  output_dispatcher_ = std::make_unique<RequestOutputDispatcher>(
       engine_->tokenizer(),
-      options_.instance_role(),
       options_.enable_service_routing(),
       options_.disable_log_stats(),
       [cancel_request_queue =
@@ -112,7 +111,7 @@ FixedStepsScheduler::~FixedStepsScheduler() {
   CHECK_EQ(prefetching_requests_.load(std::memory_order_acquire), 0u)
       << "FixedStepsScheduler destroyed with pending prefetch callbacks";
   running_requests_.clear();
-  response_processor_.reset();
+  output_dispatcher_.reset();
 }
 
 bool FixedStepsScheduler::add_request(std::shared_ptr<Request>& request) {
@@ -320,7 +319,7 @@ void FixedStepsScheduler::handle_prefill_requests(
     std::shared_ptr<Request> request(prefill_queue_->top());
     prefill_queue_->pop_top();
     // block_manager_->release_blocks_for(request.get());
-    response_processor_->process_failed_request(
+    output_dispatcher_->process_failed_request(
         request,
         {StatusCode::RESOURCE_EXHAUSTED,
          "No enough budget to schedule single sequence."});
@@ -425,7 +424,7 @@ RecBatchGroup FixedStepsScheduler::prepare_rec_batch() {
   //     remaining_token_budget, remaining_seq_budget, num_preempted_requests);
 
   if (!finished_requests.empty()) {
-    response_processor_->process_completed_requests(finished_requests);
+    output_dispatcher_->process_completed_requests(finished_requests);
   }
 
   RecBatchGroup batches;
@@ -549,7 +548,7 @@ void FixedStepsScheduler::step(const absl::Duration& timeout) {
 
       // Process finished requests
       if (!finished_requests.empty()) {
-        response_processor_->process_completed_requests(finished_requests);
+        output_dispatcher_->process_completed_requests(finished_requests);
       }
 
       if (options_.rec_worker_max_concurrency() > 1) {
@@ -576,7 +575,7 @@ void FixedStepsScheduler::generate() {
          has_pending_prefetch()) {
     step(absl::Milliseconds(50));
   }
-  response_processor_->wait_completion();
+  output_dispatcher_->wait_completion();
 }
 
 // Pipeline implementations

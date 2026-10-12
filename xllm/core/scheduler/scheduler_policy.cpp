@@ -22,13 +22,13 @@ limitations under the License.
 #include <cstdint>
 #include <limits>
 
-#include "async_response_processor.h"
 #include "common/metrics.h"
 #include "core/framework/config/kv_cache_config.h"
 #include "core/framework/config/kv_cache_store_config.h"
 #include "core/framework/config/parallel_config.h"
 #include "core/framework/config/scheduler_config.h"
 #include "core/framework/config/speculative_config.h"
+#include "core/scheduler/request_output_dispatcher.h"
 #include "framework/request/priority_comparator.h"
 #include "util/timer.h"
 #include "util/utils.h"
@@ -921,12 +921,12 @@ void SchedulerPolicy::handle_abnormal_decode_request(
     clear_mtp_bootstrap(request.get(), state);
     state.kv_cache_manager->deallocate(request.get());
     if (budget_exhausted) {
-      state.response_processor->process_failed_request(
+      state.output_dispatcher->process_failed_request(
           request,
           {StatusCode::RESOURCE_EXHAUSTED,
            "No enough budget to schedule a single sequence."});
     } else {
-      state.response_processor->process_failed_request(
+      state.output_dispatcher->process_failed_request(
           request,
           {StatusCode::RESOURCE_EXHAUSTED,
            "No enough memory to schedule a single sequence."});
@@ -952,14 +952,14 @@ void SchedulerPolicy::handle_unschedulable_head(
     if (blocks_exhausted) {
       LOG(ERROR) << "Request prompt is too long, no enough memory to schedule "
                     "a single sequence.";
-      state.response_processor->process_failed_request(
+      state.output_dispatcher->process_failed_request(
           request,
           {StatusCode::RESOURCE_EXHAUSTED,
            "No enough memory to schedule single sequence"});
     } else if (budget_exhausted) {
       LOG(ERROR) << "Request prompt is too long, no enough budget to schedule "
                     "a single sequence. Please set a larger budget.";
-      state.response_processor->process_failed_request(
+      state.output_dispatcher->process_failed_request(
           request,
           {StatusCode::RESOURCE_EXHAUSTED,
            "No enough budget to schedule single sequence."});

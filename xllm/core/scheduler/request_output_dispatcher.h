@@ -16,6 +16,8 @@ limitations under the License.
 #pragma once
 #include <cstdint>
 #include <functional>
+#include <memory>
+#include <vector>
 
 #include "common/macros.h"
 #include "common/types.h"
@@ -23,19 +25,16 @@ limitations under the License.
 
 namespace xllm {
 
-class BlockManager;
 class Request;
-class Sequence;
 class Tokenizer;
-class AsyncResponseProcessor final {
+class RequestOutputDispatcher final {
  public:
-  AsyncResponseProcessor(
+  RequestOutputDispatcher(
       const Tokenizer* tokenizer,
-      const std::optional<InstanceRole>& role,
       bool enable_service_routing,
       bool disable_log_stats,
       std::function<void(std::shared_ptr<Request>)> cancel_request);
-  ~AsyncResponseProcessor();
+  ~RequestOutputDispatcher();
 
   void process_completed_request(std::shared_ptr<Request> request);
 
@@ -50,16 +49,23 @@ class AsyncResponseProcessor final {
   // in disagg pd mode, decode send requests' responses to prefill
   void process_stream_requests(std::vector<std::shared_ptr<Request>>& requests);
 
+  // Process stream requests with the batch callback, regardless of routing
+  // configuration. This is used by callers that explicitly provide a batch
+  // output callback.
   void batch_process_stream_requests(
       std::vector<std::shared_ptr<Request>>& requests);
 
-  void batch_process_completed_requests(
-      std::vector<std::shared_ptr<Request>>& requests);
   // wait for all responses in queue to be handled
   void wait_completion();
 
  private:
-  DISALLOW_COPY_AND_ASSIGN(AsyncResponseProcessor);
+  DISALLOW_COPY_AND_ASSIGN(RequestOutputDispatcher);
+
+  void schedule_response(const std::shared_ptr<Request>& request,
+                         ThreadPool::Runnable runnable);
+
+  void batch_process_completed_requests(
+      std::vector<std::shared_ptr<Request>>& requests);
 
   // tokenizer instance to decode token ids
   std::unique_ptr<Tokenizer> tokenizer_;
@@ -67,13 +73,11 @@ class AsyncResponseProcessor final {
   // the threadpool to handle responses
   ThreadPool response_threadpool_;
 
-  // the threadpool to handle rpc
+  // the threadpool to send batched responses via RPC
   ThreadPool rpc_threadpool_;
 
   // the threadpool to generate outputs
   ThreadPool generate_output_threadpool_;
-
-  InstanceRole role_ = InstanceRole::DEFAULT;
 
   // for decode instance in disagg pd mode,
   // `True` means decode instance will response batch request_outputs to

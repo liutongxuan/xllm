@@ -11,7 +11,7 @@ cc_library(
     zero_eviction_scheduler.h
     continuous_scheduler.h
     disagg_pd_scheduler.h
-    async_response_processor.h
+    request_output_dispatcher.h
     scheduler.h
     dit_scheduler.h
     scheduler_factory.h
@@ -27,7 +27,7 @@ cc_library(
     continuous_scheduler.cpp
     scheduler_metrics.cpp
     disagg_pd_scheduler.cpp
-    async_response_processor.cpp
+    request_output_dispatcher.cpp
     dit_scheduler.cpp
     scheduler_factory.cpp
     fixed_steps_scheduler.cpp

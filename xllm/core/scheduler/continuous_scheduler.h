@@ -39,8 +39,8 @@ limitations under the License.
 #include "core/framework/request/priority_comparator.h"
 #include "core/framework/request/request.h"
 #include "core/framework/request/sequence.h"
-#include "core/scheduler/async_response_processor.h"
 #include "core/scheduler/profile/profile_manager.h"
+#include "core/scheduler/request_output_dispatcher.h"
 #include "core/scheduler/request_priority_queue.h"
 #include "core/scheduler/scheduler.h"
 #include "core/scheduler/scheduler_metrics.h"
@@ -200,7 +200,7 @@ class ContinuousSchedulerBase : public Scheduler {
 
   std::shared_ptr<CancelRequestQueue> cancel_request_queue_;
 
-  std::unique_ptr<AsyncResponseProcessor> response_processor_;
+  std::unique_ptr<RequestOutputDispatcher> output_dispatcher_;
 
   std::unique_ptr<ProfileManager> profile_manager_;
   std::unique_ptr<SchedulerMetrics> scheduler_metrics_;

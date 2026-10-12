@@ -137,7 +137,7 @@ class BenchContinuousScheduler final : public ContinuousScheduler<> {
     process_batch_output(enable_schedule_overlap);
   }
 
-  void wait_for_responses() { response_processor_->wait_completion(); }
+  void wait_for_responses() { output_dispatcher_->wait_completion(); }
 };
 
 // One engine + scheduler for the whole process. Google Benchmark invokes each

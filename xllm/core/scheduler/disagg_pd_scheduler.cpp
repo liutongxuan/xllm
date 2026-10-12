@@ -430,7 +430,7 @@ bool DisaggPDScheduler::enqueue_dispatched_request(
   }
   if (!queued) {
     release_failed_request(request);
-    response_processor_->process_failed_request(
+    output_dispatcher_->process_failed_request(
         std::move(request),
         {StatusCode::RESOURCE_EXHAUSTED,
          "Prefill request queue is full after Decode allocation"});
@@ -476,7 +476,7 @@ void DisaggPDScheduler::dispatch_requests() {
 
     std::string selected_instance = request->state().decode_address;
     if (selected_instance.empty()) {
-      response_processor_->process_failed_request(
+      output_dispatcher_->process_failed_request(
           request,
           {StatusCode::INVALID_ARGUMENT,
            "No decode address provided to the prefill instance"});
@@ -489,7 +489,7 @@ void DisaggPDScheduler::dispatch_requests() {
     const InstanceInfo remote_info =
         xservice_client_->get_instance_info(selected_instance);
     if (remote_info.name.empty()) {
-      response_processor_->process_failed_request(
+      output_dispatcher_->process_failed_request(
           request,
           {StatusCode::UNKNOWN, "failed to fetch remote decode instance info"});
       continue;
@@ -504,7 +504,7 @@ void DisaggPDScheduler::dispatch_requests() {
       if (topo_result.status == PdTopoStatus::INVALID_REMOTE) {
         remote_instances_info_.erase(selected_instance);
       }
-      response_processor_->process_failed_request(
+      output_dispatcher_->process_failed_request(
           request,
           {StatusCode::INVALID_ARGUMENT,
            "decode instance " + selected_instance +
@@ -521,7 +521,7 @@ void DisaggPDScheduler::dispatch_requests() {
     }
     proto::DisaggPDService_Stub* stub = create_rpc_channel(selected_instance);
     if (stub == nullptr) {
-      response_processor_->process_failed_request(
+      output_dispatcher_->process_failed_request(
           request, {StatusCode::UNKNOWN, "Fail to create rpc channel"});
       continue;
     }
@@ -640,7 +640,7 @@ void DisaggPDScheduler::dispatch_requests() {
                 ? butil::endpoint2str(cntl.remote_side()).c_str()
                 : remote_info.rpc_address;
         release_failed_request(request);
-        response_processor_->process_failed_request(
+        output_dispatcher_->process_failed_request(
             request,
             {StatusCode::UNKNOWN,
              "Failed to add new requests to decode instance"});
@@ -786,7 +786,7 @@ void DisaggPDScheduler::prefill_send_first_generation() {
   }
   // call non_stream_request's callback in P instance when its prefill ends
   if (!non_stream_requests.empty()) {
-    response_processor_->process_completed_requests(non_stream_requests);
+    output_dispatcher_->process_completed_requests(non_stream_requests);
   }
 
   // No prefill request needs to be transferred to decode.
@@ -804,9 +804,9 @@ void DisaggPDScheduler::prefill_send_first_generation() {
       // Non-stream requests were already answered by
       // process_completed_requests.
       if (request->state().stream) {
-        response_processor_->process_failed_request(request, status);
+        output_dispatcher_->process_failed_request(request, status);
       }
-      response_processor_->wait_completion();
+      output_dispatcher_->wait_completion();
       kv_cache_manager_->deallocate(request.get());
     };
     for (auto& request : requests) {
@@ -965,7 +965,7 @@ void DisaggPDScheduler::prefill_send_first_generation() {
         std::lock_guard<std::mutex> lock(req_to_channel_map_mutex_);
         req_to_channel_map_.erase(request->request_id());
       }
-      response_processor_->wait_completion();
+      output_dispatcher_->wait_completion();
       cache_prefill_blocks(request.get());
       kv_cache_manager_->deallocate(request.get());
     }
@@ -1346,7 +1346,7 @@ bool DisaggPDScheduler::exceeds_decode_capacity(Sequence* sequence) const {
 void DisaggPDScheduler::do_permanent_rejection(
     const std::shared_ptr<Request>& request) {
   CHECK(request != nullptr);
-  response_processor_->process_failed_request(
+  output_dispatcher_->process_failed_request(
       request,
       {StatusCode::RESOURCE_EXHAUSTED,
        "Request prompt exceeds decode KV cache capacity"});

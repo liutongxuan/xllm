@@ -136,7 +136,7 @@ POST /v1/chat/completions
        build inputs -> dispatch to worker ranks
   -> LLMWorkerImpl / Executor
        model forward -> logits -> sampling -> token results
-  -> update sequences / AsyncResponseProcessor
+  -> update sequences / RequestOutputDispatcher
        token IDs -> text -> RequestOutput
   -> ChatServiceImpl callback -> JSON response or SSE stream
 ```
@@ -173,7 +173,7 @@ POST /v1/chat/completions
 
 6. **返回结果，继续生成或结束。** Engine 的执行结果用于更新序列状态；调度器
    处理批次输出和完成状态；
-   [`AsyncResponseProcessor`](https://github.com/xLLM-AI/xllm/blob/main/xllm/core/scheduler/async_response_processor.cpp)
+   [`RequestOutputDispatcher`](https://github.com/xLLM-AI/xllm/blob/main/xllm/core/scheduler/request_output_dispatcher.cpp)
    生成解码后的 `RequestOutput` 并调用回调。聊天服务将结果组织成完整 JSON 响应，
    或 Server-Sent Events（SSE）流。配置了推理过程或工具调用解析器时，它们也会
    参与输出处理。停止条件见

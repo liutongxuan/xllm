@@ -184,19 +184,19 @@ class TestableContinuousScheduler final : public ContinuousScheduler<> {
   }
 
   void reject_stream(const std::shared_ptr<Request>& request) {
-    response_processor_->process_stream_request(request);
-    response_processor_->wait_completion();
+    output_dispatcher_->process_stream_request(request);
+    output_dispatcher_->wait_completion();
   }
 
   void reject_streams(const std::vector<std::shared_ptr<Request>>& requests) {
     std::vector<std::shared_ptr<Request>> request_copy = requests;
-    response_processor_->batch_process_stream_requests(request_copy);
-    response_processor_->wait_completion();
+    output_dispatcher_->batch_process_stream_requests(request_copy);
+    output_dispatcher_->wait_completion();
   }
 
   size_t scheduler_queue_size() { return request_queue_.size(); }
 
-  void wait_for_responses() { response_processor_->wait_completion(); }
+  void wait_for_responses() { output_dispatcher_->wait_completion(); }
   void seed_pending_batch(Sequence* sequence) {
     last_batch_ = BatchGroup(/*dp_size=*/1);
     last_batch_.front().add(sequence);

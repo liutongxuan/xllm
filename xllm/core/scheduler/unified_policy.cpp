@@ -19,10 +19,10 @@ limitations under the License.
 #include <cstdint>
 #include <limits>
 
-#include "async_response_processor.h"
 #include "common/metrics.h"
 #include "core/framework/config/kv_cache_store_config.h"
 #include "core/framework/config/scheduler_config.h"
+#include "core/scheduler/request_output_dispatcher.h"
 #include "framework/request/priority_comparator.h"
 #include "scheduler/scheduler_policy.h"
 
@@ -295,7 +295,7 @@ void UnifiedPolicy::schedule_from_unified_queue(
         unified.pop_front();
         clear_mtp_bootstrap(request.get(), state);
         state.kv_cache_manager->deallocate(request.get());
-        state.response_processor->process_failed_request(
+        state.output_dispatcher->process_failed_request(
             request,
             {StatusCode::RESOURCE_EXHAUSTED,
              "No enough resource to schedule a single sequence"});
@@ -345,7 +345,7 @@ void UnifiedPolicy::schedule_from_unified_queue(
         unified.pop_front();
         clear_mtp_bootstrap(request.get(), state);
         state.kv_cache_manager->deallocate(request.get());
-        state.response_processor->process_failed_request(
+        state.output_dispatcher->process_failed_request(
             request,
             {StatusCode::RESOURCE_EXHAUSTED,
              "No enough resource to schedule a single sequence"});

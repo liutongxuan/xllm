@@ -263,7 +263,7 @@ class TestDisaggPDScheduler final : public DisaggPDScheduler {
     CHECK(prefill_request_queue_.enqueue(nullptr));
   }
 
-  void wait_for_responses() { response_processor_->wait_completion(); }
+  void wait_for_responses() { output_dispatcher_->wait_completion(); }
 
   void update_metrics(std::vector<Sequence*>& sequences) {
     scheduler_metrics_->update_token_latency_metrics(sequences);

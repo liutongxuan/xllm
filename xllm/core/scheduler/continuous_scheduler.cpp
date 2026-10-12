@@ -116,9 +116,8 @@ ContinuousSchedulerBase::ContinuousSchedulerBase(
   policy_ = create_scheduler_policy(batch_mode_, options_);
 
   cancel_request_queue_ = std::make_shared<CancelRequestQueue>();
-  response_processor_ = std::make_unique<AsyncResponseProcessor>(
+  output_dispatcher_ = std::make_unique<RequestOutputDispatcher>(
       resource_engine_->tokenizer(),
-      options_.instance_role(),
       options_.enable_service_routing(),
       options_.disable_log_stats(),
       [cancel_request_queue =
@@ -360,7 +359,7 @@ void ContinuousSchedulerBase::drain_decode_restore_waiting(
 
     clear_mtp_bootstrap(request.get());
     kv_cache_manager_->deallocate(request.get());
-    response_processor_->process_failed_request(
+    output_dispatcher_->process_failed_request(
         request,
         {StatusCode::RESOURCE_EXHAUSTED, kDecodeRestoreTimeoutMessage});
     it = decode_restore_waiting_.erase(it);
@@ -431,7 +430,7 @@ BatchGroup ContinuousSchedulerBase::prepare_batch() {
 
   // Finalize
   if (!finished.empty()) {
-    response_processor_->process_completed_requests(finished);
+    output_dispatcher_->process_completed_requests(finished);
   }
 
   auto batches = batch_factory_.create_batches(
@@ -466,7 +465,7 @@ SchedulerState ContinuousSchedulerBase::make_state() {
       .running_sequences_budgets = running_sequences_budgets_,
       .kv_cache_manager = kv_cache_manager_,
       .profile_manager = profile_manager_.get(),
-      .response_processor = response_processor_.get(),
+      .output_dispatcher = output_dispatcher_.get(),
       .model_args = resource_engine_->model_args(),
       .last_step_prefill = last_step_prefill_,
       .options = options_,
@@ -621,7 +620,7 @@ void ContinuousSchedulerBase::generate() {
   }
 
   // wait for all responses done
-  response_processor_->wait_completion();
+  output_dispatcher_->wait_completion();
 }
 
 void ContinuousSchedulerBase::process_batch_output(
@@ -667,7 +666,7 @@ void ContinuousSchedulerBase::process_batch_output(
     }
   }
   if (!stream_requests.empty()) {
-    response_processor_->process_stream_requests(stream_requests);
+    output_dispatcher_->process_stream_requests(stream_requests);
   }
 }
 

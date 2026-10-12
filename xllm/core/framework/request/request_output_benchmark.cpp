@@ -16,7 +16,7 @@ limitations under the License.
 // Hop 5 of the request path: sampled tokens -> RequestOutput.
 //
 // After Batch::process_sample_output has appended the sampled tokens,
-// AsyncResponseProcessor turns sequences into RequestOutputs on its response
+// RequestOutputDispatcher turns sequences into RequestOutputs on its response
 // thread pool: Sequence::generate_streaming_output for every stream step
 // (incremental detokenization of the new suffix) and Request::generate_output
 // once a non-stream request finishes (full detokenization + usage). These

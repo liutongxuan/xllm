@@ -418,7 +418,7 @@ void ZeroEvictionScheduler::handle_prefill_requests(
     std::shared_ptr<Request> request(prefill_queue_->top());
     prefill_queue_->pop_top();
     kv_cache_manager_->deallocate(request.get());
-    response_processor_->process_failed_request(
+    output_dispatcher_->process_failed_request(
         request,
         {StatusCode::RESOURCE_EXHAUSTED,
          "No enough memory to schedule single sequence"});

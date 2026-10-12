@@ -33,7 +33,7 @@ limitations under the License.
 
 namespace xllm {
 
-class AsyncResponseProcessor;
+class RequestOutputDispatcher;
 class ModelArgs;
 
 // SchedulerState provides explicit access to the scheduler's internal state.
@@ -59,7 +59,7 @@ struct SchedulerState {
   // Infrastructure.
   KVCacheManager* kv_cache_manager;
   ProfileManager* profile_manager;
-  AsyncResponseProcessor* response_processor;
+  RequestOutputDispatcher* output_dispatcher;
   const ModelArgs& model_args;
 
   // Flags.

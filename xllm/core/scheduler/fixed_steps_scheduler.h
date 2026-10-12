@@ -35,7 +35,7 @@ limitations under the License.
 #include "core/framework/block/kv_cache_manager.h"
 #include "core/framework/request/request.h"
 #include "core/framework/request/sequence.h"
-#include "core/scheduler/async_response_processor.h"
+#include "core/scheduler/request_output_dispatcher.h"
 #include "core/scheduler/request_priority_queue.h"
 #include "core/scheduler/scheduler.h"
 #include "core/util/threadpool.h"
@@ -187,7 +187,7 @@ class FixedStepsScheduler : public Scheduler {
   std::vector<size_t> running_sequences_budgets_;
 
   std::shared_ptr<CancelRequestQueue> cancel_request_queue_;
-  std::unique_ptr<AsyncResponseProcessor> response_processor_;
+  std::unique_ptr<RequestOutputDispatcher> output_dispatcher_;
 
   bool enable_prefix_cache_ = false;
   std::atomic<size_t> pending_requests_{0};
