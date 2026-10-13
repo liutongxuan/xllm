@@ -1081,7 +1081,11 @@ TEST(ContinuousSchedulerTest, RejectedStreamCancelsAtSchedulingBoundary) {
   auto request = generate_request_with_prompt_tokens(
       {1, 2, 3, 4}, 4, 30000, /*enable_schedule_overlap=*/false, &rate_limiter);
   request->state().stream = true;
-  request->state().output_func = [](const RequestOutput&) { return false; };
+  std::string observed_service_request_id;
+  request->state().output_func = [&](const RequestOutput& output) {
+    observed_service_request_id = output.service_request_id;
+    return false;
+  };
   make_request_decode_ready(request);
   scheduler->add_request(request);
 
@@ -1094,6 +1098,7 @@ TEST(ContinuousSchedulerTest, RejectedStreamCancelsAtSchedulingBoundary) {
   scheduler->reject_stream(request);
 
   EXPECT_FALSE(request->cancelled());
+  EXPECT_EQ(observed_service_request_id, "1");
 
   scheduler->step(absl::ZeroDuration());
 

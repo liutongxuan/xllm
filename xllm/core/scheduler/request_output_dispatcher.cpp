@@ -36,6 +36,13 @@ struct StreamOutputWork {
   std::vector<size_t> num_tokens;
 };
 
+void populate_request_output_metadata(const Request& request,
+                                      RequestOutput& output) {
+  output.request_id = request.request_id();
+  output.service_request_id = request.service_request_id();
+  output.target_xservice_addr = request.source_xservice_addr();
+}
+
 StreamOutputWork prepare_stream_output(Request& request) {
   StreamOutputWork work;
   for (size_t i = 0; i < request.sequences().size(); ++i) {
@@ -55,6 +62,30 @@ StreamOutputWork prepare_stream_output(Request& request) {
     }
   }
   return work;
+}
+
+RequestOutput generate_stream_output(Request& request,
+                                     const StreamOutputWork& work,
+                                     const Tokenizer& tokenizer,
+                                     bool mark_prefill_completion) {
+  RequestOutput output;
+  populate_request_output_metadata(request, output);
+  for (size_t i = 0; i < work.indexes.size(); ++i) {
+    const size_t index = work.indexes[i];
+    const size_t num_tokens = work.num_tokens[i];
+    auto& sequence = request.sequences()[index];
+    auto sequence_output =
+        sequence->generate_streaming_output(num_tokens, tokenizer);
+    if (sequence_output.has_value()) {
+      output.outputs.push_back(std::move(sequence_output.value()));
+    }
+    if (mark_prefill_completion && sequence->num_generated_tokens() == 1) {
+      // Currently only one sequence is supported when service routing is
+      // enabled. Keep this marker in both single and batch stream paths.
+      output.finished_on_prefill_instance = true;
+    }
+  }
+  return output;
 }
 
 }  // namespace
@@ -107,18 +138,19 @@ void RequestOutputDispatcher::process_failed_request(
     Status status) {
   // schedule the response handling
   const bool disable_log_stats = disable_log_stats_;
-  auto runnable = [disable_log_stats, request = request, status = status]() {
+  const auto request_for_schedule = request;
+  auto runnable = [disable_log_stats,
+                   request = std::move(request),
+                   status = std::move(status)]() {
     if (!disable_log_stats) {
       request->log_error_statistic(status);
     }
     RequestOutput output;
-    output.request_id = request->request_id();
-    output.service_request_id = request->service_request_id();
-    output.target_xservice_addr = request->source_xservice_addr();
+    populate_request_output_metadata(*request, output);
     output.status = status;
     request->state().output_func(output);
   };
-  schedule_response(request, std::move(runnable));
+  schedule_response(request_for_schedule, std::move(runnable));
 }
 
 void RequestOutputDispatcher::process_completed_request(
@@ -140,7 +172,8 @@ void RequestOutputDispatcher::process_completed_request(
   // to be destructed. To prevent the scenario where the request is recycled
   // before the response is fully returned to the xLLM service, the Output
   // object must be detached to avoid premature destruction.
-  auto runnable = [this, request = request]() mutable {
+  const auto request_for_schedule = request;
+  auto runnable = [this, request = std::move(request)]() mutable {
     AUTO_COUNTER(responsing_latency_seconds_non_stream);
 
     double end_2_end_latency_seconds = request->end_to_end_latency_seconds();
@@ -158,7 +191,7 @@ void RequestOutputDispatcher::process_completed_request(
     }
     request->state().output_func(req_output);
   };
-  schedule_response(request, std::move(runnable));
+  schedule_response(request_for_schedule, std::move(runnable));
 }
 
 void RequestOutputDispatcher::batch_process_completed_requests(
@@ -167,33 +200,35 @@ void RequestOutputDispatcher::batch_process_completed_requests(
     return;
   }
   size_t requests_size = requests.size();
-  auto counter = new BlockingCounter(requests_size);
-  std::vector<RequestOutput> request_outputs;
-  request_outputs.resize(requests_size);
+  auto counter =
+      std::make_shared<BlockingCounter>(static_cast<int>(requests_size));
+  auto request_outputs =
+      std::make_shared<std::vector<RequestOutput>>(requests_size);
   for (size_t i = 0; i < requests_size; ++i) {
     auto& request = requests[i];
     auto runnable = [counter,
                      this,
                      request = request,
-                     request_output = &request_outputs[i]]() mutable {
+                     request_outputs,
+                     index = i]() mutable {
       AUTO_COUNTER(responsing_latency_seconds_non_stream);
       double end_2_end_latency_seconds = request->end_to_end_latency_seconds();
       // update the metrics for the request
       HISTOGRAM_OBSERVE(
           end_2_end_latency_milliseconds,
           static_cast<int64_t>(end_2_end_latency_seconds * 1000.0));
-      *request_output = std::move(request->generate_output(*tokenizer_));
+      RequestOutput& request_output = (*request_outputs)[index];
+      request_output = std::move(request->generate_output(*tokenizer_));
       if (!disable_log_stats_) {
-        if (request_output->status.has_value() &&
-            !request_output->status->ok()) {
-          request->log_error_statistic(request_output->status.value());
+        if (request_output.status.has_value() && !request_output.status->ok()) {
+          request->log_error_statistic(request_output.status.value());
         } else if (request->finished() || request->cancelled()) {
           request->log_statistic(end_2_end_latency_seconds);
         }
       }
       if (request->sequences()[0]->num_generated_tokens() == 1) {
         // currently only support one sequence when enable_service_routing
-        request_output->finished_on_prefill_instance = true;
+        request_output.finished_on_prefill_instance = true;
       }
       counter->decrement_count();
     };
@@ -201,12 +236,12 @@ void RequestOutputDispatcher::batch_process_completed_requests(
   }
 
   rpc_threadpool_.schedule(
-      [counter = std::unique_ptr<BlockingCounter>(counter),
+      [counter = std::move(counter),
        requests = std::move(requests),
        request_outputs = std::move(request_outputs)]() mutable {
         counter->wait();
         auto& resp_callback = requests[0]->state().outputs_func;
-        resp_callback(request_outputs);
+        resp_callback(*request_outputs);
       });
 }
 
@@ -244,17 +279,14 @@ void RequestOutputDispatcher::process_stream_request(
                    num_tokens = std::move(work.num_tokens)]() {
     AUTO_COUNTER(responsing_latency_seconds_stream);
 
-    RequestOutput req_output;
-    req_output.request_id = request->request_id();
-    for (size_t i = 0; i < indexes.size(); ++i) {
-      const size_t index = indexes[i];
-      const size_t size = num_tokens[i];
-      auto& seq = request->sequences()[index];
-      auto seq_output = seq->generate_streaming_output(size, *tokenizer_);
-      if (seq_output.has_value()) {
-        req_output.outputs.push_back(std::move(seq_output.value()));
-      }
-    }
+    StreamOutputWork work;
+    work.indexes = std::move(indexes);
+    work.num_tokens = std::move(num_tokens);
+    RequestOutput req_output =
+        generate_stream_output(*request,
+                               work,
+                               *tokenizer_,
+                               /*mark_prefill_completion=*/false);
     if (!request->state().output_func(req_output)) {
       cancel_request(request);
     }
@@ -275,16 +307,15 @@ void RequestOutputDispatcher::batch_process_stream_requests(
   }
 
   const size_t requests_size = requests.size();
-  auto counter = new BlockingCounter(static_cast<int>(requests_size));
-  std::vector<RequestOutput> request_outputs;
-  request_outputs.resize(requests_size);
+  auto counter =
+      std::make_shared<BlockingCounter>(static_cast<int>(requests_size));
+  auto request_outputs =
+      std::make_shared<std::vector<RequestOutput>>(requests_size);
   for (size_t i = 0; i < requests_size; ++i) {
     auto& request = requests[i];
     StreamOutputWork& work = output_work[i];
     if (work.indexes.empty()) {
-      request_outputs[i].request_id = request->request_id();
-      request_outputs[i].service_request_id = request->service_request_id();
-      request_outputs[i].target_xservice_addr = request->source_xservice_addr();
+      populate_request_output_metadata(*request, (*request_outputs)[i]);
       counter->decrement_count();
       continue;
     }
@@ -293,33 +324,20 @@ void RequestOutputDispatcher::batch_process_stream_requests(
     auto runnable = [this,
                      counter,
                      request,
+                     request_outputs,
+                     index = i,
                      indexes = std::move(work.indexes),
-                     num_tokens = std::move(work.num_tokens),
-                     req_output = &request_outputs[i]]() mutable {
+                     num_tokens = std::move(work.num_tokens)]() mutable {
       AUTO_COUNTER(responsing_latency_seconds_stream);
       const absl::Time response_start_time = absl::Now();
 
-      // RequestOutput req_output;
-      req_output->request_id = request->request_id();
-      req_output->service_request_id = request->service_request_id();
-      req_output->target_xservice_addr = request->source_xservice_addr();
-      for (size_t i = 0; i < indexes.size(); ++i) {
-        const size_t index = indexes[i];
-        const size_t size = num_tokens[i];
-        auto& seq = request->sequences()[index];
-
-        auto seq_output = seq->generate_streaming_output(size, *tokenizer_);
-        if (seq_output.has_value()) {
-          req_output->outputs.push_back(std::move(seq_output.value()));
-        }
-        if (seq->num_generated_tokens() == 1) {
-          // currently only support one sequence when enable_service_routing
-          // IMPROVE LATER: support enable_schedule_overlap in Default mode
-          // for stream request
-          req_output->finished_on_prefill_instance = true;
-        }
-      }
-      if (req_output->finished_on_prefill_instance) {
+      RequestOutput& request_output = (*request_outputs)[index];
+      StreamOutputWork work;
+      work.indexes = std::move(indexes);
+      work.num_tokens = std::move(num_tokens);
+      request_output = generate_stream_output(
+          *request, work, *tokenizer_, /*mark_prefill_completion=*/true);
+      if (request_output.finished_on_prefill_instance) {
         VLOG(1) << "Prefill response generation request_id="
                 << request->request_id() << ", response_thread_id="
                 << request->state().response_thread_id << ", total_ms="
@@ -332,7 +350,7 @@ void RequestOutputDispatcher::batch_process_stream_requests(
   }
 
   rpc_threadpool_.schedule([cancel_request = cancel_request_,
-                            counter = std::unique_ptr<BlockingCounter>(counter),
+                            counter = std::move(counter),
                             requests = std::move(requests),
                             request_outputs =
                                 std::move(request_outputs)]() mutable {
@@ -342,10 +360,10 @@ void RequestOutputDispatcher::batch_process_stream_requests(
     const double wait_ms =
         absl::ToDoubleMilliseconds(absl::Now() - wait_start_time);
     const absl::Time rpc_start_time = absl::Now();
-    std::vector<bool> status_set = resp_callback(request_outputs);
+    std::vector<bool> status_set = resp_callback(*request_outputs);
     CHECK_EQ(status_set.size(), requests.size());
-    if (!request_outputs.empty() &&
-        request_outputs[0].finished_on_prefill_instance) {
+    if (!request_outputs->empty() &&
+        (*request_outputs)[0].finished_on_prefill_instance) {
       VLOG(1) << "Prefill response RPC request_id=" << requests[0]->request_id()
               << ", response_wait_ms=" << wait_ms << ", rpc_ms="
               << absl::ToDoubleMilliseconds(absl::Now() - rpc_start_time);
