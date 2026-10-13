@@ -18,8 +18,8 @@ limitations under the License.
 #include <string>
 #include <vector>
 
-#include "arg.h"
-#include "types.h"
+#include "compiler/triton/include/arg.h"
+#include "compiler/triton/include/types.h"
 
 namespace xllm::triton_jit {
 

@@ -20,8 +20,8 @@ limitations under the License.
 #include <string>
 #include <vector>
 
-#include "spec.h"
-#include "types.h"
+#include "compiler/triton/include/spec.h"
+#include "compiler/triton/include/types.h"
 
 namespace xllm::triton_jit {
 
@@ -61,7 +61,7 @@ class TritonBackend {
 };
 
 inline constexpr const char* kTritonCompileModule =
-    "xllm.core.triton_jit.scripts.triton_compile";
+    "xllm.compiler.triton.compile";
 
 // Lazily initialize the embedded Python interpreter on first use. Safe to call
 // from any thread; guarded by std::call_once. Callers must still acquire the

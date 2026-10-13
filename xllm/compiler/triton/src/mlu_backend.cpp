@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "backends/mlu_backend.h"
+#include "compiler/triton/include/backends/mlu_backend.h"
 
 #include <framework/core/MLUStream.h>
 #include <framework/core/device.h>

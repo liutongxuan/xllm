@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "backend.h"
+#include "compiler/triton/include/backend.h"
 
 #include <dlfcn.h>
 #include <pybind11/embed.h>
@@ -28,7 +28,7 @@ limitations under the License.
 #include <vector>
 
 #if defined(USE_MLU)
-#include "backends/mlu_backend.h"
+#include "compiler/triton/include/backends/mlu_backend.h"
 #endif
 
 namespace py = pybind11;
@@ -39,9 +39,8 @@ namespace {
 
 bool has_triton_compile_helper(const std::filesystem::path& python_root) {
   std::error_code ec;
-  return std::filesystem::exists(python_root / "xllm" / "core" / "triton_jit" /
-                                     "scripts" / "triton_compile.py",
-                                 ec);
+  return std::filesystem::exists(
+      python_root / "xllm" / "compiler" / "triton" / "compile.py", ec);
 }
 
 std::filesystem::path normalize_path(const std::filesystem::path& path) {
@@ -214,12 +213,11 @@ void prepend_loaded_package_path(const char* module_name,
 void prepend_loaded_xllm_package_paths(
     const std::filesystem::path& python_root) {
   prepend_loaded_package_path("xllm", python_root / "xllm");
+  prepend_loaded_package_path("xllm.compiler",
+                              python_root / "xllm" / "compiler");
+  prepend_loaded_package_path("xllm.compiler.triton",
+                              python_root / "xllm" / "compiler" / "triton");
   prepend_loaded_package_path("xllm.core", python_root / "xllm" / "core");
-  prepend_loaded_package_path("xllm.core.triton_jit",
-                              python_root / "xllm" / "core" / "triton_jit");
-  prepend_loaded_package_path(
-      "xllm.core.triton_jit.scripts",
-      python_root / "xllm" / "core" / "triton_jit" / "scripts");
   prepend_loaded_package_path("xllm.core.kernels",
                               python_root / "xllm" / "core" / "kernels");
   prepend_loaded_package_path(

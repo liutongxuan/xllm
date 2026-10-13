@@ -23,8 +23,8 @@ limitations under the License.
 #include <optional>
 #include <unordered_map>
 
+#include "compiler/triton/include/jit_kernel.h"
 #include "kernels/mlu/mlu_ops_api.h"
-#include "triton_jit/include/jit_kernel.h"
 
 namespace xllm {
 namespace kernel {

@@ -1,1 +1,1 @@
-"""Compiler-side utilities for xLLM build and AOT flows."""
+"""Compiler utilities for xLLM AOT and runtime JIT compilation."""

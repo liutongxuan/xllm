@@ -23,10 +23,10 @@ limitations under the License.
 #include <limits>
 #include <tuple>
 
+#include "compiler/triton/include/jit_kernel.h"
 #include "core/framework/config/kv_cache_config.h"
 #include "kernels/ops_api.h"
 #include "layers/common/kv_shard_batch_metadata.h"
-#include "triton_jit/include/jit_kernel.h"
 #include "util/linalg.h"
 
 namespace xllm {

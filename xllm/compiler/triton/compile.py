@@ -31,6 +31,7 @@ import importlib.util
 import os
 import re
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import triton
@@ -85,7 +86,7 @@ def _load_jit_function(py_path: str, fn_name: str) -> "triton.runtime.JITFunctio
     return fn
 
 
-def _import_dotted_module(py_path: str):
+def _import_dotted_module(py_path: str) -> ModuleType:
     """Import a dotted module path, falling back to file-location loading.
 
     Prefers a normal import (honors package ``__init__`` side effects). On
@@ -304,11 +305,11 @@ if __name__ == "__main__":
     import sys
 
     # Diagnostic: dump the upstream .py's parameter constexpr/specialize info.
-    #   python -m xllm.core.triton_jit.scripts.triton_compile --dump-sig \
+    #   python -m xllm.compiler.triton.compile --dump-sig \
     #       <py_path> <fn_name>
     if len(sys.argv) == 4 and sys.argv[1] == "--dump-sig":
         _dump_signature(sys.argv[2], sys.argv[3])
         sys.exit(0)
 
-    sys.stderr.write("usage: python -m xllm.core.triton_jit.scripts.triton_compile --dump-sig <py_path> <fn_name>\n")
+    sys.stderr.write("usage: python -m xllm.compiler.triton.compile --dump-sig <py_path> <fn_name>\n")
     sys.exit(2)

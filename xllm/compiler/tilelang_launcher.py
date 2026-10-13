@@ -9,6 +9,9 @@ def _bootstrap_import_paths() -> None:
     compiler_dir = Path(__file__).resolve().parent
     package_root = compiler_dir.parent
     repo_root = package_root.parent
+    # Direct script execution exposes compiler/triton as the top-level Triton
+    # package. Keep this directory out of the search path for external imports.
+    sys.path[:] = [path for path in sys.path if Path(path).resolve() != compiler_dir]
     for path in (repo_root, package_root):
         path_str = str(path)
         if path_str not in sys.path:

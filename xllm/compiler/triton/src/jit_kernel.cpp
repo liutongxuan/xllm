@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "jit_kernel.h"
+#include "compiler/triton/include/jit_kernel.h"
 
 #include <glog/logging.h>
 #include <pybind11/embed.h>

@@ -23,8 +23,8 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "compiler/triton/include/spec.h"
 #include "kernels/mlu/mlu_ops_api.h"
-#include "triton_jit/include/spec.h"
 
 namespace xllm {
 namespace {

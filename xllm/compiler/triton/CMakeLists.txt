@@ -4,8 +4,8 @@
 #
 # Compilation runs in-process via the embedded interpreter, which needs Python
 # Development headers/libs. The Python triton-compile helper
-# (scripts/triton_compile.py) is imported by the embedded interpreter as the
-# module xllm.core.triton_jit.scripts.triton_compile.
+# (compile.py) is imported by the embedded interpreter as the
+# module xllm.compiler.triton.compile.
 
 include(cc_library)
 

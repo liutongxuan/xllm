@@ -29,9 +29,9 @@ limitations under the License.
 #include <vector>
 
 #include "common/constants.h"
+#include "compiler/triton/include/jit_kernel.h"
 #include "framework/config/kv_cache_config.h"
 #include "framework/core/MLUStream.h"
-#include "triton_jit/include/jit_kernel.h"
 #include "util/linalg.h"
 #include "util/tensor_helper.h"
 

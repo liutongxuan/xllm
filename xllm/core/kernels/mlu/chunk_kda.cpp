@@ -25,7 +25,7 @@ limitations under the License.
 #include <tuple>
 #include <vector>
 
-#include "triton_jit/include/jit_kernel.h"
+#include "compiler/triton/include/jit_kernel.h"
 
 namespace xllm::kernel::mlu {
 namespace {

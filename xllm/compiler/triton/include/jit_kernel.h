@@ -23,12 +23,12 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
-#include "arg.h"
-#include "arg_pack.h"
-#include "backend.h"
-#include "dtype.h"
-#include "spec.h"
-#include "types.h"
+#include "compiler/triton/include/arg.h"
+#include "compiler/triton/include/arg_pack.h"
+#include "compiler/triton/include/backend.h"
+#include "compiler/triton/include/dtype.h"
+#include "compiler/triton/include/spec.h"
+#include "compiler/triton/include/types.h"
 
 namespace xllm::triton_jit {
 

@@ -23,7 +23,7 @@ limitations under the License.
 #include <mutex>
 #include <string>
 
-#include "backend.h"
+#include "compiler/triton/include/backend.h"
 #include "core/common/macros.h"
 
 namespace xllm::triton_jit {
