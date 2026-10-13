@@ -27,6 +27,12 @@ void Batch::reserve(size_t sequence_count, size_t group_count) {
   state_.reserve(sequence_count, group_count);
 }
 
+void Batch::reserve(size_t sequence_count,
+                    size_t group_count,
+                    size_t input_embedding_count) {
+  state_.reserve(sequence_count, group_count, input_embedding_count);
+}
+
 void Batch::add(Sequence* sequence, uint32_t allowed_max_token) {
   state_.add(sequence, allowed_max_token);
 }

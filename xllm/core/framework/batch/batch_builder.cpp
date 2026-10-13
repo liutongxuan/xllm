@@ -41,7 +41,12 @@ BatchGroup BatchBuilder::build(
   }
 
   std::vector<size_t> sequence_counts(dp_size_);
-  std::vector<size_t> group_counts(dp_size_);
+  // Plain LLM sequences do not carry embeddings. Allocate this only when the
+  // first embedding is observed, then reserve the exact per-rank count.
+  std::vector<size_t> embedding_counts;
+  // Beam groups are uncommon in the regular LLM path, so defer this allocation
+  // until the request scan confirms that groups must be retained.
+  std::vector<size_t> group_counts;
   size_t num_prompt_tokens = 0;
   size_t num_generated_tokens = 0;
 
@@ -55,6 +60,12 @@ BatchGroup BatchBuilder::build(
     CHECK_GT(budgets[i], 0);
     CHECK_LE(budgets[i], std::numeric_limits<uint32_t>::max());
     ++sequence_counts[sequence->dp_rank()];
+    if (sequence->has_input_embedding()) {
+      if (embedding_counts.empty()) {
+        embedding_counts.resize(dp_size_);
+      }
+      ++embedding_counts[sequence->dp_rank()];
+    }
     const size_t cached_tokens = sequence->kv_state().kv_cache_tokens_num();
     const size_t remaining_prompt_tokens =
         sequence->num_prompt_tokens() > cached_tokens
@@ -71,6 +82,7 @@ BatchGroup BatchBuilder::build(
     retain_request_groups |= request->check_beam_search();
   }
   if (retain_request_groups) {
+    group_counts.resize(dp_size_);
     for (const auto& request : requests) {
       auto* group = request->sequence_group();
       CHECK(group != nullptr);
@@ -83,7 +95,10 @@ BatchGroup BatchBuilder::build(
 
   BatchGroup batches(static_cast<size_t>(dp_size_));
   for (int32_t rank = 0; rank < dp_size_; ++rank) {
-    batches[rank].reserve(sequence_counts[rank], group_counts[rank]);
+    batches[rank].reserve(
+        sequence_counts[rank],
+        retain_request_groups ? group_counts[rank] : 0,
+        embedding_counts.empty() ? 0 : embedding_counts[rank]);
   }
   for (size_t i = 0; i < sequences.size(); ++i) {
     batches[sequences[i]->dp_rank()].add(sequences[i],

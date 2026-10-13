@@ -38,6 +38,10 @@ constexpr uint64_t UNINITIALIZED_BATCH_ID = 0x0;
 class BatchState final {
  public:
   void reserve(size_t sequence_count, size_t group_count);
+  // Reserve only the number of sequences that carry input embeddings.
+  void reserve(size_t sequence_count,
+               size_t group_count,
+               size_t input_embedding_count);
   void add(Sequence* sequence, uint32_t token_budget);
   void add(SequencesGroup* group);
   void set_batch_id();

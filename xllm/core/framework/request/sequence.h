@@ -298,6 +298,7 @@ class Sequence {
   bool is_graph_warmup() const { return sequence_params_.is_graph_warmup; }
   // get input embedding
   torch::Tensor get_input_embedding() const { return input_embedding_; }
+  bool has_input_embedding() const { return input_embedding_.defined(); }
 
   void add_blocks(BlockType type, const std::vector<Block>& blocks);
   void add_host_blocks(BlockType type, const std::vector<Block>& blocks);

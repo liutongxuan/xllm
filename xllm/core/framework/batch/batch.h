@@ -41,6 +41,10 @@ class Batch final {
 
   BatchInputType input_type() const;
   void reserve(size_t sequence_count, size_t group_count);
+  // Reserve only the number of sequences that carry input embeddings.
+  void reserve(size_t sequence_count,
+               size_t group_count,
+               size_t input_embedding_count);
 
   explicit Batch(Sequence* sequence);
   explicit Batch(const std::vector<Sequence*>& sequences);

@@ -83,8 +83,14 @@ void BatchState::set_batch_id() {
 }
 
 void BatchState::reserve(size_t sequence_count, size_t group_count) {
+  reserve(sequence_count, group_count, sequence_count);
+}
+
+void BatchState::reserve(size_t sequence_count,
+                         size_t group_count,
+                         size_t input_embedding_count) {
   sequence_plan_.reserve(sequence_count);
-  input_embeddings_vec_.reserve(sequence_count);
+  input_embeddings_vec_.reserve(input_embedding_count);
   sequence_groups_.reserve(group_count);
 }
 
