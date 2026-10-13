@@ -233,6 +233,34 @@ bool ForwardOutput::to_proto(
     LOG(ERROR) << "Token rows do not match forward output rows.";
     return false;
   }
+
+  const auto append_token = [](const Token& token,
+                               const torch::Tensor& token_embeddings,
+                               proto::SquenceOutput* sequence_output) {
+    proto::Token* pb_token = sequence_output->add_tokens();
+    pb_token->set_id(token.id);
+    if (token.logprob.has_value()) {
+      pb_token->set_logprob(token.logprob.value());
+    } else {
+      pb_token->set_empty(true);
+    }
+    pb_token->mutable_top_tokens()->Reserve(
+        static_cast<int32_t>(token.top_tokens.size()));
+    for (const int64_t top_token : token.top_tokens) {
+      pb_token->add_top_tokens(top_token);
+    }
+    pb_token->mutable_top_logprobs()->Reserve(
+        static_cast<int32_t>(token.top_logprobs.size()));
+    for (const float top_logprob : token.top_logprobs) {
+      pb_token->add_top_logprobs(top_logprob);
+    }
+    if (token_embeddings.defined()) {
+      Slice<float> embedding_slice = tensor_slice<float>(token_embeddings);
+      ADD_VECTOR_TO_PROTO(pb_token->mutable_embeddings()->mutable_vals(),
+                          embedding_slice);
+    }
+  };
+
   pb_forward_output->mutable_outputs()->Reserve(num_seqs);
   for (int32_t output_idx = 0; output_idx < num_seqs; ++output_idx) {
     proto::SquenceOutput* pb_seq_out = pb_forward_output->add_outputs();
@@ -240,43 +268,15 @@ bool ForwardOutput::to_proto(
       const auto curr_embeddings =
           embeddings.defined() ? embeddings[output_idx] : embeddings;
       int32_t num_tokens = static_cast<int32_t>(next_tokens.size(1));
-      std::vector<Token> tokens;
-      tokens.reserve(num_tokens);
+      pb_seq_out->mutable_tokens()->Reserve(num_tokens);
       for (int32_t i = 0; i < num_tokens; ++i) {
         const Token token = sample_output.token_at(output_idx, i);
         if (token.id == -1) {
           break;
         }
-        tokens.push_back(token);
-      }
-      num_tokens = static_cast<int32_t>(tokens.size());
-      pb_seq_out->mutable_tokens()->Reserve(num_tokens);
-      for (int32_t i = 0; i < num_tokens; ++i) {
-        const Token& token = tokens[i];
-        proto::Token* pb_token = pb_seq_out->mutable_tokens()->Add();
-        pb_token->set_id(token.id);
-        if (token.logprob.has_value()) {
-          pb_token->set_logprob(token.logprob.value());
-        } else {
-          pb_token->set_empty(true);
-        }
-        pb_token->mutable_top_tokens()->Reserve(
-            static_cast<int32_t>(token.top_tokens.size()));
-        for (const int64_t top_token : token.top_tokens) {
-          pb_token->add_top_tokens(top_token);
-        }
-        pb_token->mutable_top_logprobs()->Reserve(
-            static_cast<int32_t>(token.top_logprobs.size()));
-        for (const float top_logprob : token.top_logprobs) {
-          pb_token->add_top_logprobs(top_logprob);
-        }
         const auto token_embeddings =
             curr_embeddings.defined() ? curr_embeddings[i] : curr_embeddings;
-        if (token_embeddings.defined()) {
-          Slice<float> embedding_slice = tensor_slice<float>(token_embeddings);
-          ADD_VECTOR_TO_PROTO(pb_token->mutable_embeddings()->mutable_vals(),
-                              embedding_slice);
-        }
+        append_token(token, token_embeddings, pb_seq_out);
       }
     } else {
       pb_seq_out->mutable_tokens()->Reserve(1);
@@ -287,30 +287,9 @@ bool ForwardOutput::to_proto(
         token = sample_output.token_at(output_idx);
       }
 
-      proto::Token* pb_token = pb_seq_out->mutable_tokens()->Add();
-      pb_token->set_id(token.id);
-      if (token.logprob.has_value()) {
-        pb_token->set_logprob(token.logprob.value());
-      } else {
-        pb_token->set_empty(true);
-      }
-      pb_token->mutable_top_tokens()->Reserve(
-          static_cast<int32_t>(token.top_tokens.size()));
-      for (const int64_t top_token : token.top_tokens) {
-        pb_token->add_top_tokens(top_token);
-      }
-      pb_token->mutable_top_logprobs()->Reserve(
-          static_cast<int32_t>(token.top_logprobs.size()));
-      for (const float top_logprob : token.top_logprobs) {
-        pb_token->add_top_logprobs(top_logprob);
-      }
       const auto token_embeddings =
           embeddings.defined() ? embeddings[output_idx] : embeddings;
-      if (token_embeddings.defined()) {
-        Slice<float> embedding_slice = tensor_slice<float>(token_embeddings);
-        ADD_VECTOR_TO_PROTO(pb_token->mutable_embeddings()->mutable_vals(),
-                            embedding_slice);
-      }
+      append_token(token, token_embeddings, pb_seq_out);
       if (output_idx < static_cast<int32_t>(mm_embeddings.size())) {
         for (const auto& tensor : mm_embeddings[output_idx]) {
           if ((!tensor.defined() || !tensor.device().is_cpu() ||
