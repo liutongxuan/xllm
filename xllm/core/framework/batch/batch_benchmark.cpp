@@ -26,6 +26,8 @@ limitations under the License.
 //
 //   * BM_BlockManagerPool_AllocateRelease - prefix match + block allocation
 //                                           + release for one prompt.
+//   * BM_BatchFactory_CreateLLM - scheduler-side grouping of LLM sequences by
+//                                data-parallel rank.
 //   * BM_Batch_PrepareForwardInput_Prefill - prefill input for one sequence,
 //                                            built by ForwardInputBuilder and
 //                                            swept over prompt length.
@@ -57,10 +59,12 @@ limitations under the License.
 
 #include "core/common/types.h"
 #include "core/framework/batch/batch.h"
+#include "core/framework/batch/batch_factory.h"
 #include "core/framework/block/block_manager_pool.h"
 #include "core/framework/model/model_args.h"
 #include "core/framework/multimodal/mm_data.h"
 #include "core/framework/request/incremental_decoder.h"
+#include "core/framework/request/request.h"
 #include "core/framework/request/sequence.h"
 #include "core/framework/request/stopping_checker.h"
 #include "core/framework/sampling/sampling_params.h"
@@ -85,6 +89,7 @@ constexpr int32_t kBlockSize = 128;
 constexpr uint32_t kNumBlocks = 16384;
 constexpr uint32_t kMaxSeqsPerBatch = 1024;
 constexpr size_t kDecodePromptTokens = 512;
+constexpr size_t kBatchFactoryPromptTokens = 512;
 // LLMEngine sizes its "LLMEngine.forward_input" pool with 16 threads; the
 // builder only fans out to it above 65536 query tokens.
 constexpr size_t kForwardInputThreads = 16;
@@ -158,6 +163,72 @@ class SequenceFixture final {
  private:
   RequestSamplingParam sampling_param_;
   StoppingChecker stopping_checker_;
+};
+
+std::shared_ptr<Request> make_llm_batch_factory_request(size_t index,
+                                                        int32_t dp_rank) {
+  RequestSamplingParam sampling_param;
+  StoppingChecker stopping_checker;
+  stopping_checker.set_max_generated_tokens(1 << 20);
+  stopping_checker.set_max_context_len(1 << 20);
+  stopping_checker.set_ignore_eos(true);
+  RequestState state("benchmark",
+                     next_prompt_tokens(kBatchFactoryPromptTokens),
+                     sampling_param,
+                     SchedulerParam{},
+                     stopping_checker,
+                     kBatchFactoryPromptTokens + 64,
+                     /*n=*/1,
+                     /*best_of=*/1,
+                     /*logprobs=*/false,
+                     /*stream=*/false,
+                     /*echo=*/false,
+                     /*skip_special_tokens=*/true,
+                     /*enable_schedule_overlap=*/false,
+                     /*output_func=*/nullptr,
+                     /*outputs_func=*/nullptr);
+  auto request = std::make_shared<Request>(
+      std::to_string(index), "", "", std::move(state));
+  request->sequences().front()->set_dp_rank(dp_rank);
+  return request;
+}
+
+// Owns the requests referenced by the scheduler's sequence view. Keeping the
+// fixture outside the timed loop isolates BatchFactory::create_batches from
+// request and Sequence construction.
+class LlmBatchFactoryFixture final {
+ public:
+  LlmBatchFactoryFixture(size_t batch_size, int32_t dp_size, bool decode) {
+    requests_.reserve(batch_size);
+    sequences_.reserve(batch_size);
+    budgets_.reserve(batch_size);
+    for (size_t i = 0; i < batch_size; ++i) {
+      const int32_t dp_rank = static_cast<int32_t>(i % dp_size);
+      auto request = make_llm_batch_factory_request(i, dp_rank);
+      Sequence* sequence = request->sequences().front().get();
+      if (decode) {
+        sequence->kv_state().set_kv_cache_tokens_num(
+            sequence->num_prompt_tokens());
+      }
+      requests_.emplace_back(std::move(request));
+      sequences_.emplace_back(sequence);
+      budgets_.emplace_back(decode ? 1 : kBatchFactoryPromptTokens);
+    }
+  }
+
+  LlmBatchFactoryFixture(const LlmBatchFactoryFixture&) = delete;
+  LlmBatchFactoryFixture& operator=(const LlmBatchFactoryFixture&) = delete;
+
+  const std::vector<std::shared_ptr<Request>>& requests() const {
+    return requests_;
+  }
+  const std::vector<Sequence*>& sequences() const { return sequences_; }
+  const std::vector<size_t>& budgets() const { return budgets_; }
+
+ private:
+  std::vector<std::shared_ptr<Request>> requests_;
+  std::vector<Sequence*> sequences_;
+  std::vector<size_t> budgets_;
 };
 
 // Allocates KV blocks for the whole prompt the way the scheduler does for a
@@ -244,6 +315,31 @@ RawForwardOutput make_raw_output(size_t batch_size, bool logprobs) {
     raw_output.outputs.emplace_back(std::move(sample_output));
   }
   return raw_output;
+}
+
+// --------------------------------------------------------------------------
+// Scheduler-side batch assembly
+// --------------------------------------------------------------------------
+
+// range(0): scheduled LLM sequences, range(1): DP size, range(2): decode (0/1).
+void BM_BatchFactory_CreateLLM(benchmark::State& state) {
+  const size_t batch_size = static_cast<size_t>(state.range(0));
+  const int32_t dp_size = static_cast<int32_t>(state.range(1));
+  const bool decode = state.range(2) != 0;
+  LlmBatchFactoryFixture fixture(batch_size, dp_size, decode);
+  const BatchFactory factory(dp_size);
+
+  for (auto _ : state) {
+    BatchGroup batches = factory.create_batches(
+        fixture.requests(), fixture.sequences(), fixture.budgets());
+    size_t scheduled_sequences = 0;
+    for (const Batch& batch : batches) {
+      scheduled_sequences += batch.size();
+    }
+    do_not_optimize(scheduled_sequences);
+  }
+  state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) *
+                          static_cast<int64_t>(batch_size));
 }
 
 // --------------------------------------------------------------------------
@@ -451,6 +547,9 @@ void BM_Batch_ProcessSampleOutput(benchmark::State& state) {
                           static_cast<int64_t>(batch_size));
 }
 
+BENCHMARK(BM_BatchFactory_CreateLLM)
+    ->ArgsProduct({{1, 16, 64, 256, 1024}, {1, 2, 4, 8}, {0, 1}})
+    ->Unit(benchmark::kNanosecond);
 // Prompt length in tokens.
 BENCHMARK(BM_BlockManagerPool_AllocateRelease)
     ->RangeMultiplier(8)
