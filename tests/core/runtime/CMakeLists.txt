@@ -1,6 +1,19 @@
 include(cc_test)
 
 cc_test(
+  NAME transport_codec_test
+  SRCS transport_codec_test.cpp
+  DEPS :runtime GTest::gtest_main
+)
+if(USE_NPU)
+  target_link_libraries(transport_codec_test PRIVATE nnopbase)
+endif()
+target_link_options(transport_codec_test PRIVATE
+  "-Wl,--whole-archive"
+  "${CMAKE_BINARY_DIR}/third_party/spdlog/libspdlog.a"
+  "-Wl,--no-whole-archive")
+
+cc_test(
   NAME
     acl_graph_bucket_policy_test
   SRCS

@@ -567,7 +567,11 @@ bool CommChannel::get_last_step_result_async(
 
   // parse tokens
   RawForwardOutput raw_forward_output;
-  proto_to_forward_output(pb_output, raw_forward_output);
+  if (!proto_to_forward_output(pb_output, raw_forward_output)) {
+    LOG(ERROR) << "Failed to decode last step model output";
+    promise.setValue(std::optional<RawForwardOutput>{});
+    return false;
+  }
   promise.setValue(std::move(raw_forward_output));
 
   return true;
@@ -696,7 +700,11 @@ void ExecuteModelClosure::Run() {
   }
 
   RawForwardOutput raw_forward_output;
-  proto_to_forward_output(pb_output, raw_forward_output);
+  if (!proto_to_forward_output(pb_output, raw_forward_output)) {
+    LOG(ERROR) << "Failed to decode execute model output";
+    promise.setValue(std::optional<RawForwardOutput>{});
+    return;
+  }
   promise.setValue(std::move(raw_forward_output));
 
   return;

@@ -74,10 +74,10 @@ bool packed_proto_to_vlm_forward_input(
     const torch::Device& device,
     Stream* stream);
 
-void proto_to_forward_output(const proto::ForwardOutput& pb_output,
+bool proto_to_forward_output(const proto::ForwardOutput& pb_output,
                              RawForwardOutput& raw_forward_output);
 
-void forward_output_to_proto(
+bool forward_output_to_proto(
     const torch::Tensor& next_tokens,
     const torch::Tensor& logprobs,
     const torch::Tensor& top_tokens,
@@ -101,9 +101,10 @@ Token build_token(int64_t index,
                   torch::Tensor top_tokens,
                   torch::Tensor top_logprobs);
 
-uint64_t proto_to_block_transfer_info(
+bool proto_to_block_transfer_info(
     const proto::BlockTransferInfos& pb_block_transfer_info,
-    std::vector<BlockTransferInfo>& block_transfer_info);
+    std::vector<BlockTransferInfo>& block_transfer_info,
+    uint64_t* batch_id);
 
 bool block_transfer_info_to_proto(
     const std::vector<BlockTransferInfo>& block_transfer_info,

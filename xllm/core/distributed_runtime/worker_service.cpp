@@ -827,7 +827,13 @@ void WorkerService::TransferBlocks(
     ::google::protobuf::Closure* done) {
   brpc::ClosureGuard done_guard(done);
   std::vector<BlockTransferInfo> block_transfer_info;
-  uint64_t batch_id = proto_to_block_transfer_info(*req, block_transfer_info);
+  uint64_t batch_id = 0;
+  if (!proto_to_block_transfer_info(*req, block_transfer_info, &batch_id)) {
+    resp->set_success_cnt(0);
+    controller->SetFailed("Invalid block transfer request");
+    LOG(ERROR) << "Invalid block transfer request.";
+    return;
+  }
 
   resp->set_success_cnt(
       worker_->transfer_kv_blocks(batch_id, block_transfer_info));
@@ -1093,22 +1099,25 @@ void WorkerService::ExecuteModel(::google::protobuf::RpcController* controller,
         },
         input);
     // convert to proto output
-    forward_output_to_proto(next_tokens,
-                            logprobs,
-                            top_tokens,
-                            top_logprobs,
-                            embeddings,
-                            mm_embeddings,
-                            speculative_token_stats,
-                            expert_load_data,
-                            prepared_token,
-                            src_seq_idxes,
-                            out_tokens,
-                            out_logprobs,
-                            dit_images,
-                            dit_text_output,
-                            json_object_errors,
-                            pb_forward_output);
+    if (!forward_output_to_proto(next_tokens,
+                                 logprobs,
+                                 top_tokens,
+                                 top_logprobs,
+                                 embeddings,
+                                 mm_embeddings,
+                                 speculative_token_stats,
+                                 expert_load_data,
+                                 prepared_token,
+                                 src_seq_idxes,
+                                 out_tokens,
+                                 out_logprobs,
+                                 dit_images,
+                                 dit_text_output,
+                                 json_object_errors,
+                                 pb_forward_output)) {
+      controller->SetFailed("Failed to serialize model output");
+      return;
+    }
     COUNTER_ADD(worker_service_latency_seconds, timer.elapsed_seconds());
   });
 }
@@ -1249,22 +1258,25 @@ void WorkerService::GetLastStepResult(
               ::xllm::EPLBConfig::get_instance().enable_eplb() ||
               !forward_output.json_object_errors.empty()) {
             const std::vector<std::vector<torch::Tensor>> mm_embeddings;
-            forward_output_to_proto(next_tokens,
-                                    logprobs,
-                                    top_tokens,
-                                    top_logprobs,
-                                    embeddings,
-                                    mm_embeddings,
-                                    speculative_token_stats,
-                                    expert_load_data,
-                                    prepared_token,
-                                    src_seq_idxes,
-                                    out_tokens,
-                                    out_logprobs,
-                                    dit_images,
-                                    dit_text_output,
-                                    forward_output.json_object_errors,
-                                    pb_forward_output);
+            if (!forward_output_to_proto(next_tokens,
+                                         logprobs,
+                                         top_tokens,
+                                         top_logprobs,
+                                         embeddings,
+                                         mm_embeddings,
+                                         speculative_token_stats,
+                                         expert_load_data,
+                                         prepared_token,
+                                         src_seq_idxes,
+                                         out_tokens,
+                                         out_logprobs,
+                                         dit_images,
+                                         dit_text_output,
+                                         forward_output.json_object_errors,
+                                         pb_forward_output)) {
+              controller->SetFailed("Failed to serialize model output");
+              return;
+            }
           }
         }
       });

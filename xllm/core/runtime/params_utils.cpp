@@ -27,6 +27,74 @@ limitations under the License.
 #include "util/utils.h"
 
 namespace xllm {
+namespace {
+
+bool valid_transfer_type(int32_t value) {
+  return proto::TransferType_IsValid(value);
+}
+
+bool valid_block_type(int32_t value) { return proto::BlockType_IsValid(value); }
+
+bool valid_host_tensor(const torch::Tensor& tensor,
+                       torch::ScalarType scalar_type) {
+  return !tensor.defined() ||
+         (tensor.device().is_cpu() && tensor.is_contiguous() &&
+          tensor.scalar_type() == scalar_type);
+}
+
+bool valid_token_output(const torch::Tensor& next_tokens,
+                        const torch::Tensor& logprobs,
+                        const torch::Tensor& top_tokens,
+                        const torch::Tensor& top_logprobs,
+                        const torch::Tensor& embeddings) {
+  if (next_tokens.defined() &&
+      (!next_tokens.device().is_cpu() || !next_tokens.is_contiguous() ||
+       (next_tokens.scalar_type() != torch::kInt32 &&
+        next_tokens.scalar_type() != torch::kInt64) ||
+       (next_tokens.dim() != 1 && next_tokens.dim() != 2))) {
+    return false;
+  }
+  if (!valid_host_tensor(logprobs, torch::kFloat32) ||
+      !valid_host_tensor(top_tokens, torch::kInt64) ||
+      !valid_host_tensor(top_logprobs, torch::kFloat32) ||
+      !valid_host_tensor(embeddings, torch::kFloat32)) {
+    return false;
+  }
+  if (top_tokens.defined() != top_logprobs.defined() ||
+      (top_tokens.defined() && !logprobs.defined())) {
+    return false;
+  }
+  if (logprobs.defined() &&
+      (!next_tokens.defined() || logprobs.sizes() != next_tokens.sizes())) {
+    return false;
+  }
+  if (top_tokens.defined()) {
+    if (!next_tokens.defined() || top_tokens.dim() != next_tokens.dim() + 1 ||
+        top_tokens.sizes() != top_logprobs.sizes()) {
+      return false;
+    }
+    for (int64_t dim = 0; dim < next_tokens.dim(); ++dim) {
+      if (top_tokens.size(dim) != next_tokens.size(dim)) {
+        return false;
+      }
+    }
+  }
+  if (embeddings.defined()) {
+    const int64_t expected_rank =
+        next_tokens.defined() && next_tokens.dim() == 2 ? 3 : 2;
+    if (embeddings.dim() != expected_rank || embeddings.numel() == 0) {
+      return false;
+    }
+    if (next_tokens.defined() && next_tokens.dim() == 2 &&
+        embeddings.size(1) != next_tokens.size(1)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
 torch::Tensor choose_lm_head_selected_token_idxes(
     const torch::Tensor& selected_token_idxes,
     const ModelInputParams& input_params,
@@ -96,73 +164,84 @@ torch::Tensor choose_lm_head_selected_token_idxes(
   return (remapped + dp_offset).to(remapped.scalar_type()).contiguous();
 }
 
-void proto_to_forward_output(const proto::ForwardOutput& pb_output,
+bool proto_to_forward_output(const proto::ForwardOutput& pb_output,
                              RawForwardOutput& raw_forward_output) {
   Timer timer;
+  RawForwardOutput decoded_output;
   size_t seq_nums = pb_output.outputs().size();
-  raw_forward_output.outputs.reserve(seq_nums);
+  decoded_output.outputs.reserve(seq_nums);
   size_t expert_load_data_size = pb_output.expert_load_data().size();
-  raw_forward_output.expert_load_data.reserve(expert_load_data_size);
-  raw_forward_output.expert_load_data.assign(
-      pb_output.expert_load_data().begin(), pb_output.expert_load_data().end());
-  raw_forward_output.src_seq_idxes.reserve(pb_output.src_seq_idxes().size());
-  raw_forward_output.src_seq_idxes.assign(pb_output.src_seq_idxes().begin(),
-                                          pb_output.src_seq_idxes().end());
-  raw_forward_output.out_tokens.reserve(pb_output.out_tokens().size());
-  raw_forward_output.out_tokens.assign(pb_output.out_tokens().begin(),
-                                       pb_output.out_tokens().end());
-  raw_forward_output.out_logprobs.reserve(pb_output.out_logprobs().size());
-  raw_forward_output.out_logprobs.assign(pb_output.out_logprobs().begin(),
-                                         pb_output.out_logprobs().end());
-  raw_forward_output.json_object_errors.reserve(
+  decoded_output.expert_load_data.reserve(expert_load_data_size);
+  decoded_output.expert_load_data.assign(pb_output.expert_load_data().begin(),
+                                         pb_output.expert_load_data().end());
+  decoded_output.src_seq_idxes.reserve(pb_output.src_seq_idxes().size());
+  decoded_output.src_seq_idxes.assign(pb_output.src_seq_idxes().begin(),
+                                      pb_output.src_seq_idxes().end());
+  decoded_output.out_tokens.reserve(pb_output.out_tokens().size());
+  decoded_output.out_tokens.assign(pb_output.out_tokens().begin(),
+                                   pb_output.out_tokens().end());
+  decoded_output.out_logprobs.reserve(pb_output.out_logprobs().size());
+  decoded_output.out_logprobs.assign(pb_output.out_logprobs().begin(),
+                                     pb_output.out_logprobs().end());
+  decoded_output.json_object_errors.reserve(
       pb_output.json_object_errors_size());
   for (const proto::JsonObjectOutputError& pb_error :
        pb_output.json_object_errors()) {
-    raw_forward_output.json_object_errors.push_back(
+    decoded_output.json_object_errors.push_back(
         {pb_error.sample_sequence_id(), pb_error.message()});
   }
-  raw_forward_output.prepared_token = pb_output.prepared_token();
+  decoded_output.prepared_token = pb_output.prepared_token();
   for (size_t i = 0; i < seq_nums; ++i) {
-    proto::SquenceOutput pb_seq_out = pb_output.outputs()[i];
+    const proto::SquenceOutput& pb_seq_out = pb_output.outputs()[i];
     RawSampleOutput s;
     size_t token_nums = pb_seq_out.tokens().size();
     s.tokens.reserve(token_nums);
     for (size_t j = 0; j < token_nums; ++j) {
       RawToken t;
-      t.id = pb_seq_out.tokens()[j].id();
-      switch (pb_seq_out.tokens()[j].lp_case()) {
+      const proto::Token& pb_token = pb_seq_out.tokens()[j];
+      t.id = pb_token.id();
+      switch (pb_token.lp_case()) {
         case proto::Token::kEmpty:
           break;
         case proto::Token::kLogprob:
-          t.logprob = pb_seq_out.tokens()[j].logprob();
+          t.logprob = pb_token.logprob();
           break;
         default:
           break;
       }
-      t.top_tokens.assign(pb_seq_out.tokens()[j].top_tokens().begin(),
-                          pb_seq_out.tokens()[j].top_tokens().end());
-      t.top_logprobs.assign(pb_seq_out.tokens()[j].top_logprobs().begin(),
-                            pb_seq_out.tokens()[j].top_logprobs().end());
-      t.embeddings.assign(pb_seq_out.tokens()[j].embeddings().vals().begin(),
-                          pb_seq_out.tokens()[j].embeddings().vals().end());
-      s.tokens.emplace_back(t);
+      t.top_tokens.assign(pb_token.top_tokens().begin(),
+                          pb_token.top_tokens().end());
+      t.top_logprobs.assign(pb_token.top_logprobs().begin(),
+                            pb_token.top_logprobs().end());
+      t.embeddings.assign(pb_token.embeddings().vals().begin(),
+                          pb_token.embeddings().vals().end());
+      s.tokens.emplace_back(std::move(t));
     }
     s.mm_embeddings.reserve(pb_seq_out.mm_embeddings().tensors_size());
     for (const auto& pb_tensor : pb_seq_out.mm_embeddings().tensors()) {
-      s.mm_embeddings.emplace_back(util::proto_to_torch(pb_tensor));
+      torch::Tensor tensor = util::proto_to_torch(pb_tensor);
+      if (!tensor.defined()) {
+        LOG(ERROR) << "Failed to deserialize multimodal embedding tensor";
+        return false;
+      }
+      s.mm_embeddings.emplace_back(std::move(tensor));
     }
     s.speculative_token_stats.accepted_tokens =
         pb_seq_out.speculative_token_stats().accepted_tokens();
     s.speculative_token_stats.proposed_tokens =
         pb_seq_out.speculative_token_stats().proposed_tokens();
-    raw_forward_output.outputs.emplace_back(s);
+    decoded_output.outputs.emplace_back(std::move(s));
   }
-  proto_to_dit_forward_output(pb_output.dit_forward_output(),
-                              raw_forward_output.dit_forward_output);
+  if (!proto_to_dit_forward_output(pb_output.dit_forward_output(),
+                                   decoded_output.dit_forward_output)) {
+    return false;
+  }
+  raw_forward_output = std::move(decoded_output);
   COUNTER_ADD(proto_latency_seconds_proto2o, timer.elapsed_seconds());
+  return true;
 }
 
-void forward_output_to_proto(
+bool forward_output_to_proto(
     const torch::Tensor& next_tokens,
     const torch::Tensor& logprobs,
     const torch::Tensor& top_tokens,
@@ -178,8 +257,22 @@ void forward_output_to_proto(
     const std::vector<torch::Tensor>& dit_images,
     const std::vector<std::string>& dit_text_output,
     const std::vector<JsonObjectOutputError>& json_object_errors,
-    proto::ForwardOutput* pb_forward_output) {
+    proto::ForwardOutput* output) {
+  if (output == nullptr) {
+    return false;
+  }
+  proto::ForwardOutput encoded_output;
+  proto::ForwardOutput* pb_forward_output = &encoded_output;
   Timer timer;
+  if (!valid_token_output(
+          next_tokens, logprobs, top_tokens, top_logprobs, embeddings) ||
+      !valid_host_tensor(expert_load_data, torch::kInt64) ||
+      !valid_host_tensor(src_seq_idxes, torch::kInt32) ||
+      !valid_host_tensor(out_tokens, torch::kInt32) ||
+      !valid_host_tensor(out_logprobs, torch::kFloat32)) {
+    LOG(ERROR) << "Invalid forward output tensor layout.";
+    return false;
+  }
   // LLM decode fills next_tokens; DiT text diffusion (e.g. Cola-DLM) may leave
   // it undefined and only populate dit_text_output. Guard before
   // .size()/.dim().
@@ -191,9 +284,21 @@ void forward_output_to_proto(
   if (!mm_embeddings.empty()) {
     num_seqs = std::max(num_seqs, static_cast<int32_t>(mm_embeddings.size()));
   }
-  CHECK(speculative_token_stats.empty() ||
-        speculative_token_stats.size() == static_cast<size_t>(num_seqs))
-      << "speculative token stats must match forward output rows.";
+  if (!speculative_token_stats.empty() &&
+      speculative_token_stats.size() != static_cast<size_t>(num_seqs)) {
+    LOG(ERROR) << "Speculative token stats must match forward output rows.";
+    return false;
+  }
+  if (embeddings.defined() &&
+      embeddings.size(0) < static_cast<int64_t>(num_seqs)) {
+    LOG(ERROR) << "Embedding rows do not match forward output rows.";
+    return false;
+  }
+  if (next_tokens.defined() && next_tokens.numel() > 0 &&
+      next_tokens.size(0) < static_cast<int64_t>(num_seqs)) {
+    LOG(ERROR) << "Token rows do not match forward output rows.";
+    return false;
+  }
   pb_forward_output->mutable_outputs()->Reserve(num_seqs);
   for (int32_t output_idx = 0; output_idx < num_seqs; ++output_idx) {
     if (next_tokens.defined() && next_tokens.dim() == 2) {
@@ -297,8 +402,10 @@ void forward_output_to_proto(
       *pb_seq_out.mutable_tokens()->Add() = pb_token;
       if (output_idx < static_cast<int32_t>(mm_embeddings.size())) {
         for (const auto& tensor : mm_embeddings[output_idx]) {
-          torch_tensor_to_proto_tensor(
-              tensor, pb_seq_out.mutable_mm_embeddings()->add_tensors());
+          if (!torch_tensor_to_proto_tensor(
+                  tensor, pb_seq_out.mutable_mm_embeddings()->add_tensors())) {
+            return false;
+          }
         }
       }
       *pb_forward_output->mutable_outputs()->Add() = pb_seq_out;
@@ -341,9 +448,14 @@ void forward_output_to_proto(
                         out_logprobs_slice);
   }
   if (!dit_images.empty()) {
-    TORCH_TENSOR_VEC_TO_PROTO_TENSOR_LIST(
-        pb_forward_output->mutable_dit_forward_output()->mutable_tensors(),
-        dit_images);
+    auto* tensors =
+        pb_forward_output->mutable_dit_forward_output()->mutable_tensors();
+    tensors->mutable_tensors()->Reserve(dit_images.size());
+    for (const torch::Tensor& image : dit_images) {
+      if (!torch_tensor_to_proto_tensor(image, tensors->add_tensors())) {
+        return false;
+      }
+    }
   }
   if (!dit_text_output.empty()) {
     // DiT text-only path: serialized even when next_tokens is undefined above.
@@ -358,8 +470,9 @@ void forward_output_to_proto(
     pb_error->set_sample_sequence_id(error.sample_sequence_id);
     pb_error->set_message(error.message);
   }
+  output->Swap(pb_forward_output);
   COUNTER_ADD(proto_latency_seconds_o2proto, timer.elapsed_seconds());
-  return;
+  return true;
 }
 
 Token build_token(int64_t index,
@@ -380,31 +493,46 @@ Token build_token(int64_t index,
   return token;
 }
 
-uint64_t proto_to_block_transfer_info(
+bool proto_to_block_transfer_info(
     const proto::BlockTransferInfos& pb_block_transfer_info,
-    std::vector<BlockTransferInfo>& block_transfer_info) {
-  block_transfer_info.reserve(pb_block_transfer_info.transfer_infos_size());
-
-  for (int i = 0; i < pb_block_transfer_info.transfer_infos_size(); ++i) {
-    block_transfer_info.emplace_back(
-        pb_block_transfer_info.transfer_infos(i).src_block_id(),
-        pb_block_transfer_info.transfer_infos(i).dst_block_id(),
-        reinterpret_cast<const uint8_t*>(
-            pb_block_transfer_info.transfer_infos(i).hash_key().data()),
-        TransferType(pb_block_transfer_info.transfer_type()),
-        static_cast<BlockType>(
-            pb_block_transfer_info.transfer_infos(i).block_type()));
+    std::vector<BlockTransferInfo>& block_transfer_info,
+    uint64_t* batch_id) {
+  if (batch_id == nullptr || pb_block_transfer_info.transfer_infos().empty() ||
+      !valid_transfer_type(pb_block_transfer_info.transfer_type())) {
+    return false;
   }
 
-  return pb_block_transfer_info.batch_id();
+  std::vector<BlockTransferInfo> decoded_infos;
+  decoded_infos.reserve(pb_block_transfer_info.transfer_infos_size());
+
+  for (const proto::BlockTransferInfo& pb_info :
+       pb_block_transfer_info.transfer_infos()) {
+    if (pb_info.hash_key().size() != XXH3_128BITS_HASH_VALUE_LEN ||
+        !valid_block_type(pb_info.block_type())) {
+      return false;
+    }
+    decoded_infos.emplace_back(
+        pb_info.src_block_id(),
+        pb_info.dst_block_id(),
+        reinterpret_cast<const uint8_t*>(pb_info.hash_key().data()),
+        static_cast<TransferType>(pb_block_transfer_info.transfer_type()),
+        static_cast<BlockType>(pb_info.block_type()));
+  }
+
+  *batch_id = pb_block_transfer_info.batch_id();
+  block_transfer_info = std::move(decoded_infos);
+  return true;
 }
 
 bool block_transfer_info_to_proto(
     const std::vector<BlockTransferInfo>& block_transfer_info,
     proto::BlockTransferInfos* pb_block_transfer_info) {
-  pb_block_transfer_info->mutable_transfer_infos()->Reserve(
-      block_transfer_info.size());
+  if (pb_block_transfer_info == nullptr || block_transfer_info.empty()) {
+    return false;
+  }
   auto transfer_type = block_transfer_info[0].transfer_type;
+  proto::BlockTransferInfos encoded_info;
+  encoded_info.mutable_transfer_infos()->Reserve(block_transfer_info.size());
   for (const BlockTransferInfo info : block_transfer_info) {
     if (transfer_type != info.transfer_type) {
       LOG(ERROR) << "Convert to BlockTransferInfos fail, TransferType must be "
@@ -414,17 +542,20 @@ bool block_transfer_info_to_proto(
       return false;
     }
 
-    proto::BlockTransferInfo pb_cache;
-    pb_cache.set_src_block_id(info.src_block_id);
-    pb_cache.set_dst_block_id(info.dst_block_id);
-    pb_cache.set_hash_key(info.hash_key, XXH3_128BITS_HASH_VALUE_LEN);
-    pb_cache.set_block_type(
+    if (!valid_transfer_type(static_cast<int>(info.transfer_type)) ||
+        !valid_block_type(static_cast<int>(info.block_type))) {
+      return false;
+    }
+    proto::BlockTransferInfo* pb_cache = encoded_info.add_transfer_infos();
+    pb_cache->set_src_block_id(info.src_block_id);
+    pb_cache->set_dst_block_id(info.dst_block_id);
+    pb_cache->set_hash_key(info.hash_key, XXH3_128BITS_HASH_VALUE_LEN);
+    pb_cache->set_block_type(
         static_cast<proto::BlockType>(static_cast<int8_t>(info.block_type)));
-
-    *pb_block_transfer_info->mutable_transfer_infos()->Add() =
-        std::move(pb_cache);
   }
-  pb_block_transfer_info->set_transfer_type(proto::TransferType(transfer_type));
+  encoded_info.set_transfer_type(
+      static_cast<proto::TransferType>(static_cast<int8_t>(transfer_type)));
+  pb_block_transfer_info->Swap(&encoded_info);
 
   return true;
 }
@@ -447,21 +578,27 @@ bool storage_prefetch_request_to_proto(const StoragePrefetchRequest& request,
     return false;
   }
 
-  proto_request->mutable_transfer_infos()->Reserve(
+  proto::PrefetchRequest encoded_request;
+  encoded_request.mutable_transfer_infos()->Reserve(
       request.transfer_infos.size());
   for (const BlockTransferInfo& info : request.transfer_infos) {
-    proto::BlockTransferInfo* proto_info = proto_request->add_transfer_infos();
+    if (!valid_transfer_type(static_cast<int>(info.transfer_type)) ||
+        !valid_block_type(static_cast<int>(info.block_type))) {
+      return false;
+    }
+    proto::BlockTransferInfo* proto_info = encoded_request.add_transfer_infos();
     proto_info->set_src_block_id(info.src_block_id);
     proto_info->set_dst_block_id(info.dst_block_id);
     proto_info->set_hash_key(info.hash_key, XXH3_128BITS_HASH_VALUE_LEN);
     proto_info->set_block_type(
         static_cast<proto::BlockType>(static_cast<int8_t>(info.block_type)));
   }
-  proto_request->mutable_unit_end_offsets()->Add(
+  encoded_request.mutable_unit_end_offsets()->Add(
       request.unit_end_offsets.begin(), request.unit_end_offsets.end());
-  proto_request->mutable_batch_end_unit_offsets()->Add(
+  encoded_request.mutable_batch_end_unit_offsets()->Add(
       request.batch_end_unit_offsets.begin(),
       request.batch_end_unit_offsets.end());
+  proto_request->Swap(&encoded_request);
   return true;
 }
 
@@ -472,30 +609,42 @@ bool proto_to_storage_prefetch_request(
     return false;
   }
 
-  request->transfer_infos.clear();
-  request->transfer_infos.reserve(proto_request.transfer_infos_size());
+  StoragePrefetchRequest decoded_request;
+  decoded_request.transfer_infos.reserve(proto_request.transfer_infos_size());
   for (const proto::BlockTransferInfo& proto_info :
        proto_request.transfer_infos()) {
-    if (proto_info.hash_key().size() != XXH3_128BITS_HASH_VALUE_LEN) {
+    if (proto_info.hash_key().size() != XXH3_128BITS_HASH_VALUE_LEN ||
+        !valid_block_type(proto_info.block_type())) {
       return false;
     }
-    request->transfer_infos.emplace_back(
+    decoded_request.transfer_infos.emplace_back(
         proto_info.src_block_id(),
         proto_info.dst_block_id(),
         reinterpret_cast<const uint8_t*>(proto_info.hash_key().data()),
         TransferType::G2H,
         static_cast<BlockType>(proto_info.block_type()));
   }
-  request->unit_end_offsets.assign(proto_request.unit_end_offsets().begin(),
-                                   proto_request.unit_end_offsets().end());
-  request->batch_end_unit_offsets.assign(
+  decoded_request.unit_end_offsets.assign(
+      proto_request.unit_end_offsets().begin(),
+      proto_request.unit_end_offsets().end());
+  decoded_request.batch_end_unit_offsets.assign(
       proto_request.batch_end_unit_offsets().begin(),
       proto_request.batch_end_unit_offsets().end());
-  return request->valid();
+  if (!decoded_request.valid()) {
+    return false;
+  }
+  *request = std::move(decoded_request);
+  return true;
 }
 
 bool dit_forward_input_to_proto(const DiTForwardInput& dit_inputs,
                                 proto::DiTForwardInput* pb_dit_inputs) {
+  if (pb_dit_inputs == nullptr) {
+    return false;
+  }
+  proto::DiTForwardInput* output = pb_dit_inputs;
+  proto::DiTForwardInput encoded_inputs;
+  pb_dit_inputs = &encoded_inputs;
   pb_dit_inputs->set_batch_size(dit_inputs.batch_size);
 
   ADD_VECTOR_TO_PROTO(pb_dit_inputs->mutable_prompts(), dit_inputs.prompts);
@@ -540,12 +689,17 @@ bool dit_forward_input_to_proto(const DiTForwardInput& dit_inputs,
     return false;
   }
 
+  output->Swap(pb_dit_inputs);
   return true;
 }
 
 bool generation_params_to_proto(
     const DiTGenerationParams& dit_generation_params,
     proto::DiTGenerationParams* pb_dit_generation_params) {
+  if (pb_dit_generation_params == nullptr) {
+    return false;
+  }
+  pb_dit_generation_params->Clear();
   pb_dit_generation_params->set_width(dit_generation_params.width);
   pb_dit_generation_params->set_height(dit_generation_params.height);
   pb_dit_generation_params->set_num_inference_steps(
@@ -603,7 +757,8 @@ bool generation_params_to_proto(
 
 bool proto_to_dit_forward_input(const proto::DiTForwardInput& pb_dit_inputs,
                                 DiTForwardInput& dit_inputs) {
-  dit_inputs.batch_size = pb_dit_inputs.batch_size();
+  DiTForwardInput decoded_inputs;
+  decoded_inputs.batch_size = pb_dit_inputs.batch_size();
 
   std::vector<std::string> prompts = std::vector<std::string>(
       pb_dit_inputs.prompts().begin(), pb_dit_inputs.prompts().end());
@@ -615,13 +770,13 @@ bool proto_to_dit_forward_input(const proto::DiTForwardInput& pb_dit_inputs,
   std::vector<std::string> negative_prompts_2 =
       std::vector<std::string>(pb_dit_inputs.negative_prompts_2().begin(),
                                pb_dit_inputs.negative_prompts_2().end());
-  dit_inputs.prompts = std::move(prompts);
+  decoded_inputs.prompts = std::move(prompts);
 
-  dit_inputs.prompts_2 = std::move(prompts_2);
+  decoded_inputs.prompts_2 = std::move(prompts_2);
 
-  dit_inputs.negative_prompts = std::move(negative_prompts);
+  decoded_inputs.negative_prompts = std::move(negative_prompts);
 
-  dit_inputs.negative_prompts_2 = std::move(negative_prompts_2);
+  decoded_inputs.negative_prompts_2 = std::move(negative_prompts_2);
 
   for (const proto::NamedTensor& pb_source : pb_dit_inputs.image_sources()) {
     torch::Tensor tensor = util::proto_to_torch(pb_source.tensor());
@@ -629,7 +784,7 @@ bool proto_to_dit_forward_input(const proto::DiTForwardInput& pb_dit_inputs,
       LOG(ERROR) << "Failed to convert named image tensor";
       return false;
     }
-    dit_inputs.image_sources.add(pb_source.name(), std::move(tensor));
+    decoded_inputs.image_sources.add(pb_source.name(), std::move(tensor));
   }
 
   for (const proto::NamedTensor& pb_source : pb_dit_inputs.tensor_sources()) {
@@ -638,102 +793,95 @@ bool proto_to_dit_forward_input(const proto::DiTForwardInput& pb_dit_inputs,
       LOG(ERROR) << "Failed to convert named Tensor: " << pb_source.name();
       return false;
     }
-    dit_inputs.tensor_sources.add(pb_source.name(), std::move(tensor));
+    decoded_inputs.tensor_sources.add(pb_source.name(), std::move(tensor));
   }
 
   if (!proto_to_generation_params(pb_dit_inputs.generation_params(),
-                                  dit_inputs.generation_params)) {
+                                  decoded_inputs.generation_params)) {
     LOG(ERROR) << "Failed to convert generation_params";
     return false;
   }
 
   if (pb_dit_inputs.has_audio_prompt_text()) {
-    dit_inputs.audio_prompt_text = pb_dit_inputs.audio_prompt_text();
+    decoded_inputs.audio_prompt_text = pb_dit_inputs.audio_prompt_text();
   }
 
+  dit_inputs = std::move(decoded_inputs);
   return true;
 }
 
 bool proto_to_generation_params(
     const proto::DiTGenerationParams& pb_dit_generation_params,
     DiTGenerationParams& dit_generation_params) {
-  LOG(INFO) << "start brpc transfer";
-  dit_generation_params.width = pb_dit_generation_params.width();
-  dit_generation_params.height = pb_dit_generation_params.height();
-  dit_generation_params.num_inference_steps =
+  DiTGenerationParams decoded_params;
+  decoded_params.width = pb_dit_generation_params.width();
+  decoded_params.height = pb_dit_generation_params.height();
+  decoded_params.num_inference_steps =
       pb_dit_generation_params.num_inference_steps();
-  dit_generation_params.true_cfg_scale =
-      pb_dit_generation_params.true_cfg_scale();
-  dit_generation_params.guidance_scale =
-      pb_dit_generation_params.guidance_scale();
-  dit_generation_params.num_images_per_prompt =
+  decoded_params.true_cfg_scale = pb_dit_generation_params.true_cfg_scale();
+  decoded_params.guidance_scale = pb_dit_generation_params.guidance_scale();
+  decoded_params.num_images_per_prompt =
       pb_dit_generation_params.num_images_per_prompt();
   if (pb_dit_generation_params.seed_is_set()) {
-    dit_generation_params.seed_is_set = true;
+    decoded_params.seed_is_set = true;
     if (pb_dit_generation_params.has_seed()) {
-      dit_generation_params.seed = pb_dit_generation_params.seed();
+      decoded_params.seed = pb_dit_generation_params.seed();
     }
   } else if (pb_dit_generation_params.has_seed()) {
     // Backward compat: messages sent before seed_is_set existed.
-    dit_generation_params.seed = pb_dit_generation_params.seed();
-    dit_generation_params.seed_is_set = true;
-  } else {
-    dit_generation_params.seed_is_set = false;
+    decoded_params.seed = pb_dit_generation_params.seed();
+    decoded_params.seed_is_set = true;
   }
-  dit_generation_params.max_sequence_length =
+  decoded_params.max_sequence_length =
       pb_dit_generation_params.max_sequence_length();
-  dit_generation_params.strength = pb_dit_generation_params.strength();
-  dit_generation_params.enable_cfg_renorm =
+  decoded_params.strength = pb_dit_generation_params.strength();
+  decoded_params.enable_cfg_renorm =
       pb_dit_generation_params.enable_cfg_renorm();
-  dit_generation_params.cfg_renorm_min =
-      pb_dit_generation_params.cfg_renorm_min();
-  dit_generation_params.num_frames = pb_dit_generation_params.num_frames();
-  dit_generation_params.video_fps = pb_dit_generation_params.video_fps();
-  dit_generation_params.guidance_scale_2 =
-      pb_dit_generation_params.guidance_scale_2();
-  dit_generation_params.seconds = pb_dit_generation_params.seconds();
-  dit_generation_params.boundary_ratio =
-      pb_dit_generation_params.boundary_ratio();
-  dit_generation_params.flow_shift = pb_dit_generation_params.flow_shift();
-  dit_generation_params.num_videos_per_prompt =
+  decoded_params.cfg_renorm_min = pb_dit_generation_params.cfg_renorm_min();
+  decoded_params.num_frames = pb_dit_generation_params.num_frames();
+  decoded_params.video_fps = pb_dit_generation_params.video_fps();
+  decoded_params.guidance_scale_2 = pb_dit_generation_params.guidance_scale_2();
+  decoded_params.seconds = pb_dit_generation_params.seconds();
+  decoded_params.boundary_ratio = pb_dit_generation_params.boundary_ratio();
+  decoded_params.flow_shift = pb_dit_generation_params.flow_shift();
+  decoded_params.num_videos_per_prompt =
       pb_dit_generation_params.num_videos_per_prompt();
   // Text diffusion params
   if (pb_dit_generation_params.has_max_new_tokens()) {
-    dit_generation_params.max_new_tokens =
-        pb_dit_generation_params.max_new_tokens();
+    decoded_params.max_new_tokens = pb_dit_generation_params.max_new_tokens();
   }
   if (pb_dit_generation_params.has_diffusion_steps()) {
-    dit_generation_params.diffusion_steps =
-        pb_dit_generation_params.diffusion_steps();
+    decoded_params.diffusion_steps = pb_dit_generation_params.diffusion_steps();
   }
   if (pb_dit_generation_params.has_temperature()) {
-    dit_generation_params.temperature = pb_dit_generation_params.temperature();
+    decoded_params.temperature = pb_dit_generation_params.temperature();
   }
   if (pb_dit_generation_params.has_top_k()) {
-    dit_generation_params.top_k = pb_dit_generation_params.top_k();
+    decoded_params.top_k = pb_dit_generation_params.top_k();
   }
   if (pb_dit_generation_params.has_top_p()) {
-    dit_generation_params.top_p = pb_dit_generation_params.top_p();
+    decoded_params.top_p = pb_dit_generation_params.top_p();
   }
   if (pb_dit_generation_params.has_repetition_penalty()) {
-    dit_generation_params.repetition_penalty =
+    decoded_params.repetition_penalty =
         pb_dit_generation_params.repetition_penalty();
   }
   if (pb_dit_generation_params.has_audio_duration_frames()) {
-    dit_generation_params.audio_duration_frames =
+    decoded_params.audio_duration_frames =
         pb_dit_generation_params.audio_duration_frames();
   }
   if (pb_dit_generation_params.has_audio_steps()) {
-    dit_generation_params.audio_steps = pb_dit_generation_params.audio_steps();
+    decoded_params.audio_steps = pb_dit_generation_params.audio_steps();
   }
   if (pb_dit_generation_params.has_audio_guidance_method()) {
-    dit_generation_params.audio_guidance_method =
+    decoded_params.audio_guidance_method =
         pb_dit_generation_params.audio_guidance_method();
   }
   if (pb_dit_generation_params.has_audio_sampling_rate()) {
-    dit_generation_params.audio_sampling_rate =
+    decoded_params.audio_sampling_rate =
         pb_dit_generation_params.audio_sampling_rate();
   }
+  dit_generation_params = std::move(decoded_params);
   return true;
 }
 
@@ -761,11 +909,12 @@ bool proto_to_dit_forward_output(const proto::DiTForwardOutput& pb_dit_outputs,
 
 bool torch_tensor_to_proto_tensor(const torch::Tensor& torch_tensor,
                                   proto::Tensor* proto_tensor) {
-  if (torch_tensor.defined()) {
-    if (!util::torch_to_proto(torch_tensor, proto_tensor)) {
-      LOG(ERROR) << "Failed to convert torch Tensor to Pb Tensor ";
-      return false;
-    }
+  if (proto_tensor == nullptr || !torch_tensor.defined()) {
+    return false;
+  }
+  if (!util::torch_to_proto(torch_tensor, proto_tensor)) {
+    LOG(ERROR) << "Failed to convert torch Tensor to Pb Tensor ";
+    return false;
   }
   return true;
 }
