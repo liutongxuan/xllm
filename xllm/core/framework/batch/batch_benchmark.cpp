@@ -381,7 +381,7 @@ void BM_Batch_PrepareForwardInput_Prefill(benchmark::State& state) {
       sequence_fixture.make_sequence(/*index=*/0, num_prompt_tokens);
   allocate_prefill(pool, *sequence);
   ThreadPool thread_pool(kForwardInputThreads);
-  const ModelArgs args;
+  const ModelArgs args{};
 
   for (auto _ : state) {
     // The builder advances kv_cache_tokens_num past the prompt; rewind so every
@@ -404,7 +404,7 @@ void BM_Batch_PrepareForwardInput_Decode(benchmark::State& state) {
   BlockManagerPool& pool = shared_block_manager_pool();
   DecodeBatchFixture fixture(sequence_fixture, &pool, batch_size);
   ThreadPool thread_pool(kForwardInputThreads);
-  const ModelArgs args;
+  const ModelArgs args{};
 
   for (auto _ : state) {
     fixture.rewind_kv_cache();
@@ -524,7 +524,7 @@ void BM_Batch_ProcessSampleOutput(benchmark::State& state) {
   SequenceFixture sequence_fixture(logprobs);
   BlockManagerPool& pool = shared_block_manager_pool();
   ThreadPool thread_pool(kForwardInputThreads);
-  const ModelArgs args;
+  const ModelArgs args{};
 
   for (auto _ : state) {
     // process_sample_output appends to the sequences and consumes the output
