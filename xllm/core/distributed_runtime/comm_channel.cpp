@@ -22,6 +22,7 @@ limitations under the License.
 #include <cstddef>
 
 #include "common/global_flags.h"
+#include "core/kv_cache/transfer/kv_transport_codec.h"
 #include "runtime/vlm_forward_params.h"
 
 namespace xllm {
@@ -521,7 +522,7 @@ void CommChannel::prefetch_from_storage(const StoragePrefetchRequest& request,
   CHECK(result != nullptr);
   CHECK(request.valid());
   proto::PrefetchRequest proto_request;
-  if (!storage_prefetch_request_to_proto(request, &proto_request)) {
+  if (!request.to_proto(&proto_request)) {
     LOG(ERROR) << "Failed to serialize Mooncake prefetch request.";
     result->mark_worker_ended(
         worker_index, /*worker_ok=*/false, /*worker_quiescent=*/true);
@@ -567,7 +568,7 @@ bool CommChannel::get_last_step_result_async(
 
   // parse tokens
   RawForwardOutput raw_forward_output;
-  if (!proto_to_forward_output(pb_output, raw_forward_output)) {
+  if (!raw_forward_output.from_proto(pb_output)) {
     LOG(ERROR) << "Failed to decode last step model output";
     promise.setValue(std::optional<RawForwardOutput>{});
     return false;
@@ -614,7 +615,7 @@ bool CommChannel::execute_model_with_brpc(
     folly::Promise<std::optional<RawForwardOutput>>& promise) {
   proto::ForwardInput pb_forward_input;
   auto* packed_input = pb_forward_input.mutable_packed_input();
-  if (!forward_input_to_packed_proto(input, packed_input)) {
+  if (!input.to_packed_proto(packed_input)) {
     LOG(ERROR) << "failed to pack LlmForwardInput for remote execution";
     promise.setValue(std::optional<RawForwardOutput>(std::nullopt));
     return false;
@@ -636,8 +637,7 @@ bool CommChannel::execute_model_with_brpc(
     const DiTForwardInput& input,
     folly::Promise<std::optional<RawForwardOutput>>& promise) {
   proto::ForwardInput pb_forward_input;
-  if (!dit_forward_input_to_packed_proto(
-          input, pb_forward_input.mutable_packed_input())) {
+  if (!input.to_packed_proto(pb_forward_input.mutable_packed_input())) {
     promise.setValue(std::optional<RawForwardOutput>{});
     return false;
   }
@@ -663,8 +663,7 @@ bool CommChannel::execute_model_with_brpc(
     const RecForwardInput& input,
     folly::Promise<std::optional<RawForwardOutput>>& promise) {
   proto::ForwardInput pb_forward_input;
-  if (!rec_forward_input_to_packed_proto(
-          input, pb_forward_input.mutable_packed_input())) {
+  if (!input.to_packed_proto(pb_forward_input.mutable_packed_input())) {
     promise.setValue(std::optional<RawForwardOutput>{});
     return false;
   }
@@ -678,8 +677,7 @@ bool CommChannel::execute_model_with_brpc(
     const VlmForwardInput& input,
     folly::Promise<std::optional<RawForwardOutput>>& promise) {
   proto::ForwardInput pb_forward_input;
-  if (!vlm_forward_input_to_packed_proto(
-          input, pb_forward_input.mutable_packed_input())) {
+  if (!input.to_packed_proto(pb_forward_input.mutable_packed_input())) {
     promise.setValue(std::optional<RawForwardOutput>{});
     return false;
   }
@@ -700,7 +698,7 @@ void ExecuteModelClosure::Run() {
   }
 
   RawForwardOutput raw_forward_output;
-  if (!proto_to_forward_output(pb_output, raw_forward_output)) {
+  if (!raw_forward_output.from_proto(pb_output)) {
     LOG(ERROR) << "Failed to decode execute model output";
     promise.setValue(std::optional<RawForwardOutput>{});
     return;

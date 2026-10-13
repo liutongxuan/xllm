@@ -32,7 +32,6 @@ limitations under the License.
 #include "core/kv_cache/storage/kv_cache.h"
 #include "framework/model/model_input_params.h"
 #include "framework/state_dict/state_dict.h"
-#include "runtime/params_utils.h"
 #include "runtime/rec_forward_params.h"
 #include "runtime/vlm_forward_params.h"
 #include "util/hash_util.h"

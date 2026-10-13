@@ -45,7 +45,6 @@ limitations under the License.
 #include "framework/parallel_state/parallel_state.h"
 #include "models/model_registry.h"
 #include "runtime/llm_worker_impl.h"
-#include "runtime/params_utils.h"
 #include "runtime/vlm_forward_params.h"
 #include "runtime/worker.h"
 #include "util/env_var.h"

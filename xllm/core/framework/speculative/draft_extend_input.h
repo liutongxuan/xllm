@@ -19,9 +19,9 @@ limitations under the License.
 
 namespace xllm {
 
-struct SampleOutput;
+class SampleOutput;
 class LlmForwardInput;
-struct ForwardOutput;
+class ForwardOutput;
 class EmbeddingCache;
 
 // Selects the target/draft hidden that feeds the next draft-extend step. Target

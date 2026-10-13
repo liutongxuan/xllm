@@ -22,7 +22,10 @@ limitations under the License.
 #include <string>
 #include <vector>
 
-#include "core/runtime/params_utils.h"
+#include "core/kv_cache/transfer/kv_transport_codec.h"
+#include "core/kv_cache/transfer/prefetch_result.h"
+#include "core/runtime/forward_params.h"
+#include "worker.pb.h"
 
 namespace xllm {
 namespace {
@@ -50,23 +53,7 @@ StoragePrefetchRequest make_prefetch_request() {
 bool encode_output(const ForwardOutput& source,
                    proto::ForwardOutput* output,
                    const std::vector<SpeculativeTokenStats>& stats = {}) {
-  const SampleOutput& sample = source.sample_output;
-  return forward_output_to_proto(sample.next_tokens,
-                                 sample.logprobs,
-                                 sample.top_tokens,
-                                 sample.top_logprobs,
-                                 source.embedding,
-                                 sample.mm_embeddings,
-                                 stats,
-                                 source.expert_load_data,
-                                 source.prepared_token,
-                                 source.beam_search_output.src_seq_idxes,
-                                 source.beam_search_output.out_tokens,
-                                 source.beam_search_output.out_logprobs,
-                                 source.dit_forward_output.tensors,
-                                 source.dit_forward_output.text_output,
-                                 source.json_object_errors,
-                                 output);
+  return source.to_proto(stats, output);
 }
 
 void expect_original_output(const RawForwardOutput& output) {
@@ -143,7 +130,8 @@ TEST(TransportCodecTest, InvalidBlockTransferEncodePreservesDestination) {
       {make_block(), make_block(/*src_id=*/8, TransferType::H2D)},
       {make_block(/*src_id=*/7, static_cast<TransferType>(99))},
       {make_block(
-          /*src_id=*/7, TransferType::G2H, static_cast<BlockType>(99))}};
+          /*src_id=*/7, TransferType::G2H, static_cast<BlockType>(99))},
+      {make_block(/*src_id=*/-1)}};
 
   for (const auto& invalid : invalid_inputs) {
     EXPECT_FALSE(block_transfer_info_to_proto(
@@ -154,20 +142,20 @@ TEST(TransportCodecTest, InvalidBlockTransferEncodePreservesDestination) {
 
 TEST(TransportCodecTest, InvalidPrefetchDecodePreservesDestination) {
   proto::PrefetchRequest valid;
-  ASSERT_TRUE(
-      storage_prefetch_request_to_proto(make_prefetch_request(), &valid));
-  std::vector<proto::PrefetchRequest> invalid_inputs(5, valid);
+  ASSERT_TRUE(make_prefetch_request().to_proto(&valid));
+  std::vector<proto::PrefetchRequest> invalid_inputs(6, valid);
   invalid_inputs[0].clear_transfer_infos();
   invalid_inputs[1].mutable_transfer_infos(0)->set_hash_key("short");
   invalid_inputs[2].mutable_transfer_infos(0)->set_block_type(
       static_cast<proto::BlockType>(99));
   invalid_inputs[3].set_unit_end_offsets(0, 2);
   invalid_inputs[4].set_batch_end_unit_offsets(0, 0);
+  invalid_inputs[5].mutable_transfer_infos(0)->set_src_block_id(-1);
 
   for (const proto::PrefetchRequest& invalid : invalid_inputs) {
     StoragePrefetchRequest destination = make_prefetch_request();
     destination.transfer_infos[0].src_block_id = 19;
-    EXPECT_FALSE(proto_to_storage_prefetch_request(invalid, &destination));
+    EXPECT_FALSE(destination.from_proto(invalid));
     ASSERT_EQ(destination.transfer_infos.size(), 1);
     EXPECT_EQ(destination.transfer_infos[0].src_block_id, 19);
     EXPECT_EQ(destination.unit_end_offsets, (std::vector<uint32_t>{1}));
@@ -177,17 +165,16 @@ TEST(TransportCodecTest, InvalidPrefetchDecodePreservesDestination) {
 
 TEST(TransportCodecTest, InvalidPrefetchEncodePreservesDestination) {
   proto::PrefetchRequest destination;
-  ASSERT_TRUE(
-      storage_prefetch_request_to_proto(make_prefetch_request(), &destination));
+  ASSERT_TRUE(make_prefetch_request().to_proto(&destination));
   const std::string original = destination.SerializeAsString();
   StoragePrefetchRequest invalid = make_prefetch_request();
   invalid.unit_end_offsets = {2};
-  EXPECT_FALSE(storage_prefetch_request_to_proto(invalid, &destination));
+  EXPECT_FALSE(invalid.to_proto(&destination));
   EXPECT_EQ(destination.SerializeAsString(), original);
 
   invalid = make_prefetch_request();
   invalid.transfer_infos[0].block_type = static_cast<BlockType>(99);
-  EXPECT_FALSE(storage_prefetch_request_to_proto(invalid, &destination));
+  EXPECT_FALSE(invalid.to_proto(&destination));
   EXPECT_EQ(destination.SerializeAsString(), original);
 }
 
@@ -197,13 +184,12 @@ TEST(TransportCodecTest, PrefetchReuseReplacesTransfersAndOffsets) {
   first.unit_end_offsets = {1, 2};
   first.batch_end_unit_offsets = {1, 2};
   proto::PrefetchRequest encoded;
-  ASSERT_TRUE(storage_prefetch_request_to_proto(first, &encoded));
+  ASSERT_TRUE(first.to_proto(&encoded));
   StoragePrefetchRequest decoded;
-  ASSERT_TRUE(proto_to_storage_prefetch_request(encoded, &decoded));
+  ASSERT_TRUE(decoded.from_proto(encoded));
 
-  ASSERT_TRUE(
-      storage_prefetch_request_to_proto(make_prefetch_request(), &encoded));
-  ASSERT_TRUE(proto_to_storage_prefetch_request(encoded, &decoded));
+  ASSERT_TRUE(make_prefetch_request().to_proto(&encoded));
+  ASSERT_TRUE(decoded.from_proto(encoded));
   EXPECT_EQ(encoded.transfer_infos_size(), 1);
   ASSERT_EQ(decoded.transfer_infos.size(), 1);
   EXPECT_EQ(decoded.transfer_infos[0].src_block_id, 7);
@@ -238,7 +224,7 @@ TEST(TransportCodecTest, InvalidOutputTensorLayoutsPreserveDestination) {
   const std::string original = destination.SerializeAsString();
   ForwardOutput valid;
   valid.sample_output.next_tokens = torch::tensor({7, 8}, torch::kInt32);
-  std::vector<ForwardOutput> invalid_inputs(9, valid);
+  std::vector<ForwardOutput> invalid_inputs(10, valid);
   invalid_inputs[0].sample_output.next_tokens = torch::tensor({7.0f, 8.0f});
   invalid_inputs[1].sample_output.logprobs = torch::tensor({-0.5f});
   invalid_inputs[2].sample_output.top_tokens =
@@ -247,8 +233,8 @@ TEST(TransportCodecTest, InvalidOutputTensorLayoutsPreserveDestination) {
       torch::tensor({{7}, {8}}, torch::kInt64);
   invalid_inputs[3].sample_output.top_logprobs =
       torch::tensor({{-0.5f}, {-1.0f}});
-  invalid_inputs[4].embedding = torch::tensor({1.0f, 2.0f});
-  invalid_inputs[5].embedding = torch::tensor({{1.0f}});
+  invalid_inputs[4].sample_output.embeddings = torch::tensor({1.0f, 2.0f});
+  invalid_inputs[5].sample_output.embeddings = torch::tensor({{1.0f}});
   invalid_inputs[6].sample_output.next_tokens =
       torch::tensor({{7, 8}, {9, 10}}, torch::kInt32).transpose(0, 1);
   invalid_inputs[7].beam_search_output.src_seq_idxes =
@@ -256,6 +242,9 @@ TEST(TransportCodecTest, InvalidOutputTensorLayoutsPreserveDestination) {
   invalid_inputs[8].sample_output.mm_embeddings = {{torch::tensor({1.0f})},
                                                    {torch::tensor({2.0f})},
                                                    {torch::tensor({3.0f})}};
+  invalid_inputs[9].sample_output.next_tokens =
+      torch::empty({0}, torch::kInt32);
+  invalid_inputs[9].sample_output.embeddings = torch::tensor({{1.0f}, {2.0f}});
   for (const ForwardOutput& invalid : invalid_inputs) {
     EXPECT_FALSE(encode_output(invalid, &destination));
     EXPECT_EQ(destination.SerializeAsString(), original);
@@ -270,7 +259,16 @@ TEST(TransportCodecTest, InvalidMultimodalOutputDecodePreservesDestination) {
   sequence->add_tokens()->set_id(7);
   sequence->mutable_mm_embeddings()->add_tensors();
   RawForwardOutput destination = original_output();
-  EXPECT_FALSE(proto_to_forward_output(source, destination));
+  EXPECT_FALSE(destination.from_proto(source));
+  expect_original_output(destination);
+}
+
+TEST(TransportCodecTest, InvalidBeamOutputDecodePreservesDestination) {
+  proto::ForwardOutput source;
+  source.add_src_seq_idxes(0);
+  source.add_out_tokens(7);
+  RawForwardOutput destination = original_output();
+  EXPECT_FALSE(destination.from_proto(source));
   expect_original_output(destination);
 }
 
@@ -279,7 +277,7 @@ TEST(TransportCodecTest, InvalidDiTOutputDecodePreservesDestination) {
   source.add_outputs()->add_tokens()->set_id(7);
   source.mutable_dit_forward_output()->mutable_tensors()->add_tensors();
   RawForwardOutput destination = original_output();
-  EXPECT_FALSE(proto_to_forward_output(source, destination));
+  EXPECT_FALSE(destination.from_proto(source));
   expect_original_output(destination);
 }
 
@@ -291,7 +289,7 @@ TEST(TransportCodecTest, OutputRoundTripPreservesTokenAndTensorPayloads) {
       torch::tensor({{7, 9}, {8, 10}}, torch::kInt64);
   source.sample_output.top_logprobs =
       torch::tensor({{-0.5f, -1.5f}, {-1.0f, -2.0f}});
-  source.embedding = torch::tensor({{1.0f, 2.0f}, {3.0f, 4.0f}});
+  source.sample_output.embeddings = torch::tensor({{1.0f, 2.0f}, {3.0f, 4.0f}});
   source.sample_output.mm_embeddings = {{torch::tensor({1.0f, 2.0f})},
                                         {torch::tensor({3.0f})}};
   source.beam_search_output.src_seq_idxes =
@@ -304,7 +302,7 @@ TEST(TransportCodecTest, OutputRoundTripPreservesTokenAndTensorPayloads) {
   proto::ForwardOutput encoded;
   ASSERT_TRUE(encode_output(source, &encoded, {{1, 2}, {2, 3}}));
   RawForwardOutput decoded;
-  ASSERT_TRUE(proto_to_forward_output(encoded, decoded));
+  ASSERT_TRUE(decoded.from_proto(encoded));
 
   ASSERT_EQ(decoded.outputs.size(), 2);
   ASSERT_EQ(decoded.outputs[0].tokens.size(), 1);
@@ -343,12 +341,12 @@ TEST(TransportCodecTest, SpeculativeOutputStopsAtPaddingAndPreservesPayloads) {
       torch::tensor({{{7}, {0}, {99}}, {{8}, {9}, {0}}}, torch::kInt64);
   source.sample_output.top_logprobs =
       source.sample_output.logprobs.unsqueeze(/*dim=*/2).contiguous();
-  source.embedding =
+  source.sample_output.embeddings =
       torch::tensor({{{1.0f}, {2.0f}, {3.0f}}, {{4.0f}, {5.0f}, {6.0f}}});
   proto::ForwardOutput encoded;
   ASSERT_TRUE(encode_output(source, &encoded, {{1, 2}, {2, 2}}));
   RawForwardOutput decoded;
-  ASSERT_TRUE(proto_to_forward_output(encoded, decoded));
+  ASSERT_TRUE(decoded.from_proto(encoded));
 
   ASSERT_EQ(decoded.outputs.size(), 2);
   ASSERT_EQ(decoded.outputs[0].tokens.size(), 1);
@@ -369,11 +367,11 @@ TEST(TransportCodecTest, SpeculativeOutputStopsAtPaddingAndPreservesPayloads) {
 
 TEST(TransportCodecTest, EmbeddingOnlyOutputUsesPlaceholderToken) {
   ForwardOutput source;
-  source.embedding = torch::tensor({{1.0f, 2.0f}});
+  source.sample_output.embeddings = torch::tensor({{1.0f, 2.0f}});
   proto::ForwardOutput encoded;
   ASSERT_TRUE(encode_output(source, &encoded));
   RawForwardOutput decoded;
-  ASSERT_TRUE(proto_to_forward_output(encoded, decoded));
+  ASSERT_TRUE(decoded.from_proto(encoded));
   ASSERT_EQ(decoded.outputs.size(), 1);
   ASSERT_EQ(decoded.outputs[0].tokens.size(), 1);
   EXPECT_EQ(decoded.outputs[0].tokens[0].id, -1);
@@ -391,12 +389,12 @@ TEST(TransportCodecTest, OutputReuseClearsFieldsAbsentFromTextOnlyResult) {
   proto::ForwardOutput encoded;
   ASSERT_TRUE(encode_output(first, &encoded));
   RawForwardOutput decoded;
-  ASSERT_TRUE(proto_to_forward_output(encoded, decoded));
+  ASSERT_TRUE(decoded.from_proto(encoded));
 
   ForwardOutput second;
   second.dit_forward_output.text_output = {"text only"};
   ASSERT_TRUE(encode_output(second, &encoded));
-  ASSERT_TRUE(proto_to_forward_output(encoded, decoded));
+  ASSERT_TRUE(decoded.from_proto(encoded));
   EXPECT_EQ(encoded.outputs_size(), 0);
   EXPECT_EQ(encoded.json_object_errors_size(), 0);
   EXPECT_TRUE(decoded.outputs.empty());
@@ -413,7 +411,7 @@ TEST(TransportCodecTest, GenerationParamsEncodeReuseClearsUnsetOptionals) {
   source.max_new_tokens = 16;
   source.diffusion_steps = 4;
   proto::DiTGenerationParams encoded;
-  ASSERT_TRUE(generation_params_to_proto(source, &encoded));
+  ASSERT_TRUE(source.to_proto(&encoded));
   ASSERT_TRUE(encoded.has_seed());
   ASSERT_TRUE(encoded.has_max_new_tokens());
   ASSERT_TRUE(encoded.has_diffusion_steps());
@@ -421,7 +419,7 @@ TEST(TransportCodecTest, GenerationParamsEncodeReuseClearsUnsetOptionals) {
   source.seed_is_set = false;
   source.max_new_tokens = 0;
   source.diffusion_steps = 0;
-  ASSERT_TRUE(generation_params_to_proto(source, &encoded));
+  ASSERT_TRUE(source.to_proto(&encoded));
   EXPECT_FALSE(encoded.has_seed());
   EXPECT_FALSE(encoded.seed_is_set());
   EXPECT_FALSE(encoded.has_max_new_tokens());
@@ -443,12 +441,12 @@ TEST(TransportCodecTest, GenerationParamsDecodeReuseRestoresOptionalDefaults) {
   source.set_audio_guidance_method("test");
   source.set_audio_sampling_rate(1234);
   DiTGenerationParams decoded;
-  ASSERT_TRUE(proto_to_generation_params(source, decoded));
+  ASSERT_TRUE(decoded.from_proto(source));
   ASSERT_EQ(decoded.seed, 42);
   ASSERT_EQ(decoded.audio_steps, 6);
 
   source.Clear();
-  ASSERT_TRUE(proto_to_generation_params(source, decoded));
+  ASSERT_TRUE(decoded.from_proto(source));
   const DiTGenerationParams defaults;
   EXPECT_FALSE(decoded.seed_is_set);
   EXPECT_EQ(decoded.seed, defaults.seed);
@@ -469,7 +467,7 @@ TEST(TransportCodecTest, GenerationParamsAcceptLegacyAndExplicitZeroSeed) {
   legacy.set_seed(42);
   ASSERT_FALSE(legacy.seed_is_set());
   DiTGenerationParams decoded;
-  ASSERT_TRUE(proto_to_generation_params(legacy, decoded));
+  ASSERT_TRUE(decoded.from_proto(legacy));
   EXPECT_TRUE(decoded.seed_is_set);
   EXPECT_EQ(decoded.seed, 42);
 
@@ -477,10 +475,10 @@ TEST(TransportCodecTest, GenerationParamsAcceptLegacyAndExplicitZeroSeed) {
   explicit_zero.seed_is_set = true;
   explicit_zero.seed = 0;
   proto::DiTGenerationParams encoded;
-  ASSERT_TRUE(generation_params_to_proto(explicit_zero, &encoded));
+  ASSERT_TRUE(explicit_zero.to_proto(&encoded));
   ASSERT_TRUE(encoded.has_seed());
   EXPECT_EQ(encoded.seed(), 0);
-  ASSERT_TRUE(proto_to_generation_params(encoded, decoded));
+  ASSERT_TRUE(decoded.from_proto(encoded));
   EXPECT_TRUE(decoded.seed_is_set);
   EXPECT_EQ(decoded.seed, 0);
 }

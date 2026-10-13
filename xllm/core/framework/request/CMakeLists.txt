@@ -22,6 +22,7 @@ cc_library(
     dit_request_output.h
     dit_request_params.h
     request_params.h
+    dit_request_state.h
     sample_slot.h
     sequence.h
     rec_sequence.h
@@ -36,6 +37,7 @@ cc_library(
     priority_comparator.h
   SRCS
     dit_request.cpp
+    dit_request_state.cpp
     dit_input_sources.cpp
     dit_source_decoder.cpp
     finish_reason.cpp

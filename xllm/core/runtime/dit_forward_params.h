@@ -26,9 +26,20 @@ limitations under the License.
 
 namespace xllm {
 
+namespace proto {
+class DiTForwardInput;
+class DiTForwardOutput;
+class PackedForwardInput;
+}  // namespace proto
+
 // dit related forward input params
 class DiTForwardInput final {
  public:
+  bool to_packed_proto(proto::PackedForwardInput* packed_forward_input) const;
+  bool from_packed_proto(const proto::PackedForwardInput& packed_forward_input);
+  bool to_proto(proto::DiTForwardInput* proto_input) const;
+  bool from_proto(const proto::DiTForwardInput& proto_input);
+
   void debug_print(std::ostream& os = std::cout) const {
     os << "=== DiTForwardInput Debug Info ===" << std::endl;
 
@@ -148,7 +159,11 @@ class DiTForwardInput final {
 };
 
 // dit related forward output params
-struct DiTForwardOutput {
+class DiTForwardOutput final {
+ public:
+  bool to_proto(proto::DiTForwardOutput* proto_output) const;
+  bool from_proto(const proto::DiTForwardOutput& proto_output);
+
   // generated tensor (for image/audio models)
   std::vector<torch::Tensor> tensors;
   // generated text (for text diffusion models like Cola-DLM)

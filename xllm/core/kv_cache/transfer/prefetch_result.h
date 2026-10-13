@@ -31,6 +31,9 @@ limitations under the License.
 #include "util/timer.h"
 
 namespace xllm {
+namespace proto {
+class PrefetchRequest;
+}  // namespace proto
 
 enum class PrefetchControl : uint8_t {
   CONTINUE = 0,
@@ -39,6 +42,9 @@ enum class PrefetchControl : uint8_t {
 
 class StoragePrefetchRequest final {
  public:
+  bool to_proto(proto::PrefetchRequest* request) const;
+  bool from_proto(const proto::PrefetchRequest& request);
+
   std::vector<BlockTransferInfo> transfer_infos;
   std::vector<uint32_t> unit_end_offsets;
   std::vector<uint32_t> batch_end_unit_offsets;

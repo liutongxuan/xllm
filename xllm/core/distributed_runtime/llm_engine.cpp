@@ -54,7 +54,6 @@ limitations under the License.
 #include "framework/speculative/mtp_utils.h"
 #include "models/model_registry.h"
 #include "runtime/llm_worker_impl.h"
-#include "runtime/params_utils.h"
 #include "runtime/worker.h"
 #include "server/xllm_server_registry.h"
 #include "util/env_var.h"

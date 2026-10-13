@@ -33,7 +33,6 @@ limitations under the License.
 #include "framework/parallel_state/parallel_state.h"
 #include "framework/request/rec_type.h"
 #include "master.h"  // For MasterStatus::WAKEUP constant
-#include "runtime/params_utils.h"
 #include "util/env_var.h"
 #include "util/model_config_utils.h"
 #include "util/net.h"

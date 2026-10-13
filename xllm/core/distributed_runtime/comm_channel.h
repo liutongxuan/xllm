@@ -29,7 +29,6 @@ limitations under the License.
 #include "core/kv_cache/layout/kv_cache_shape.h"
 #include "core/kv_cache/transfer/prefetch_result.h"
 #include "runtime/forward_params.h"
-#include "runtime/params_utils.h"
 #include "worker.pb.h"
 
 namespace xllm {

@@ -75,11 +75,13 @@ cc_library(
     host_transfer/basic_transfer.h
     host_transfer/compact_transfer.h
     prefetch_result.h
+    kv_transport_codec.h
     hierarchy_kv_cache_transfer.h
     $<$<OR:$<BOOL:${USE_NPU}>,$<BOOL:${USE_MLU}>,$<BOOL:${USE_DCU}>>:mooncake_kv_cache_transfer.h>
     mooncake_kv_cache_transfer_engine.h
   SRCS
     kv_cache_transfer.cpp
+    kv_transport_codec.cpp
     kv_cache_store.cpp
     mooncake_store_backend.cpp
     host_transfer/layout.cpp

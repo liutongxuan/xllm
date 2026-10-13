@@ -18,9 +18,9 @@ limitations under the License.
 #include <atomic>
 #include <memory>
 
-#include "forward_params.h"
-#include "params_utils.h"
+#include "runtime/forward_params.h"
 #include "util/shared_memory_manager.h"
+#include "worker.pb.h"
 
 namespace xllm {
 class RecForwardInput;

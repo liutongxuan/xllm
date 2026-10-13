@@ -227,9 +227,12 @@ class BlockTransferInfo final {
  public:
   int32_t src_block_id = -1;
   int32_t dst_block_id = -1;
-  uint8_t hash_key[XXH3_128BITS_HASH_VALUE_LEN];
+  uint8_t hash_key[XXH3_128BITS_HASH_VALUE_LEN] = {};
   BlockType block_type = BlockType::KV;
-  TransferType transfer_type;
+  // The two-argument constructor is also used for local swap metadata where
+  // no transport direction exists. Keep that state explicitly invalid so a
+  // transport codec cannot read an uninitialized enum value.
+  TransferType transfer_type = static_cast<TransferType>(UINT8_MAX);
 
   BlockTransferInfo(int32_t src_block_id, int32_t dst_block_id) {
     this->src_block_id = src_block_id;

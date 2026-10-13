@@ -26,7 +26,6 @@ limitations under the License.
 #include <vector>
 
 #include "core/framework/config/scheduler_config.h"
-#include "core/runtime/params_utils.h"
 #include "core/util/tensor_helper.h"
 
 namespace xllm {
@@ -328,26 +327,11 @@ void BatchOutputHandler::process_sample_output(
     }
 
     if (next_tokens_are_spec_width) {
-      const auto curr_next_tokens = sample_output.next_tokens[output_idx];
-      const auto curr_logprobs = sample_output.logprobs.defined()
-                                     ? sample_output.logprobs[output_idx]
-                                     : sample_output.logprobs;
-      const auto curr_top_tokens = sample_output.top_tokens.defined()
-                                       ? sample_output.top_tokens[output_idx]
-                                       : sample_output.top_tokens;
-      const auto curr_top_logprobs =
-          sample_output.top_logprobs.defined()
-              ? sample_output.top_logprobs[output_idx]
-              : sample_output.top_logprobs;
-
-      const int64_t num_tokens = curr_next_tokens.size(0);
+      const int64_t num_tokens = sample_output.next_tokens.size(1);
       bool appended_token = false;
       for (int64_t token_idx = 0; token_idx < num_tokens; ++token_idx) {
-        const auto token = build_token(token_idx,
-                                       curr_next_tokens,
-                                       curr_logprobs,
-                                       curr_top_tokens,
-                                       curr_top_logprobs);
+        const Token token =
+            sample_output.token_at(static_cast<int64_t>(output_idx), token_idx);
         if (token.id < 0) {
           break;
         }
@@ -367,11 +351,8 @@ void BatchOutputHandler::process_sample_output(
       continue;
     }
 
-    const auto token = build_token(output_idx,
-                                   sample_output.next_tokens,
-                                   sample_output.logprobs,
-                                   sample_output.top_tokens,
-                                   sample_output.top_logprobs);
+    const Token token =
+        sample_output.token_at(static_cast<int64_t>(output_idx));
 
     // always append a token, maybe true or fake token
     append_token_for_sequence(seq, token, 0, replace_fake_token);

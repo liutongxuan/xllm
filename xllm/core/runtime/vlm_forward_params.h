@@ -47,6 +47,9 @@ class VlmForwardInput final {
   VlmForwardInput(VlmForwardInput&&) = default;
   VlmForwardInput& operator=(VlmForwardInput&&) = default;
 
+  bool to_packed_proto(proto::PackedForwardInput* packed_forward_input) const;
+  bool from_packed_proto(const proto::PackedForwardInput& packed_forward_input);
+
   VlmForwardInput clone() const {
     VlmForwardInput inputs;
     inputs.runtime = runtime;

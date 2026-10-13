@@ -28,10 +28,10 @@ limitations under the License.
 #include "core/framework/config/model_config.h"
 #include "core/framework/parallel_state/process_group.h"
 #include "core/runtime/executor_impl_factory.h"
-#include "core/runtime/params_utils.h"
 #include "core/runtime/task_execution_pipeline.h"
 #include "core/runtime/unified_mtp_worker_impl.h"
 #include "core/runtime/worker_impl.h"
+#include "worker.pb.h"
 
 namespace xllm {
 namespace {
@@ -1442,9 +1442,9 @@ TEST_F(SpeculativePipelineTest,
                   pipeline_)
                   .ok());
   proto::PackedForwardInput payload;
-  ASSERT_TRUE(forward_input_to_packed_proto(input(false), &payload));
+  ASSERT_TRUE(input(false).to_packed_proto(&payload));
   LlmForwardInput packed;
-  packed_proto_to_forward_input(payload, packed, device_, nullptr);
+  ASSERT_TRUE(packed.from_packed_proto(payload));
   auto released = std::make_shared<std::atomic<bool>>(false);
   torch::Tensor owner = packed.runtime.input_host_buffer;
   packed.runtime.input_host_buffer = torch::from_blob(

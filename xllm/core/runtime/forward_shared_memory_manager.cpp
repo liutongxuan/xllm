@@ -2838,11 +2838,7 @@ inline uint64_t get_input_layout_size(const RawInputLayoutHeader& layout) {
 template <typename Input>
 bool packed_proto_to_forward_input_impl(
     const proto::PackedForwardInput& packed_forward_input,
-    Input& forward_input,
-    const torch::Device& device,
-    Stream* stream) {
-  (void)device;
-  (void)stream;
+    Input& forward_input) {
   const std::string& payload = packed_forward_input.payload();
   RawInputLayoutHeader layout;
   if (!read_input_layout(payload.data(),
@@ -3352,6 +3348,11 @@ void convert_tensor_to_raw_output(
     const torch::Tensor& out_tokens,
     const torch::Tensor& out_logprobs,
     RawForwardOutput& raw_output) {
+  SampleOutput sample_output;
+  sample_output.next_tokens = next_tokens;
+  sample_output.logprobs = logprobs;
+  sample_output.top_tokens = top_tokens;
+  sample_output.top_logprobs = top_logprobs;
   raw_output.prepared_token = prepared_token;
 
   if (::xllm::EPLBConfig::get_instance().enable_eplb()) {
@@ -3398,26 +3399,14 @@ void convert_tensor_to_raw_output(
     RawSampleOutput raw_sample_output;
 
     if (next_tokens.defined() && next_tokens.dim() == 2) {
-      const auto curr_idx = output_idx;
-      const auto curr_next_tokens = next_tokens[curr_idx];
-      const auto curr_logprobs =
-          logprobs.defined() ? logprobs[curr_idx] : logprobs;
-      const auto curr_top_tokens =
-          top_tokens.defined() ? top_tokens[curr_idx] : top_tokens;
-      const auto curr_top_logprobs =
-          top_logprobs.defined() ? top_logprobs[curr_idx] : top_logprobs;
       const auto curr_embeddings =
-          embeddings.defined() ? embeddings[curr_idx] : embeddings;
+          embeddings.defined() ? embeddings[output_idx] : embeddings;
 
-      int32_t num_tokens = curr_next_tokens.size(0);
+      const int64_t num_tokens = next_tokens.size(1);
       raw_sample_output.tokens.reserve(num_tokens);
 
-      for (int32_t i = 0; i < num_tokens; ++i) {
-        const Token token = build_token(i,
-                                        curr_next_tokens,
-                                        curr_logprobs,
-                                        curr_top_tokens,
-                                        curr_top_logprobs);
+      for (int64_t i = 0; i < num_tokens; ++i) {
+        const Token token = sample_output.token_at(output_idx, i);
         if (token.id == -1) {
           break;
         }
@@ -3443,12 +3432,11 @@ void convert_tensor_to_raw_output(
       RawToken raw_token;
 
       if (next_tokens.defined() && next_tokens.numel() > 0) {
-        const Token token = build_token(
-            output_idx, next_tokens, logprobs, top_tokens, top_logprobs);
+        const Token token = sample_output.token_at(output_idx);
         raw_token.id = token.id;
         raw_token.logprob = token.logprob;
-        raw_token.top_tokens = std::move(token.top_tokens);
-        raw_token.top_logprobs = std::move(token.top_logprobs);
+        raw_token.top_tokens = token.top_tokens;
+        raw_token.top_logprobs = token.top_logprobs;
       } else {
         raw_token.id = -1;
         raw_token.logprob = std::nullopt;
@@ -3593,6 +3581,8 @@ bool try_to_device_from_input_host_buffer(const LlmForwardInput& input,
 
 }  // namespace detail
 
+namespace {
+
 template <typename Input>
 bool token_input_to_packed_proto(
     const Input& input,
@@ -3620,72 +3610,57 @@ bool token_input_to_packed_proto(
   return true;
 }
 
-bool forward_input_to_packed_proto(
-    const LlmForwardInput& input,
-    proto::PackedForwardInput* packed_forward_input) {
-  return token_input_to_packed_proto(input, packed_forward_input);
+}  // namespace
+
+bool LlmForwardInput::to_packed_proto(
+    proto::PackedForwardInput* packed_forward_input) const {
+  return token_input_to_packed_proto(*this, packed_forward_input);
 }
 
-bool rec_forward_input_to_packed_proto(
-    const RecForwardInput& input,
-    proto::PackedForwardInput* packed_forward_input) {
-  if (input.decoder_sampling_params.selected_token_idxes.defined()) {
+bool RecForwardInput::to_packed_proto(
+    proto::PackedForwardInput* packed_forward_input) const {
+  if (decoder_sampling_params.selected_token_idxes.defined()) {
     LOG(ERROR) << "Decoder sampling requires local Rec execution";
     return false;
   }
-  return token_input_to_packed_proto(input, packed_forward_input);
+  return token_input_to_packed_proto(*this, packed_forward_input);
 }
 
-bool packed_proto_to_rec_forward_input(
-    const proto::PackedForwardInput& packed_forward_input,
-    RecForwardInput& input,
-    const torch::Device& device,
-    Stream* stream) {
-  return packed_proto_to_forward_input_impl(
-      packed_forward_input, input, device, stream);
+bool RecForwardInput::from_packed_proto(
+    const proto::PackedForwardInput& packed_forward_input) {
+  return packed_proto_to_forward_input_impl(packed_forward_input, *this);
 }
 
-bool vlm_forward_input_to_packed_proto(
-    const VlmForwardInput& input,
-    proto::PackedForwardInput* packed_forward_input) {
-  return token_input_to_packed_proto(input, packed_forward_input);
+bool VlmForwardInput::to_packed_proto(
+    proto::PackedForwardInput* packed_forward_input) const {
+  return token_input_to_packed_proto(*this, packed_forward_input);
 }
 
-bool packed_proto_to_vlm_forward_input(
-    const proto::PackedForwardInput& packed_forward_input,
-    VlmForwardInput& input,
-    const torch::Device& device,
-    Stream* stream) {
-  return packed_proto_to_forward_input_impl(
-      packed_forward_input, input, device, stream);
+bool VlmForwardInput::from_packed_proto(
+    const proto::PackedForwardInput& packed_forward_input) {
+  return packed_proto_to_forward_input_impl(packed_forward_input, *this);
 }
 
-bool packed_proto_to_forward_input(
-    const proto::PackedForwardInput& packed_forward_input,
-    LlmForwardInput& forward_input,
-    const torch::Device& device,
-    Stream* stream) {
-  return packed_proto_to_forward_input_impl(
-      packed_forward_input, forward_input, device, stream);
+bool LlmForwardInput::from_packed_proto(
+    const proto::PackedForwardInput& packed_forward_input) {
+  return packed_proto_to_forward_input_impl(packed_forward_input, *this);
 }
 
-bool dit_forward_input_to_packed_proto(
-    const DiTForwardInput& input,
-    proto::PackedForwardInput* packed_forward_input) {
+bool DiTForwardInput::to_packed_proto(
+    proto::PackedForwardInput* packed_forward_input) const {
   CHECK(packed_forward_input != nullptr);
-  const RawInputLayoutHeader layout = calculate_dit_input_layout(input);
+  const RawInputLayoutHeader layout = calculate_dit_input_layout(*this);
   std::string payload(get_input_layout_size(layout), '\0');
   char* cursor = payload.data();
-  serialize_dit_input(input, layout, cursor);
+  serialize_dit_input(*this, layout, cursor);
   packed_forward_input->mutable_payload()->swap(payload);
   return true;
 }
 
-bool packed_proto_to_dit_forward_input(
-    const proto::PackedForwardInput& packed_forward_input,
-    DiTForwardInput& input) {
+bool DiTForwardInput::from_packed_proto(
+    const proto::PackedForwardInput& packed_forward_input) {
   const std::string& payload = packed_forward_input.payload();
-  return deserialize_dit_input_payload(payload.data(), payload.size(), input);
+  return deserialize_dit_input_payload(payload.data(), payload.size(), *this);
 }
 
 ForwardSharedMemoryManager::ForwardSharedMemoryManager(const std::string& name,

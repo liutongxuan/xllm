@@ -27,6 +27,10 @@ limitations under the License.
 
 namespace xllm {
 
+namespace proto {
+class DiTGenerationParams;
+}  // namespace proto
+
 using DiTOutputFunc = std::function<bool(const DiTRequestOutput& output)>;
 using DiTOutputsFunc = std::function<std::vector<bool>(
     const std::vector<DiTRequestOutput>& outputs)>;
@@ -40,7 +44,11 @@ enum class DiTRequestKind : int8_t {
   kText = 3,
 };
 
-struct DiTGenerationParams {
+class DiTGenerationParams final {
+ public:
+  bool to_proto(proto::DiTGenerationParams* proto_params) const;
+  bool from_proto(const proto::DiTGenerationParams& proto_params);
+
   bool operator==(const DiTGenerationParams& other) const {
     return width == other.width && height == other.height &&
            num_inference_steps == other.num_inference_steps &&

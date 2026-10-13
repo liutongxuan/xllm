@@ -38,9 +38,9 @@ limitations under the License.
 #include "core/runtime/dit_forward_params.h"
 #include "core/runtime/forward_params.h"
 #include "core/runtime/forward_shared_memory_manager.h"
-#include "core/runtime/params_utils.h"
 #include "core/runtime/rec_forward_params.h"
 #include "core/runtime/vlm_forward_params.h"
+#include "worker.pb.h"
 
 namespace xllm {
 
@@ -361,9 +361,8 @@ TEST(BatchPackedInputTest, PackedCopyKeepsStagingAliveAfterSourceRelease) {
     source.input_params.attention.host.kv_seq_lens = {2};
 
     proto::PackedForwardInput packed_input;
-    ASSERT_TRUE(forward_input_to_packed_proto(source, &packed_input));
-    packed_proto_to_forward_input(
-        packed_input, lazy_input, torch::Device(torch::kCPU), nullptr);
+    ASSERT_TRUE(source.to_packed_proto(&packed_input));
+    ASSERT_TRUE(lazy_input.from_packed_proto(packed_input));
   }
 
   ASSERT_TRUE(lazy_input.runtime.input_host_buffer.defined());
@@ -406,7 +405,7 @@ TEST(BatchPackedInputTest, MaterializedShmReadRebindsTaggedTensorArena) {
   source.sampling_params.selected_token_idxes =
       torch::tensor({1}, torch::kInt32);
   proto::PackedForwardInput packed_input;
-  ASSERT_TRUE(forward_input_to_packed_proto(source, &packed_input));
+  ASSERT_TRUE(source.to_packed_proto(&packed_input));
   ASSERT_GE(packed_input.payload().size(), 40u);
   EXPECT_EQ(static_cast<uint8_t>(packed_input.payload()[8]), 5u);
   EXPECT_EQ(static_cast<uint8_t>(packed_input.payload()[10]), 1u);
@@ -576,11 +575,10 @@ TEST(BatchPackedInputTest, PackedProtoLazyUnpackPreservesLinearStateCacheOps) {
   input.input_params.linear_state_cache_ops = {restore_op, direct_read_op};
 
   proto::PackedForwardInput packed_input;
-  ASSERT_TRUE(forward_input_to_packed_proto(input, &packed_input));
+  ASSERT_TRUE(input.to_packed_proto(&packed_input));
 
   LlmForwardInput lazy_input;
-  packed_proto_to_forward_input(
-      packed_input, lazy_input, torch::Device(torch::kCPU), nullptr);
+  ASSERT_TRUE(lazy_input.from_packed_proto(packed_input));
   EXPECT_TRUE(lazy_input.input_params.linear_state_cache_ops.empty());
   EXPECT_TRUE(lazy_input.runtime.input_host_buffer_has_layout);
 
@@ -654,11 +652,10 @@ TEST(BatchPackedInputTest, PackedProtoLazyUnpackRestoresSampleIdxes) {
                     torch::TensorOptions().dtype(torch::kInt32));
 
   proto::PackedForwardInput packed_input;
-  ASSERT_TRUE(forward_input_to_packed_proto(input, &packed_input));
+  ASSERT_TRUE(input.to_packed_proto(&packed_input));
 
   LlmForwardInput lazy_input;
-  packed_proto_to_forward_input(
-      packed_input, lazy_input, torch::Device(torch::kCPU), nullptr);
+  ASSERT_TRUE(lazy_input.from_packed_proto(packed_input));
   EXPECT_FALSE(lazy_input.sampling_params.sample_idxes.defined());
   EXPECT_TRUE(lazy_input.runtime.input_host_buffer_has_layout);
 
@@ -698,7 +695,7 @@ TEST(BatchPackedInputTest, PackedProtoRejectsLegacyTokenLayout) {
   input.sample_sequence_ids = {"legacy#0"};
   input.sample_prior_output_rows = {-1};
   proto::PackedForwardInput packed_input;
-  ASSERT_TRUE(forward_input_to_packed_proto(input, &packed_input));
+  ASSERT_TRUE(input.to_packed_proto(&packed_input));
   ASSERT_GE(packed_input.payload().size(), 40u);
 
   // Legacy peers start with layout sizes and have no domain or version.
@@ -711,12 +708,11 @@ TEST(BatchPackedInputTest, PackedProtoRejectsLegacyTokenLayout) {
   legacy_input.set_payload(std::move(legacy_payload));
 
   LlmForwardInput lazy_input;
-  EXPECT_FALSE(packed_proto_to_forward_input(
-      legacy_input, lazy_input, torch::Device(torch::kCPU), nullptr));
+  EXPECT_FALSE(lazy_input.from_packed_proto(legacy_input));
   EXPECT_FALSE(lazy_input.runtime.input_host_buffer.defined());
 
   DiTForwardInput dit_input;
-  EXPECT_FALSE(packed_proto_to_dit_forward_input(legacy_input, dit_input));
+  EXPECT_FALSE(dit_input.from_packed_proto(legacy_input));
 }
 
 TEST(BatchPackedInputTest, NativeDomainsRejectUnsupportedPackedSchemas) {
@@ -725,10 +721,10 @@ TEST(BatchPackedInputTest, NativeDomainsRejectUnsupportedPackedSchemas) {
   RecForwardInput rec_source;
   DiTForwardInput dit_source;
   std::vector<proto::PackedForwardInput> packed_inputs(4);
-  ASSERT_TRUE(forward_input_to_packed_proto(llm_source, &packed_inputs[0]));
-  ASSERT_TRUE(vlm_forward_input_to_packed_proto(vlm_source, &packed_inputs[1]));
-  ASSERT_TRUE(rec_forward_input_to_packed_proto(rec_source, &packed_inputs[2]));
-  ASSERT_TRUE(dit_forward_input_to_packed_proto(dit_source, &packed_inputs[3]));
+  ASSERT_TRUE(llm_source.to_packed_proto(&packed_inputs[0]));
+  ASSERT_TRUE(vlm_source.to_packed_proto(&packed_inputs[1]));
+  ASSERT_TRUE(rec_source.to_packed_proto(&packed_inputs[2]));
+  ASSERT_TRUE(dit_source.to_packed_proto(&packed_inputs[3]));
 
   for (const auto& packed_input : packed_inputs) {
     ASSERT_GE(packed_input.payload().size(), 40u);
@@ -743,20 +739,10 @@ TEST(BatchPackedInputTest, NativeDomainsRejectUnsupportedPackedSchemas) {
       VlmForwardInput vlm_input;
       RecForwardInput rec_input;
       DiTForwardInput dit_input;
-      EXPECT_FALSE(packed_proto_to_forward_input(unsupported_input,
-                                                 llm_input,
-                                                 torch::Device(torch::kCPU),
-                                                 /*stream=*/nullptr));
-      EXPECT_FALSE(packed_proto_to_vlm_forward_input(unsupported_input,
-                                                     vlm_input,
-                                                     torch::Device(torch::kCPU),
-                                                     /*stream=*/nullptr));
-      EXPECT_FALSE(packed_proto_to_rec_forward_input(unsupported_input,
-                                                     rec_input,
-                                                     torch::Device(torch::kCPU),
-                                                     /*stream=*/nullptr));
-      EXPECT_FALSE(
-          packed_proto_to_dit_forward_input(unsupported_input, dit_input));
+      EXPECT_FALSE(llm_input.from_packed_proto(unsupported_input));
+      EXPECT_FALSE(vlm_input.from_packed_proto(unsupported_input));
+      EXPECT_FALSE(rec_input.from_packed_proto(unsupported_input));
+      EXPECT_FALSE(dit_input.from_packed_proto(unsupported_input));
       EXPECT_FALSE(llm_input.runtime.input_host_buffer.defined());
       EXPECT_FALSE(vlm_input.runtime.input_host_buffer.defined());
       EXPECT_FALSE(rec_input.runtime.input_host_buffer.defined());
@@ -771,11 +757,10 @@ TEST(BatchPackedInputTest, PackedTokenDecoderRejectsNativeDiTDomain) {
   input.prompts = {"prompt"};
   input.tensor_sources.add("latent", torch::tensor({1.5f, 2.5f}));
   proto::PackedForwardInput packed_input;
-  ASSERT_TRUE(dit_forward_input_to_packed_proto(input, &packed_input));
+  ASSERT_TRUE(input.to_packed_proto(&packed_input));
 
   LlmForwardInput token_input;
-  EXPECT_FALSE(packed_proto_to_forward_input(
-      packed_input, token_input, torch::Device(torch::kCPU), nullptr));
+  EXPECT_FALSE(token_input.from_packed_proto(packed_input));
   EXPECT_FALSE(token_input.runtime.input_host_buffer.defined());
 }
 
@@ -786,16 +771,14 @@ TEST(BatchPackedInputTest,
   {
     auto input = make_rec_transport_input();
     proto::PackedForwardInput packed_input;
-    ASSERT_TRUE(rec_forward_input_to_packed_proto(input, &packed_input));
+    ASSERT_TRUE(input.to_packed_proto(&packed_input));
     ASSERT_GE(packed_input.payload().size(), 40u);
     EXPECT_EQ(static_cast<uint8_t>(packed_input.payload()[10]), 3u);
-    ASSERT_TRUE(packed_proto_to_rec_forward_input(
-        packed_input, lazy_input, torch::Device(torch::kCPU), nullptr));
+    ASSERT_TRUE(lazy_input.from_packed_proto(packed_input));
     LlmForwardInput token_input;
-    EXPECT_FALSE(packed_proto_to_forward_input(
-        packed_input, token_input, torch::Device(torch::kCPU), nullptr));
+    EXPECT_FALSE(token_input.from_packed_proto(packed_input));
     DiTForwardInput dit_input;
-    EXPECT_FALSE(packed_proto_to_dit_forward_input(packed_input, dit_input));
+    EXPECT_FALSE(dit_input.from_packed_proto(packed_input));
   }
   ASSERT_TRUE(lazy_input.runtime.input_host_buffer_has_layout);
   RecForwardInput copied_input = lazy_input.clone();
@@ -842,18 +825,16 @@ TEST(BatchPackedInputTest, NativeRecDecoderRejectsTokenAndDiTPayloads) {
   token_input.token_ids = torch::tensor({11}, torch::kInt32);
   token_input.positions = torch::tensor({0}, torch::kInt32);
   proto::PackedForwardInput token_payload;
-  ASSERT_TRUE(forward_input_to_packed_proto(token_input, &token_payload));
+  ASSERT_TRUE(token_input.to_packed_proto(&token_payload));
   RecForwardInput input;
-  EXPECT_FALSE(packed_proto_to_rec_forward_input(
-      token_payload, input, torch::Device(torch::kCPU), nullptr));
+  EXPECT_FALSE(input.from_packed_proto(token_payload));
   EXPECT_FALSE(input.runtime.input_host_buffer.defined());
   DiTForwardInput dit_input;
   dit_input.batch_size = 1;
   dit_input.prompts = {"prompt"};
   proto::PackedForwardInput dit_payload;
-  ASSERT_TRUE(dit_forward_input_to_packed_proto(dit_input, &dit_payload));
-  EXPECT_FALSE(packed_proto_to_rec_forward_input(
-      dit_payload, input, torch::Device(torch::kCPU), nullptr));
+  ASSERT_TRUE(dit_input.to_packed_proto(&dit_payload));
+  EXPECT_FALSE(input.from_packed_proto(dit_payload));
   EXPECT_FALSE(input.runtime.input_host_buffer.defined());
 }
 
@@ -861,18 +842,18 @@ TEST(BatchPackedInputTest, NativeRecTransportRejectsLocalDecodeStrategies) {
   proto::PackedForwardInput packed_input;
   auto input = make_rec_transport_input();
   input.input_params.mutable_onerec_params();
-  EXPECT_FALSE(rec_forward_input_to_packed_proto(input, &packed_input));
+  EXPECT_FALSE(input.to_packed_proto(&packed_input));
   input.input_params.mutable_onerec_xattention_params();
-  EXPECT_FALSE(rec_forward_input_to_packed_proto(input, &packed_input));
+  EXPECT_FALSE(input.to_packed_proto(&packed_input));
   input.input_params.mutable_llmrec_params();
-  EXPECT_FALSE(rec_forward_input_to_packed_proto(input, &packed_input));
+  EXPECT_FALSE(input.to_packed_proto(&packed_input));
   input = make_rec_transport_input();
   input.step_decode = StepDecodeMeta{};
-  EXPECT_FALSE(rec_forward_input_to_packed_proto(input, &packed_input));
+  EXPECT_FALSE(input.to_packed_proto(&packed_input));
   input = make_rec_transport_input();
   input.decoder_sampling_params.selected_token_idxes =
       torch::tensor({0}, torch::kInt32);
-  EXPECT_FALSE(rec_forward_input_to_packed_proto(input, &packed_input));
+  EXPECT_FALSE(input.to_packed_proto(&packed_input));
 }
 
 TEST(BatchPackedInputTest, NativeVlmPackedCopyRetainsVisionAndMrope) {
@@ -881,11 +862,10 @@ TEST(BatchPackedInputTest, NativeVlmPackedCopyRetainsVisionAndMrope) {
   {
     auto source = make_vlm_transport_input();
     proto::PackedForwardInput payload;
-    ASSERT_TRUE(vlm_forward_input_to_packed_proto(source, &payload));
+    ASSERT_TRUE(source.to_packed_proto(&payload));
     ASSERT_GE(payload.payload().size(), 40u);
     EXPECT_EQ(static_cast<uint8_t>(payload.payload()[10]), 2u);
-    ASSERT_TRUE(packed_proto_to_vlm_forward_input(
-        payload, lazy_input, torch::Device(torch::kCPU), nullptr));
+    ASSERT_TRUE(lazy_input.from_packed_proto(payload));
   }
   ASSERT_TRUE(lazy_input.runtime.input_host_buffer_has_layout);
   auto copied_input = lazy_input.clone();
@@ -933,10 +913,9 @@ TEST(BatchPackedInputTest, NativeVlmDecodeKeepsDomainWithoutVisionData) {
   source.positions = torch::tensor({9}, torch::kInt32);
   source.input_params.meta.batch_forward_type = BatchForwardType::DECODE;
   proto::PackedForwardInput payload;
-  ASSERT_TRUE(vlm_forward_input_to_packed_proto(source, &payload));
+  ASSERT_TRUE(source.to_packed_proto(&payload));
   VlmForwardInput lazy_input;
-  ASSERT_TRUE(packed_proto_to_vlm_forward_input(
-      payload, lazy_input, torch::Device(torch::kCPU), nullptr));
+  ASSERT_TRUE(lazy_input.from_packed_proto(payload));
   const auto prepared =
       lazy_input.to(torch::Device(torch::kCPU), torch::kFloat32);
   EXPECT_TRUE(prepared.input_params.meta.batch_forward_type.is_decode());
@@ -945,14 +924,11 @@ TEST(BatchPackedInputTest, NativeVlmDecodeKeepsDomainWithoutVisionData) {
   LlmForwardInput llm_input;
   RecForwardInput rec_input;
   DiTForwardInput dit_input;
-  EXPECT_FALSE(packed_proto_to_forward_input(
-      payload, llm_input, torch::Device(torch::kCPU), nullptr));
-  EXPECT_FALSE(packed_proto_to_rec_forward_input(
-      payload, rec_input, torch::Device(torch::kCPU), nullptr));
-  EXPECT_FALSE(packed_proto_to_dit_forward_input(payload, dit_input));
+  EXPECT_FALSE(llm_input.from_packed_proto(payload));
+  EXPECT_FALSE(rec_input.from_packed_proto(payload));
+  EXPECT_FALSE(dit_input.from_packed_proto(payload));
   payload.mutable_payload()->at(10) = 1;
-  EXPECT_FALSE(packed_proto_to_vlm_forward_input(
-      payload, lazy_input, torch::Device(torch::kCPU), nullptr));
+  EXPECT_FALSE(lazy_input.from_packed_proto(payload));
 }
 
 TEST(BatchPackedInputTest, BorrowedExecutionViewUpdatesNativeMetadata) {
@@ -1160,24 +1136,24 @@ TEST(BatchPackedInputTest,
   params.repetition_penalty = 1.2f;
 
   proto::PackedForwardInput packed_input;
-  ASSERT_TRUE(dit_forward_input_to_packed_proto(dit_input, &packed_input));
+  ASSERT_TRUE(dit_input.to_packed_proto(&packed_input));
   ASSERT_GE(packed_input.payload().size(), 40u);
   EXPECT_EQ(static_cast<uint8_t>(packed_input.payload()[10]), 4u);
 
   DiTForwardInput unpacked_input;
-  ASSERT_TRUE(packed_proto_to_dit_forward_input(packed_input, unpacked_input));
+  ASSERT_TRUE(unpacked_input.from_packed_proto(packed_input));
   expect_dit_forward_input_eq(unpacked_input, dit_input);
 
   proto::DiTForwardInput proto_input;
-  ASSERT_TRUE(dit_forward_input_to_proto(dit_input, &proto_input));
+  ASSERT_TRUE(dit_input.to_proto(&proto_input));
   DiTForwardInput proto_input_round_trip;
-  ASSERT_TRUE(proto_to_dit_forward_input(proto_input, proto_input_round_trip));
+  ASSERT_TRUE(proto_input_round_trip.from_proto(proto_input));
   expect_dit_forward_input_eq(proto_input_round_trip, dit_input);
 
   proto::DiTGenerationParams proto_params;
-  ASSERT_TRUE(generation_params_to_proto(params, &proto_params));
+  ASSERT_TRUE(params.to_proto(&proto_params));
   DiTGenerationParams proto_round_trip;
-  ASSERT_TRUE(proto_to_generation_params(proto_params, proto_round_trip));
+  ASSERT_TRUE(proto_round_trip.from_proto(proto_params));
   EXPECT_EQ(proto_round_trip, params);
 }
 
@@ -1194,9 +1170,8 @@ TEST(BatchPackedInputTest, NativeDiTPackedProtoOwnsSourcesAfterPayloadRelease) {
     source.tensor_sources.add(
         "empty", torch::empty({0, 2}, torch::dtype(torch::kFloat32)));
     proto::PackedForwardInput packed_input;
-    ASSERT_TRUE(dit_forward_input_to_packed_proto(source, &packed_input));
-    ASSERT_TRUE(
-        packed_proto_to_dit_forward_input(packed_input, unpacked_input));
+    ASSERT_TRUE(source.to_packed_proto(&packed_input));
+    ASSERT_TRUE(unpacked_input.from_packed_proto(packed_input));
     packed_input.mutable_payload()->assign(packed_input.payload().size(), '\0');
   }
 
@@ -1231,10 +1206,10 @@ TEST(BatchPackedInputTest, NativeDiTPackedProtoOwnsSourcesAfterPayloadRelease) {
 TEST(BatchPackedInputTest, NativeDiTPackedProtoRoundTripsEmptyInput) {
   DiTForwardInput input;
   proto::PackedForwardInput packed_input;
-  ASSERT_TRUE(dit_forward_input_to_packed_proto(input, &packed_input));
+  ASSERT_TRUE(input.to_packed_proto(&packed_input));
 
   DiTForwardInput unpacked_input;
-  ASSERT_TRUE(packed_proto_to_dit_forward_input(packed_input, unpacked_input));
+  ASSERT_TRUE(unpacked_input.from_packed_proto(packed_input));
   expect_dit_forward_input_eq(unpacked_input, input);
 }
 
@@ -1244,9 +1219,9 @@ TEST(BatchPackedInputTest, NativeDiTPackedProtoRejectsMalformedPayloads) {
   input.prompts = {"prompt"};
   input.tensor_sources.add("latent", torch::tensor({1.5f, 2.5f}));
   proto::PackedForwardInput packed_input;
-  ASSERT_TRUE(dit_forward_input_to_packed_proto(input, &packed_input));
+  ASSERT_TRUE(input.to_packed_proto(&packed_input));
   DiTForwardInput baseline;
-  ASSERT_TRUE(packed_proto_to_dit_forward_input(packed_input, baseline));
+  ASSERT_TRUE(baseline.from_packed_proto(packed_input));
   ASSERT_GT(packed_input.payload().size(), 40u);
   const uint64_t descriptor_bytes =
       read_packed_uint64(packed_input.payload(), /*offset=*/16);
@@ -1312,8 +1287,7 @@ TEST(BatchPackedInputTest, NativeDiTPackedProtoRejectsMalformedPayloads) {
     proto::PackedForwardInput malformed_input;
     malformed_input.set_payload(payload);
     DiTForwardInput unpacked_input;
-    EXPECT_FALSE(
-        packed_proto_to_dit_forward_input(malformed_input, unpacked_input));
+    EXPECT_FALSE(unpacked_input.from_packed_proto(malformed_input));
   }
 }
 
@@ -1363,11 +1337,10 @@ TEST(BatchPackedInputTest, PackedProtoLazyToPreservesJsonMetadata) {
   input.sample_prior_output_rows = {-1};
 
   proto::PackedForwardInput packed_input;
-  ASSERT_TRUE(forward_input_to_packed_proto(input, &packed_input));
+  ASSERT_TRUE(input.to_packed_proto(&packed_input));
 
   LlmForwardInput lazy_input;
-  packed_proto_to_forward_input(
-      packed_input, lazy_input, torch::Device(torch::kCPU), nullptr);
+  ASSERT_TRUE(lazy_input.from_packed_proto(packed_input));
   EXPECT_TRUE(lazy_input.runtime.input_host_buffer_has_layout);
   EXPECT_TRUE(lazy_input.json_object_state_snapshots.empty());
 

@@ -50,6 +50,9 @@ class RecForwardInput final {
   RecForwardInput(RecForwardInput&&) = default;
   RecForwardInput& operator=(RecForwardInput&&) = default;
 
+  bool to_packed_proto(proto::PackedForwardInput* packed_forward_input) const;
+  bool from_packed_proto(const proto::PackedForwardInput& packed_forward_input);
+
   RecForwardInput clone() const {
     RecForwardInput inputs;
     inputs.token_ids = token_ids;

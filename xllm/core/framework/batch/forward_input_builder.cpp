@@ -44,7 +44,6 @@ limitations under the License.
 #include "layers/common/attention_metadata.h"
 #endif
 #include "core/platform/platform.h"
-#include "core/runtime/params_utils.h"
 #include "core/util/blocking_counter.h"
 #include "core/util/tensor_helper.h"
 #include "core/util/threadpool.h"

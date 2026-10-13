@@ -21,8 +21,8 @@ namespace xllm {
 
 class DraftProposal;
 class GraphInputView;
-struct SampleOutput;
-struct ForwardOutput;
+class SampleOutput;
+class ForwardOutput;
 
 namespace spec_verify {
 

@@ -52,6 +52,7 @@ limitations under the License.
 #include "runtime/dit_forward_params.h"
 #include "runtime/forward_shared_memory_manager.h"
 #include "util/tensor_helper.h"
+#include "worker.pb.h"
 
 namespace xllm {
 
@@ -1775,26 +1776,12 @@ TEST(BatchTest, ReorderedMtpAcceptedRowsCommitToOwningSequences) {
   EXPECT_FALSE(expected_constrained_state.can_accept_token(9));
   ASSERT_TRUE(expected_constrained_state.accept_token(2));
 
-  const torch::Tensor undefined;
+  ForwardOutput forward_output;
+  forward_output.sample_output.next_tokens = accepted_output.next_tokens;
   proto::ForwardOutput proto_output;
-  forward_output_to_proto(accepted_output.next_tokens,
-                          undefined,
-                          undefined,
-                          undefined,
-                          undefined,
-                          /*mm_embeddings=*/{},
-                          /*speculative_token_stats=*/{},
-                          undefined,
-                          /*prepared_token=*/-1,
-                          undefined,
-                          undefined,
-                          undefined,
-                          /*dit_images=*/{},
-                          /*dit_text_output=*/{},
-                          /*json_object_errors=*/{},
-                          &proto_output);
+  ASSERT_TRUE(forward_output.to_proto(/*stats=*/{}, &proto_output));
   RawForwardOutput raw_output;
-  proto_to_forward_output(proto_output, raw_output);
+  ASSERT_TRUE(raw_output.from_proto(proto_output));
   ASSERT_EQ(raw_output.outputs.size(), 2u);
   EXPECT_EQ(raw_output.outputs[0].tokens.size(), 6u);
   EXPECT_EQ(raw_output.outputs[0].tokens.back().id, 15);
@@ -2260,33 +2247,20 @@ TEST(BatchTest, NativeDiTShmRoundTripOwnsSourcesAcrossSegmentOverwrite) {
 }
 
 TEST(BatchTest, ForwardOutputProtoRoundTripPreservesJsonObjectErrors) {
-  const torch::Tensor undefined;
   const torch::Tensor next_tokens =
       torch::tensor({{10, 11, -1}, {20, 21, 22}}, torch::kInt64);
   const std::vector<SpeculativeTokenStats> speculative_token_stats = {{2, 5},
                                                                       {5, 5}};
   const std::vector<JsonObjectOutputError> errors = {
       {"req-error#0", "missing prior sampled output row"}};
+  ForwardOutput forward_output;
+  forward_output.sample_output.next_tokens = next_tokens;
+  forward_output.json_object_errors = errors;
   proto::ForwardOutput proto_output;
-  forward_output_to_proto(next_tokens,
-                          undefined,
-                          undefined,
-                          undefined,
-                          undefined,
-                          /*mm_embeddings=*/{},
-                          speculative_token_stats,
-                          undefined,
-                          /*prepared_layer_id=*/-1,
-                          undefined,
-                          undefined,
-                          undefined,
-                          /*dit_images=*/{},
-                          /*dit_text_output=*/{},
-                          errors,
-                          &proto_output);
+  ASSERT_TRUE(forward_output.to_proto(speculative_token_stats, &proto_output));
 
   RawForwardOutput round_trip;
-  proto_to_forward_output(proto_output, round_trip);
+  ASSERT_TRUE(round_trip.from_proto(proto_output));
 
   ASSERT_EQ(round_trip.outputs.size(), 2u);
   EXPECT_EQ(round_trip.outputs[0].speculative_token_stats.accepted_tokens, 2);

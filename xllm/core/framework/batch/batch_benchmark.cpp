@@ -66,7 +66,6 @@ limitations under the License.
 #include "core/framework/sampling/sampling_params.h"
 #include "core/kv_cache/block/block.h"
 #include "core/runtime/forward_params.h"
-#include "core/runtime/params_utils.h"
 #include "core/util/threadpool.h"
 #include "worker.pb.h"
 
@@ -328,7 +327,7 @@ void BM_ForwardInput_ToPackedProto(benchmark::State& state) {
 
   for (auto _ : state) {
     packed_input.Clear();
-    const bool ok = forward_input_to_packed_proto(forward_input, &packed_input);
+    const bool ok = forward_input.to_packed_proto(&packed_input);
     do_not_optimize(ok);
     do_not_optimize(packed_input.ByteSizeLong());
   }
@@ -344,13 +343,13 @@ void BM_ForwardInput_FromPackedProto(benchmark::State& state) {
   const size_t batch_size = static_cast<size_t>(state.range(0));
   const LlmForwardInput forward_input = build_decode_forward_input(batch_size);
   proto::PackedForwardInput packed_input;
-  CHECK(forward_input_to_packed_proto(forward_input, &packed_input));
+  CHECK(forward_input.to_packed_proto(&packed_input));
   const torch::Device cpu(torch::kCPU);
 
   for (auto _ : state) {
     // WorkerService::ExecuteModel: proto -> lazily unpacked LlmForwardInput ...
     LlmForwardInput lazy_input;
-    packed_proto_to_forward_input(packed_input, lazy_input, cpu, nullptr);
+    CHECK(lazy_input.from_packed_proto(packed_input));
     // ... which the worker materialises into individual host tensors before
     // the (device-only, not benchmarked) H2D copy.
     LlmForwardInput unpacked_input;
@@ -380,26 +379,14 @@ void BM_ForwardOutput_ToProto(benchmark::State& state) {
   const torch::Tensor token_logprobs =
       logprobs ? torch::full({batch_size}, -0.5f, torch::dtype(torch::kFloat32))
                : torch::Tensor();
+  ForwardOutput forward_output;
+  forward_output.sample_output.next_tokens = next_tokens;
+  forward_output.sample_output.logprobs = token_logprobs;
   proto::ForwardOutput pb_output;
 
   for (auto _ : state) {
     pb_output.Clear();
-    forward_output_to_proto(next_tokens,
-                            token_logprobs,
-                            /*top_tokens=*/torch::Tensor(),
-                            /*top_logprobs=*/torch::Tensor(),
-                            /*embeddings=*/torch::Tensor(),
-                            /*mm_embeddings=*/{},
-                            /*speculative_token_stats=*/{},
-                            /*expert_load_data=*/torch::Tensor(),
-                            /*prepared_token=*/-1,
-                            /*src_seq_idxes=*/torch::Tensor(),
-                            /*out_tokens=*/torch::Tensor(),
-                            /*out_logprobs=*/torch::Tensor(),
-                            /*dit_images=*/{},
-                            /*dit_text_output=*/{},
-                            /*json_object_errors=*/{},
-                            &pb_output);
+    CHECK(forward_output.to_proto(/*stats=*/{}, &pb_output));
     do_not_optimize(pb_output.outputs_size());
   }
   state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) *
@@ -418,27 +405,15 @@ void BM_ForwardOutput_FromProto(benchmark::State& state) {
   const torch::Tensor token_logprobs =
       logprobs ? torch::full({batch_size}, -0.5f, torch::dtype(torch::kFloat32))
                : torch::Tensor();
+  ForwardOutput forward_output;
+  forward_output.sample_output.next_tokens = next_tokens;
+  forward_output.sample_output.logprobs = token_logprobs;
   proto::ForwardOutput pb_output;
-  forward_output_to_proto(next_tokens,
-                          token_logprobs,
-                          /*top_tokens=*/torch::Tensor(),
-                          /*top_logprobs=*/torch::Tensor(),
-                          /*embeddings=*/torch::Tensor(),
-                          /*mm_embeddings=*/{},
-                          /*speculative_token_stats=*/{},
-                          /*expert_load_data=*/torch::Tensor(),
-                          /*prepared_token=*/-1,
-                          /*src_seq_idxes=*/torch::Tensor(),
-                          /*out_tokens=*/torch::Tensor(),
-                          /*out_logprobs=*/torch::Tensor(),
-                          /*dit_images=*/{},
-                          /*dit_text_output=*/{},
-                          /*json_object_errors=*/{},
-                          &pb_output);
+  CHECK(forward_output.to_proto(/*stats=*/{}, &pb_output));
 
   for (auto _ : state) {
     RawForwardOutput raw_output;
-    proto_to_forward_output(pb_output, raw_output);
+    CHECK(raw_output.from_proto(pb_output));
     do_not_optimize(raw_output.outputs.data());
   }
   state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) *

@@ -87,6 +87,8 @@ cc_library(
     mm_embed_vlm_worker_impl.cpp
     worker_client.cpp
     params_utils.cpp
+    forward_output.cpp
+    dit_forward_params.cpp
     draft_model_spec_worker_impl.cpp
     speculative_worker_impl.cpp
     mtp_worker_impl.cpp

@@ -159,21 +159,8 @@ class WorkerService : public proto::DistributeWorker {
 
   template <typename Input>
   void step(Input& fwd_input,
-            torch::Tensor& next_tokens,
-            torch::Tensor& logprobs,
-            torch::Tensor& top_tokens,
-            torch::Tensor& top_logprobs,
-            torch::Tensor& embeddings,
-            std::vector<std::vector<torch::Tensor>>& mm_embeddings,
-            std::vector<SpeculativeTokenStats>& speculative_token_stats,
-            std::vector<torch::Tensor>& dit_images,
-            std::vector<std::string>& dit_text_output,
-            torch::Tensor& expert_load_data,
-            int64_t& prepared_token,
-            torch::Tensor& src_seq_idxes,
-            torch::Tensor& out_tokens,
-            torch::Tensor& out_logprobs,
-            std::vector<JsonObjectOutputError>& json_object_errors);
+            ForwardOutput& cpu_output,
+            std::vector<SpeculativeTokenStats>& speculative_token_stats);
   std::vector<SpeculativeTokenStats> record_speculative_metrics_from_output(
       const ForwardOutput& forward_output);
   DISALLOW_COPY_AND_ASSIGN(WorkerService);

@@ -34,7 +34,6 @@ limitations under the License.
 #include "core/framework/request/sequence.h"
 #include "core/framework/request/sequences_group.h"
 #include "core/framework/sampling/sampling_params.h"
-#include "core/runtime/params_utils.h"
 #include "core/util/blocking_counter.h"
 #include "core/util/rec_model_utils.h"
 #include "core/util/slice.h"

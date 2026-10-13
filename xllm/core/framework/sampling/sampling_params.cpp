@@ -26,11 +26,70 @@ limitations under the License.
 #include <vector>
 
 #include "core/common/metrics.h"
+#include "core/common/types.h"
 #include "core/util/tensor_helper.h"
 
 namespace xllm {
 
 namespace {
+
+void check_host_tensor(const torch::Tensor& tensor,
+                       torch::ScalarType scalar_type) {
+  CHECK(tensor.defined());
+  CHECK(tensor.device().is_cpu()) << "token_at requires a CPU tensor";
+  CHECK(tensor.is_contiguous())
+      << "token_at requires contiguous tensor storage";
+  CHECK(tensor.scalar_type() == scalar_type)
+      << "token_at tensor dtype does not match its output field";
+}
+
+void check_next_tokens(const torch::Tensor& next_tokens, int64_t rank) {
+  CHECK(next_tokens.defined());
+  CHECK(next_tokens.device().is_cpu()) << "token_at requires CPU next_tokens";
+  CHECK(next_tokens.is_contiguous())
+      << "token_at requires contiguous next_tokens";
+  CHECK(next_tokens.scalar_type() == torch::kInt32 ||
+        next_tokens.scalar_type() == torch::kInt64)
+      << "token_at requires int32 or int64 next_tokens";
+  CHECK_EQ(next_tokens.dim(), rank)
+      << "token_at overload must match next_tokens rank";
+}
+
+Token token_at_offset(const SampleOutput& output, int64_t offset) {
+  const torch::Tensor& next_tokens = output.next_tokens;
+  const int64_t id = next_tokens.scalar_type() == torch::kInt32
+                         ? next_tokens.const_data_ptr<int32_t>()[offset]
+                         : next_tokens.const_data_ptr<int64_t>()[offset];
+  Token token(id);
+  CHECK_EQ(output.top_tokens.defined(), output.top_logprobs.defined())
+      << "token_at requires paired top-k tensors";
+  CHECK(!output.top_tokens.defined() || output.logprobs.defined())
+      << "token_at requires logprobs when top-k tensors are present";
+  if (output.logprobs.defined()) {
+    check_host_tensor(output.logprobs, torch::kFloat32);
+    CHECK(output.logprobs.sizes() == next_tokens.sizes())
+        << "token_at logprobs must match next_tokens shape";
+    token.logprob = output.logprobs.const_data_ptr<float>()[offset];
+  }
+  if (output.top_tokens.defined()) {
+    check_host_tensor(output.top_tokens, torch::kInt64);
+    check_host_tensor(output.top_logprobs, torch::kFloat32);
+    CHECK_EQ(output.top_tokens.dim(), next_tokens.dim() + 1);
+    CHECK(output.top_tokens.sizes() == output.top_logprobs.sizes());
+    CHECK(output.top_tokens.sizes().slice(0, next_tokens.dim()) ==
+          next_tokens.sizes());
+    const int64_t top_k = output.top_tokens.size(-1);
+    if (top_k > 0) {
+      token.top_tokens = {
+          output.top_tokens.const_data_ptr<int64_t>() + offset * top_k,
+          static_cast<size_t>(top_k)};
+      token.top_logprobs = {
+          output.top_logprobs.const_data_ptr<float>() + offset * top_k,
+          static_cast<size_t>(top_k)};
+    }
+  }
+  return token;
+}
 
 torch::Tensor concat_rows(const torch::Tensor& left,
                           const torch::Tensor& right,
@@ -66,6 +125,22 @@ torch::Tensor concat_rows(const torch::Tensor& left,
 }
 
 }  // namespace
+
+Token SampleOutput::token_at(int64_t output_idx) const {
+  check_next_tokens(next_tokens, /*rank=*/1);
+  CHECK_GE(output_idx, 0);
+  CHECK_LT(output_idx, next_tokens.size(0));
+  return token_at_offset(*this, output_idx);
+}
+
+Token SampleOutput::token_at(int64_t output_idx, int64_t token_idx) const {
+  check_next_tokens(next_tokens, /*rank=*/2);
+  CHECK_GE(output_idx, 0);
+  CHECK_LT(output_idx, next_tokens.size(0));
+  CHECK_GE(token_idx, 0);
+  CHECK_LT(token_idx, next_tokens.size(1));
+  return token_at_offset(*this, output_idx * next_tokens.size(1) + token_idx);
+}
 
 void SamplingParameters::init(
     const std::vector<const RequestSamplingParam*>& req_sampling_params,

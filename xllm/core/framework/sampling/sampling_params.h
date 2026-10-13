@@ -26,6 +26,8 @@ limitations under the License.
 
 namespace xllm {
 
+struct Token;
+
 struct RequestSamplingParam {
   float frequency_penalty = 0.0;
   float presence_penalty = 0.0;
@@ -208,7 +210,17 @@ struct SpeculativeTokenStats {
   int64_t proposed_tokens = 0;
 };
 
-struct SampleOutput {
+class SampleOutput final {
+ public:
+  // Host access only: tensors must be CPU-contiguous. next_tokens is int32 or
+  // int64 with shape [num_seq] for ordinary sampling, or [num_seq, width] for
+  // speculative sampling. Optional float32 logprobs match that shape; paired
+  // int64 top_tokens/float32 top_logprobs append a top-k dimension.
+  // Returned top-k slices borrow this output's tensor storage; keep it alive
+  // and unchanged while using the Token. The overload must match token rank.
+  Token token_at(int64_t output_idx) const;
+  Token token_at(int64_t output_idx, int64_t token_idx) const;
+
   // [num_seq, ...] LongTensor
   torch::Tensor next_tokens;
 

@@ -47,6 +47,11 @@ limitations under the License.
 
 namespace xllm {
 
+namespace proto {
+class PackedForwardInput;
+class ForwardOutput;
+}  // namespace proto
+
 class LlmForwardInput;
 constexpr int32_t kUnknownPackedSampleCount = -1;
 
@@ -389,6 +394,9 @@ class LlmForwardInput final {
   LlmForwardInput(LlmForwardInput&&) = default;
   LlmForwardInput& operator=(LlmForwardInput&&) = default;
 
+  bool to_packed_proto(proto::PackedForwardInput* packed_forward_input) const;
+  bool from_packed_proto(const proto::PackedForwardInput& packed_forward_input);
+
   LlmForwardInput clone() const {
     LlmForwardInput inputs;
     inputs.runtime = runtime;
@@ -593,7 +601,12 @@ class LlmForwardInput final {
 };
 
 // output after forward execution
-struct ForwardOutput {
+class ForwardOutput final {
+ public:
+  // Tensor payloads must already be contiguous CPU values with D2H complete.
+  bool to_proto(const std::vector<SpeculativeTokenStats>& stats,
+                proto::ForwardOutput* output) const;
+
   // Local runtime handle, not in proto/shm; metrics recording skips warmup.
   bool is_graph_warmup = false;
   // sample parameters for speculative decoding
@@ -676,7 +689,11 @@ struct RawSampleOutput {
   SpeculativeTokenStats speculative_token_stats;
 };
 
-struct RawForwardOutput {
+class RawForwardOutput final {
+ public:
+  // Failed conversion leaves the current output unchanged.
+  bool from_proto(const proto::ForwardOutput& output);
+
   std::vector<RawSampleOutput> outputs;  // num seqs
   std::vector<JsonObjectOutputError> json_object_errors;
   std::vector<int64_t> expert_load_data;
