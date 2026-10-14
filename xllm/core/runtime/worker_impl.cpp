@@ -921,6 +921,74 @@ Input WorkerImpl::update_input_by_last_step_output_impl(Input& inputs) {
   return inputs.clone();
 }
 
+torch::Tensor WorkerImpl::remap_selected_token_idxes_for_lm_head(
+    const torch::Tensor& selected_token_idxes,
+    const ParallelInput& parallel_input,
+    const torch::Tensor& hidden_states) const {
+  const auto& mapping = context_.get_parallel_args().mapping_data();
+  const int64_t hidden_num_rows = hidden_states.size(0);
+  if (!selected_token_idxes.defined() || selected_token_idxes.numel() == 0 ||
+      mapping.empty() || !mapping.contains("attnDp") ||
+      !mapping["attnDp"].contains("rank") ||
+      parallel_input.dp_global_token_nums.size() <= 1 || hidden_num_rows <= 0) {
+    return selected_token_idxes;
+  }
+
+  const int64_t dp_rank = mapping["attnDp"]["rank"].get<int64_t>();
+  CHECK_GE(dp_rank, 0) << "invalid attnDp rank";
+  CHECK_LT(dp_rank,
+           static_cast<int64_t>(parallel_input.dp_global_token_nums.size()))
+      << "attnDp rank exceeds dp_global_token_nums";
+
+  const int64_t local_selected_rows = selected_token_idxes.numel();
+  const int64_t local_token_count =
+      parallel_input.dp_global_token_nums.at(dp_rank);
+  if (hidden_num_rows == local_token_count ||
+      hidden_num_rows == local_selected_rows) {
+    return selected_token_idxes;
+  }
+
+  int64_t dp_offset = 0;
+  for (int64_t i = 0; i < dp_rank; ++i) {
+    dp_offset += parallel_input.dp_global_token_nums[i];
+  }
+
+  torch::Tensor selected_cpu =
+      selected_token_idxes.to(torch::dtype(torch::kLong).device(torch::kCPU));
+  torch::Tensor logical_selected_cpu = selected_cpu + dp_offset;
+
+  const auto& padding_idx =
+      parallel_input.dp_ep_padding_data.lm_head_skip_padding_token_indices();
+  if (padding_idx.defined() && padding_idx.numel() > 0 &&
+      hidden_num_rows > padding_idx.numel()) {
+    torch::Tensor padding_cpu =
+        padding_idx.to(torch::dtype(torch::kLong).device(torch::kCPU));
+    const int64_t max_logical_selected =
+        logical_selected_cpu.max().item<int64_t>();
+    if (max_logical_selected < padding_cpu.numel()) {
+      return padding_cpu.index_select(/*dim=*/0, logical_selected_cpu)
+          .to(torch::dtype(selected_token_idxes.scalar_type())
+                  .device(hidden_states.device()),
+              /*non_blocking=*/false)
+          .contiguous();
+    }
+  }
+
+  if (dp_offset == 0) {
+    return selected_token_idxes;
+  }
+
+  const int64_t max_selected_idx = selected_cpu.max().item<int64_t>();
+  if (max_selected_idx + dp_offset >= hidden_num_rows) {
+    return selected_token_idxes;
+  }
+
+  torch::Tensor remapped =
+      selected_token_idxes.to(hidden_states.device(), /*non_blocking=*/false)
+          .contiguous();
+  return (remapped + dp_offset).to(remapped.scalar_type()).contiguous();
+}
+
 void WorkerImpl::try_restore_linear_state_slots(
     const ModelInputParams& params) {
 #if defined(USE_NPU) || defined(USE_MLU) || defined(USE_CUDA) || \

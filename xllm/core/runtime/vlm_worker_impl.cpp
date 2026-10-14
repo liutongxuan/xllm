@@ -27,7 +27,6 @@ limitations under the License.
 #include "core/framework/config/load_config.h"
 #include "core/framework/speculative/draft_extend_input.h"
 #include "core/kv_cache/storage/kv_cache.h"
-#include "core/runtime/params_utils.h"
 #include "framework/model/model_input_params.h"
 #include "models/model_registry.h"
 #include "util/timer.h"
@@ -150,12 +149,10 @@ std::optional<ForwardOutput> VLMWorkerImpl::step_internal(
     model_output = model_executor_->forward(
         input.token_ids, input.positions, kv_caches_, params);
     if (sampling_params.selected_token_idxes.defined()) {
-      lm_head_selected_token_idxes = choose_lm_head_selected_token_idxes(
+      lm_head_selected_token_idxes = remap_selected_token_idxes_for_lm_head(
           sampling_params.selected_token_idxes,
-          params,
-          context_.get_parallel_args(),
-          model_output.hidden_states.size(0),
-          model_output.hidden_states.device());
+          params.parallel,
+          model_output.hidden_states);
     }
   }
 

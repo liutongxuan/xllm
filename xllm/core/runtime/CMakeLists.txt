@@ -10,7 +10,6 @@ cc_library(
     forward_params.h
     forward_runtime_state.h
     dit_forward_params.h
-    params_utils.h
     executor.h
     task_execution_pipeline.h
     slot_buffer.h
@@ -86,7 +85,6 @@ cc_library(
     rec_worker_impl.cpp
     mm_embed_vlm_worker_impl.cpp
     worker_client.cpp
-    params_utils.cpp
     forward_output.cpp
     dit_forward_params.cpp
     draft_model_spec_worker_impl.cpp

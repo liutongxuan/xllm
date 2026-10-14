@@ -40,7 +40,6 @@ limitations under the License.
 #include "core/framework/speculative/draft_extend_input.h"
 #include "models/model_registry.h"
 #include "runtime/executor.h"
-#include "runtime/params_utils.h"
 #include "util/env_var.h"
 #include "util/threadpool.h"
 #include "util/timer.h"
@@ -291,12 +290,10 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_internal(
   torch::Tensor lm_head_selected_token_idxes;
   torch::Tensor selected_hidden;
   if (sampling_params.selected_token_idxes.defined()) {
-    torch::Tensor selected_token_idxes = choose_lm_head_selected_token_idxes(
+    torch::Tensor selected_token_idxes = remap_selected_token_idxes_for_lm_head(
         sampling_params.selected_token_idxes,
-        execution_params,
-        context_.get_parallel_args(),
-        model_output.hidden_states.size(0),
-        model_output.hidden_states.device());
+        execution_params.parallel,
+        model_output.hidden_states);
     if (model_output.hidden_states.defined() &&
         selected_token_idxes.device() != model_output.hidden_states.device()) {
       selected_token_idxes = selected_token_idxes
