@@ -48,7 +48,10 @@ void BatchState::add(Sequence* sequence, uint32_t allowed_max_token) {
 }
 
 void BatchState::update_forward_type(Sequence* sequence) {
-  auto stage = sequence->stage();
+  if (batch_forward_type_.value() == BatchForwardType::MIXED) {
+    return;
+  }
+  const SequenceStage stage = sequence->stage();
   switch (batch_forward_type_.value()) {
     case BatchForwardType::PREFILL:
       if (stage == SequenceStage::CHUNKED_PREFILL) {

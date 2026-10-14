@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "core/framework/batch/batch_builder.h"
 
+#include <absl/container/inlined_vector.h>
 #include <glog/logging.h>
 
 #include <algorithm>
@@ -40,21 +41,21 @@ BatchGroup BatchBuilder::build(
     CHECK_EQ(swap_infos->size(), static_cast<size_t>(dp_size_));
   }
 
-  std::vector<size_t> sequence_counts(dp_size_);
+  absl::InlinedVector<size_t, 8> sequence_counts(dp_size_);
   // Plain LLM sequences do not carry embeddings. Allocate this only when the
   // first embedding is observed, then reserve the exact per-rank count.
-  std::vector<size_t> embedding_counts;
+  absl::InlinedVector<size_t, 8> embedding_counts;
   // Beam groups are uncommon in the regular LLM path, so defer this allocation
   // until the request scan confirms that groups must be retained.
-  std::vector<size_t> group_counts;
+  absl::InlinedVector<size_t, 8> group_counts;
   size_t num_prompt_tokens = 0;
   size_t num_generated_tokens = 0;
 
-  // Validate and count before assembling or consuming pending block transfers.
+  // Validate ranks and budgets before allocating per-rank batches. Batch::add
+  // checks sequence completion before pending block transfers are consumed.
   for (size_t i = 0; i < sequences.size(); ++i) {
     auto* sequence = sequences[i];
     CHECK(sequence != nullptr);
-    CHECK(!sequence->finished());
     CHECK_GE(sequence->dp_rank(), 0);
     CHECK_LT(sequence->dp_rank(), dp_size_);
     CHECK_GT(budgets[i], 0);

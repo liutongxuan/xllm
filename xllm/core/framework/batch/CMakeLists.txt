@@ -68,6 +68,7 @@ cc_library(
     :common
     :util
     :mposition
+    absl::inlined_vector
     glog::glog
     xxHash
 )
