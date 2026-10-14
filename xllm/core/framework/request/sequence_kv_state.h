@@ -31,7 +31,7 @@ namespace xllm {
 class KVCacheState {
  public:
   // get the number of tokens in the kvcache
-  size_t kv_cache_tokens_num() const;
+  size_t kv_cache_tokens_num() const { return kv_cache_tokens_num_; }
   void set_kv_cache_tokens_num(size_t num);
   void incr_kv_cache_tokens_num(size_t num);
   // Advance kv_cache_tokens_num_ to `new_target` if it grows the counter. No-op

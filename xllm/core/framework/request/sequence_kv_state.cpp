@@ -42,10 +42,6 @@ void try_replace_unique_blocks(std::vector<Block>&& matched_shared_blocks,
 }
 }  // namespace
 
-size_t KVCacheState::kv_cache_tokens_num() const {
-  return kv_cache_tokens_num_;
-}
-
 void KVCacheState::set_kv_cache_tokens_num(size_t num) {
   kv_cache_tokens_num_ = num;
 }
