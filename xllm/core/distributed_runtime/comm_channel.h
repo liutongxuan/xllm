@@ -32,6 +32,7 @@ limitations under the License.
 #include "worker.pb.h"
 
 namespace xllm {
+class RecForwardInput;
 class VlmForwardInput;
 
 class CommChannel {

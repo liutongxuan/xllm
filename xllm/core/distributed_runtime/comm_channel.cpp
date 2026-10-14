@@ -23,6 +23,7 @@ limitations under the License.
 
 #include "common/global_flags.h"
 #include "core/kv_cache/transfer/kv_transport_codec.h"
+#include "runtime/rec_forward_params.h"
 #include "runtime/vlm_forward_params.h"
 
 namespace xllm {
