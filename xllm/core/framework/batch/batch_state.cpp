@@ -39,9 +39,8 @@ void BatchState::add(Sequence* sequence, uint32_t allowed_max_token) {
   set_batch_id();
   sequence_plan_.add(sequence, allowed_max_token);
 
-  const auto& input_embedding = sequence->get_input_embedding();
-  if (input_embedding.defined()) {
-    input_embeddings_vec_.emplace_back(input_embedding);
+  if (sequence->has_input_embedding()) {
+    input_embeddings_vec_.emplace_back(sequence->get_input_embedding());
   }
 
   update_forward_type(sequence);
