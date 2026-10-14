@@ -176,9 +176,9 @@ std::shared_ptr<Request> make_llm_batch_factory_request(size_t index,
   stopping_checker.set_ignore_eos(true);
   RequestState state("benchmark",
                      next_prompt_tokens(kBatchFactoryPromptTokens),
-                     sampling_param,
+                     std::move(sampling_param),
                      SchedulerParam{},
-                     stopping_checker,
+                     std::move(stopping_checker),
                      kBatchFactoryPromptTokens + 64,
                      /*n=*/1,
                      /*best_of=*/1,
@@ -362,11 +362,7 @@ void benchmark_llm_batch_factory(benchmark::State& state,
   for (auto _ : state) {
     BatchGroup batches = factory.create_batches(
         fixture.requests(), fixture.sequences(), fixture.budgets());
-    size_t scheduled_sequences = 0;
-    for (const Batch& batch : batches) {
-      scheduled_sequences += batch.size();
-    }
-    do_not_optimize(scheduled_sequences);
+    benchmark::DoNotOptimize(batches);
   }
   state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) *
                           static_cast<int64_t>(batch_size));
