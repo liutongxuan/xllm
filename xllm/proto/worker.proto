@@ -484,8 +484,6 @@ service DistributeWorker {
   rpc UnlinkCluster(ClusterInfo) returns (Status) {}
   rpc LinkP2P(P2PLinkWorkerRequest) returns (Status) {}
   rpc UnlinkP2P(P2PLinkWorkerRequest) returns (Status) {}
-  rpc ExecuteModel (ForwardInput) returns (ForwardOutput);
-  rpc GetLastStepResult (Empty) returns (ForwardOutput);
   rpc ExecuteLLMModel (LLMForwardRequest) returns (LLMForwardResponse);
   rpc ExecuteVLMModel (VLMForwardRequest) returns (VLMForwardResponse);
   rpc ExecuteRECModel (RECForwardRequest) returns (RECForwardResponse);

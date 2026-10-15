@@ -17,6 +17,17 @@ cc_test(
 cc_test(
   NO_NPU_RUNTIME
   NAME
+    comm_channel_test
+  SRCS
+    comm_channel_test.cpp
+  DEPS
+    :distributed_runtime
+    GTest::gtest_main
+)
+
+cc_test(
+  NO_NPU_RUNTIME
+  NAME
     kv_transfer_topology_test
   SRCS
     kv_transfer_topology_test.cpp

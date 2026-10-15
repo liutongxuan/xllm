@@ -74,12 +74,17 @@ cc_library(
     remote_worker.cpp
     worker_server.cpp
     worker_service.cpp
+    worker_service_llm.cpp
+    worker_service_vlm.cpp
+    worker_service_rec.cpp
+    worker_service_dit.cpp
     comm_channel.cpp
     shm_channel.cpp
     xservice_client.cpp
     model_residency_coordinator.cpp
   DEPS
     :api_service
+    :worker_model_codec
     :models
     :parallel_config_validation
     :runtime
@@ -105,7 +110,12 @@ cc_library(
     worker_service.h
   SRCS
     worker_service.cpp
+    worker_service_llm.cpp
+    worker_service_vlm.cpp
+    worker_service_rec.cpp
+    worker_service_dit.cpp
   DEPS
+    :worker_model_codec
     :request
     :speculative
     :common

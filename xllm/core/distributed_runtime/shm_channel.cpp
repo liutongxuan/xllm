@@ -63,7 +63,7 @@ bool ShmChannel::execute_model_with_shm(const LlmForwardInput& input,
 }
 
 template <typename Input>
-void ShmChannel::execute_model_async_impl(
+bool ShmChannel::execute_model_async_impl(
     const Input& input,
     folly::Promise<std::optional<RawForwardOutput>>& promise) {
   if (enable_shm_) {
@@ -75,13 +75,13 @@ void ShmChannel::execute_model_async_impl(
       RawForwardOutput output;
       output_shm_manager_->raw_output_read(output);
       promise.setValue(std::move(output));
-      return;
+      return true;
     }
   }
-  execute_model_with_brpc(input, promise);
+  return false;
 }
 
-void ShmChannel::execute_model_async(
+void ShmChannel::execute_llm_model_async(
     const LlmForwardInput& input,
     folly::Promise<std::optional<RawForwardOutput>>& promise) {
   if (enable_shm_) {
@@ -92,24 +92,30 @@ void ShmChannel::execute_model_async(
       return;
     }
   }
-  execute_model_with_brpc(input, promise);
+  execute_llm_model_with_brpc(input, promise);
 }
-void ShmChannel::execute_model_async(
+void ShmChannel::execute_dit_model_async(
     const DiTForwardInput& input,
     folly::Promise<std::optional<RawForwardOutput>>& promise) {
-  execute_model_async_impl(input, promise);
+  if (!execute_model_async_impl(input, promise)) {
+    execute_dit_model_with_brpc(input, promise);
+  }
 }
 
-void ShmChannel::execute_model_async(
+void ShmChannel::execute_rec_model_async(
     const RecForwardInput& input,
     folly::Promise<std::optional<RawForwardOutput>>& promise) {
-  execute_model_async_impl(input, promise);
+  if (!execute_model_async_impl(input, promise)) {
+    execute_rec_model_with_brpc(input, promise);
+  }
 }
 
-void ShmChannel::execute_model_async(
+void ShmChannel::execute_vlm_model_async(
     const VlmForwardInput& input,
     folly::Promise<std::optional<RawForwardOutput>>& promise) {
-  execute_model_async_impl(input, promise);
+  if (!execute_model_async_impl(input, promise)) {
+    execute_vlm_model_with_brpc(input, promise);
+  }
 }
 
 }  // namespace xllm
