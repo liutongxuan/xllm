@@ -112,9 +112,7 @@ inline torch::Tensor create_2d_tensor(const std::vector<std::vector<T> >& vec,
   // int32_t with kInt and int64_t with kInt64. Copying directly avoids a
   // per-row pinned allocation plus an autograd-aware `tensor[i] = ...`
   // indexed assignment, which dominated large-batch input building.
-  CHECK_EQ(
-      torch::empty({0}, torch::TensorOptions().dtype(dtype)).element_size(),
-      sizeof(T))
+  CHECK_EQ(tensor.element_size(), sizeof(T))
       << "create_2d_tensor element type does not match dtype storage size";
   auto* dst = static_cast<T*>(tensor.data_ptr());
   for (size_t i = 0; i < n_rows; ++i) {
