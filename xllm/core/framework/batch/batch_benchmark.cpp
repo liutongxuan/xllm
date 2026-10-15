@@ -22,7 +22,10 @@ limitations under the License.
 // (proto::ForwardOutput), which the engine turns into a RawForwardOutput and
 // feeds to Batch::process_sample_output. Everything here is host-side CPU work
 // and is timed with CPU tensors; the model forward, sampler and device copies
-// are the only steps of the pipeline that are not covered.
+// are the only steps of the pipeline that are not covered. NPU builds still
+// require a device for the backend's pinned host-memory allocator. Use the
+// separate batch_factory_benchmark target to measure batch creation without
+// Python or device initialization.
 //
 //   * BM_BlockManagerPool_AllocateRelease - prefix match + block allocation
 //                                           + release for one prompt.
@@ -44,12 +47,18 @@ limitations under the License.
 //                                       append_token for N sequences.
 //
 // Build & run (example):
-//   python setup.py test --test-name batch_benchmark
+//   python setup.py test --device npu --test-name batch_benchmark
+//   python setup.py test --device npu --test-name batch_factory_benchmark
 //   ./batch_benchmark --benchmark_min_time=0.2s
 
 #include <benchmark/benchmark.h>
 #include <glog/logging.h>
 #include <torch/torch.h>
+
+#if defined(USE_NPU)
+#include <Python.h>
+#include <pybind11/embed.h>
+#endif
 
 #include <cstddef>
 #include <cstdint>
@@ -61,16 +70,17 @@ limitations under the License.
 
 #include "core/common/types.h"
 #include "core/framework/batch/batch.h"
-#include "core/framework/batch/batch_factory.h"
 #include "core/framework/block/block_manager_pool.h"
 #include "core/framework/model/model_args.h"
 #include "core/framework/multimodal/mm_data.h"
 #include "core/framework/request/incremental_decoder.h"
-#include "core/framework/request/request.h"
 #include "core/framework/request/sequence.h"
 #include "core/framework/request/stopping_checker.h"
 #include "core/framework/sampling/sampling_params.h"
 #include "core/kv_cache/block/block.h"
+#if defined(USE_NPU)
+#include "core/platform/npu/startup.h"
+#endif
 #include "core/runtime/forward_params.h"
 #include "core/util/threadpool.h"
 #include "worker.pb.h"
@@ -91,7 +101,6 @@ constexpr int32_t kBlockSize = 128;
 constexpr uint32_t kNumBlocks = 16384;
 constexpr uint32_t kMaxSeqsPerBatch = 1024;
 constexpr size_t kDecodePromptTokens = 512;
-constexpr size_t kBatchFactoryPromptTokens = 512;
 // LLMEngine sizes its "LLMEngine.forward_input" pool with 16 threads; the
 // builder only fans out to it above 65536 query tokens.
 constexpr size_t kForwardInputThreads = 16;
@@ -165,100 +174,6 @@ class SequenceFixture final {
  private:
   RequestSamplingParam sampling_param_;
   StoppingChecker stopping_checker_;
-};
-
-std::shared_ptr<Request> make_llm_batch_factory_request(size_t index,
-                                                        int32_t dp_rank) {
-  RequestSamplingParam sampling_param;
-  StoppingChecker stopping_checker;
-  stopping_checker.set_max_generated_tokens(1 << 20);
-  stopping_checker.set_max_context_len(1 << 20);
-  stopping_checker.set_ignore_eos(true);
-  RequestState state("benchmark",
-                     next_prompt_tokens(kBatchFactoryPromptTokens),
-                     std::move(sampling_param),
-                     SchedulerParam{},
-                     std::move(stopping_checker),
-                     kBatchFactoryPromptTokens + 64,
-                     /*n=*/1,
-                     /*best_of=*/1,
-                     /*logprobs=*/false,
-                     /*stream=*/false,
-                     /*echo=*/false,
-                     /*skip_special_tokens=*/true,
-                     /*enable_schedule_overlap=*/false,
-                     /*output_func=*/nullptr,
-                     /*outputs_func=*/nullptr);
-  auto request = std::make_shared<Request>(
-      std::to_string(index), "", "", std::move(state));
-  request->sequences().front()->set_dp_rank(dp_rank);
-  return request;
-}
-
-enum class BatchFactoryStage { PREFILL, DECODE, CHUNKED_PREFILL, MIXED };
-
-constexpr BatchFactoryStage kMixedStages[] = {
-    BatchFactoryStage::PREFILL,
-    BatchFactoryStage::DECODE,
-    BatchFactoryStage::CHUNKED_PREFILL};
-
-// Owns the requests referenced by the scheduler's sequence view. Keeping the
-// fixture outside the timed loop isolates BatchFactory::create_batches from
-// request and Sequence construction.
-class LlmBatchFactoryFixture final {
- public:
-  LlmBatchFactoryFixture(size_t batch_size,
-                         int32_t dp_size,
-                         BatchFactoryStage stage,
-                         bool concentrated_rank = false) {
-    requests_.reserve(batch_size);
-    sequences_.reserve(batch_size);
-    budgets_.reserve(batch_size);
-    for (size_t i = 0; i < batch_size; ++i) {
-      const int32_t dp_rank =
-          concentrated_rank ? 0 : static_cast<int32_t>(i % dp_size);
-      auto request = make_llm_batch_factory_request(i, dp_rank);
-      Sequence* sequence = request->sequences().front().get();
-      // Use three stages rather than alternating two, so DP sizes 2/4/8 do
-      // not accidentally isolate each stage on a different rank.
-      const BatchFactoryStage sequence_stage =
-          stage == BatchFactoryStage::MIXED ? kMixedStages[i % 3] : stage;
-      size_t budget = kBatchFactoryPromptTokens;
-      switch (sequence_stage) {
-        case BatchFactoryStage::PREFILL:
-          break;
-        case BatchFactoryStage::DECODE:
-          sequence->kv_state().set_kv_cache_tokens_num(
-              sequence->num_prompt_tokens());
-          budget = 1;
-          break;
-        case BatchFactoryStage::CHUNKED_PREFILL:
-          sequence->kv_state().set_kv_cache_tokens_num(
-              kBatchFactoryPromptTokens / 4);
-          budget = kBatchFactoryPromptTokens / 4;
-          break;
-        case BatchFactoryStage::MIXED:
-          LOG(FATAL) << "Mixed batch must assign a concrete sequence stage";
-      }
-      requests_.emplace_back(std::move(request));
-      sequences_.emplace_back(sequence);
-      budgets_.emplace_back(budget);
-    }
-  }
-
-  LlmBatchFactoryFixture(const LlmBatchFactoryFixture&) = delete;
-  LlmBatchFactoryFixture& operator=(const LlmBatchFactoryFixture&) = delete;
-
-  const std::vector<std::shared_ptr<Request>>& requests() const {
-    return requests_;
-  }
-  const std::vector<Sequence*>& sequences() const { return sequences_; }
-  const std::vector<size_t>& budgets() const { return budgets_; }
-
- private:
-  std::vector<std::shared_ptr<Request>> requests_;
-  std::vector<Sequence*> sequences_;
-  std::vector<size_t> budgets_;
 };
 
 // Allocates KV blocks for the whole prompt the way the scheduler does for a
@@ -345,54 +260,6 @@ RawForwardOutput make_raw_output(size_t batch_size, bool logprobs) {
     raw_output.outputs.emplace_back(std::move(sample_output));
   }
   return raw_output;
-}
-
-// --------------------------------------------------------------------------
-// Scheduler-side batch assembly
-// --------------------------------------------------------------------------
-
-void benchmark_llm_batch_factory(benchmark::State& state,
-                                 BatchFactoryStage stage,
-                                 bool concentrated_rank = false) {
-  const size_t batch_size = static_cast<size_t>(state.range(0));
-  const int32_t dp_size = static_cast<int32_t>(state.range(1));
-  LlmBatchFactoryFixture fixture(batch_size, dp_size, stage, concentrated_rank);
-  const BatchFactory factory(dp_size);
-
-  for (auto _ : state) {
-    BatchGroup batches = factory.create_batches(
-        fixture.requests(), fixture.sequences(), fixture.budgets());
-    benchmark::DoNotOptimize(batches);
-  }
-  state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) *
-                          static_cast<int64_t>(batch_size));
-}
-
-// range(0): scheduled LLM sequences, range(1): DP size, range(2): decode (0/1).
-void BM_BatchFactory_CreateLLM(benchmark::State& state) {
-  benchmark_llm_batch_factory(state,
-                              state.range(2) != 0 ? BatchFactoryStage::DECODE
-                                                  : BatchFactoryStage::PREFILL);
-}
-
-// range(0): scheduled LLM sequences, range(1): DP size. Each rank sees
-// full prefill, chunked prefill and decode sequences in the same batch.
-void BM_BatchFactory_CreateLLM_MixedStage(benchmark::State& state) {
-  benchmark_llm_batch_factory(state, BatchFactoryStage::MIXED);
-}
-
-// range(0): scheduled LLM sequences, range(1): DP size. Each sequence has
-// cached 128 prompt tokens and receives a budget for the next 128 tokens.
-void BM_BatchFactory_CreateLLM_ChunkedPrefill(benchmark::State& state) {
-  benchmark_llm_batch_factory(state, BatchFactoryStage::CHUNKED_PREFILL);
-}
-
-// range(0): scheduled LLM sequences, range(1): DP size. All decode sequences
-// land on rank 0, leaving the other ranks empty.
-void BM_BatchFactory_CreateLLM_ConcentratedRank(benchmark::State& state) {
-  benchmark_llm_batch_factory(state,
-                              BatchFactoryStage::DECODE,
-                              /*concentrated_rank=*/true);
 }
 
 // --------------------------------------------------------------------------
@@ -600,31 +467,6 @@ void BM_Batch_ProcessSampleOutput(benchmark::State& state) {
                           static_cast<int64_t>(batch_size));
 }
 
-BENCHMARK(BM_BatchFactory_CreateLLM)
-    ->ArgsProduct({{1, 16, 64, 256, 384, 512, 768, 1024, 1536},
-                   {1, 2, 4, 8},
-                   {0, 1}})
-    ->Unit(benchmark::kNanosecond);
-BENCHMARK(BM_BatchFactory_CreateLLM_MixedStage)
-    ->Args({256, 1})
-    ->Args({256, 4})
-    ->Args({1024, 1})
-    ->Args({1024, 4})
-    ->Unit(benchmark::kNanosecond);
-BENCHMARK(BM_BatchFactory_CreateLLM_ChunkedPrefill)
-    ->Args({256, 1})
-    ->Args({256, 4})
-    ->Args({1024, 1})
-    ->Args({1024, 4})
-    ->Unit(benchmark::kNanosecond);
-BENCHMARK(BM_BatchFactory_CreateLLM_ConcentratedRank)
-    ->Args({1, 8})
-    ->Args({256, 8})
-    ->Args({512, 8})
-    ->Args({768, 8})
-    ->Args({1024, 8})
-    ->Args({1536, 8})
-    ->Unit(benchmark::kNanosecond);
 // Prompt length in tokens.
 BENCHMARK(BM_BlockManagerPool_AllocateRelease)
     ->RangeMultiplier(8)
@@ -659,3 +501,37 @@ BENCHMARK(BM_Batch_ProcessSampleOutput)
 
 }  // namespace
 }  // namespace xllm
+
+int main(int argc, char** argv) {
+  benchmark::Initialize(&argc, argv);
+  if (benchmark::ReportUnrecognizedArguments(argc, argv)) {
+    return 1;
+  }
+
+#if defined(USE_NPU)
+  // torch_npu calls into Python while creating tensors. Keep the interpreter
+  // alive for the complete benchmark process and release the GIL while the
+  // benchmark threads execute, matching the production startup lifecycle.
+  pybind11::initialize_interpreter(/*init_signal_handlers=*/false);
+  if (!xllm::initialize_npu_startup()) {
+    return 1;
+  }
+  PyThreadState* saved_thread_state = PyEval_SaveThread();
+#endif
+
+  benchmark::RunSpecifiedBenchmarks();
+  benchmark::Shutdown();
+
+#if defined(USE_NPU)
+  // Do not finalize embedded Python here: benchmark fixtures and libtorch
+  // statics are destroyed after main returns. Leave Python alive so their
+  // pybind11 decrefs remain valid, while releasing torch_npu's runtime state.
+  PyEval_RestoreThread(saved_thread_state);
+  const int shutdown_ret = PyRun_SimpleString("torch_npu._npu_shutdown()\n");
+  if (shutdown_ret != 0) {
+    return 1;
+  }
+#endif
+
+  return 0;
+}

@@ -80,12 +80,13 @@ cc_binary(
     batch_benchmark
   SRCS
     batch_benchmark.cpp
+    batch_factory_benchmark.cpp
   DEPS
     :config
     :batch
     torch
     benchmark::benchmark
-    benchmark::benchmark_main
+    $<$<BOOL:${USE_NPU}>:npu_startup>
     $<$<BOOL:${USE_MLU}>:torch_mlu>
     $<$<BOOL:${USE_NPU}>:torch_npu>
 )
@@ -97,5 +98,32 @@ target_link_libraries(batch_benchmark
                       $<$<BOOL:${USE_NPU}>:c_sec>
                       $<$<BOOL:${USE_NPU}>:nnopbase>)
 target_link_options(batch_benchmark
+                    PRIVATE
+                    $<$<BOOL:${USE_MLU}>:-Wl,--no-as-needed>)
+
+# BatchFactory construction uses host metadata only, without pinned tensors or
+# Python/device startup. Keep the same cases available in batch_benchmark.
+cc_binary(
+  NAME
+    batch_factory_benchmark
+  SRCS
+    batch_factory_benchmark.cpp
+  DEPS
+    :config
+    :batch
+    torch
+    benchmark::benchmark
+    benchmark::benchmark_main
+    $<$<BOOL:${USE_MLU}>:torch_mlu>
+    $<$<BOOL:${USE_NPU}>:torch_npu>
+)
+target_link_libraries(batch_factory_benchmark
+                      PUBLIC
+                      Python::Python
+                      $<$<BOOL:${USE_NPU}>:ascendcl>
+                      $<$<BOOL:${USE_NPU}>:hccl>
+                      $<$<BOOL:${USE_NPU}>:c_sec>
+                      $<$<BOOL:${USE_NPU}>:nnopbase>)
+target_link_options(batch_factory_benchmark
                     PRIVATE
                     $<$<BOOL:${USE_MLU}>:-Wl,--no-as-needed>)
