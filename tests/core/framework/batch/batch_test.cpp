@@ -23,6 +23,7 @@ limitations under the License.
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <string>
 #include <unordered_set>
@@ -3124,6 +3125,154 @@ TEST(BatchTest, DecodeConsumesRestoreSourceWithD2DCopy) {
       forward_input.input_params.linear_state_cache_ops[0];
   EXPECT_TRUE(cache_op.restore_requested);
   EXPECT_EQ(cache_op.restore_src_slot_id, restore_src_slot_id);
+}
+
+TEST(BatchTest, ThreadedPrefillPreservesChunkSlicesAndFinalSamplingOffset) {
+  constexpr uint32_t kQueryTokens = 32768;
+  constexpr uint32_t kSequenceTokens = 32773;
+  constexpr uint32_t kBlockSize = 128;
+  constexpr uint32_t kBlocksPerSequence = 257;
+
+  std::vector<int32_t> expected_tokens(2 * kQueryTokens);
+  std::iota(expected_tokens.begin(),
+            expected_tokens.begin() + kQueryTokens,
+            /*value=*/103);
+  std::iota(expected_tokens.begin() + kQueryTokens,
+            expected_tokens.end(),
+            /*value=*/100005);
+  std::vector<int32_t> expected_positions(2 * kQueryTokens);
+  std::iota(expected_positions.begin(),
+            expected_positions.begin() + kQueryTokens,
+            /*value=*/3);
+  std::iota(expected_positions.begin() + kQueryTokens,
+            expected_positions.end(),
+            /*value=*/5);
+  // Block 0 is padding; the sequences own blocks 1..257 and 258..514.
+  std::vector<int32_t> expected_slots(2 * kQueryTokens);
+  std::iota(expected_slots.begin(),
+            expected_slots.begin() + kQueryTokens,
+            /*value=*/131);
+  std::iota(expected_slots.begin() + kQueryTokens,
+            expected_slots.end(),
+            /*value=*/33029);
+  std::vector<int32_t> expected_block_ids(2 * kBlocksPerSequence);
+  std::iota(expected_block_ids.begin(), expected_block_ids.end(), /*value=*/1);
+
+  auto verify = [&](ThreadPool* thread_pool) {
+    SCOPED_TRACE(thread_pool ? "threaded" : "serial");
+    BlockManager::Options options;
+    options.num_blocks(/*num_blocks=*/515)
+        .block_size(kBlockSize)
+        .enable_prefix_cache(/*enable_prefix_cache=*/false);
+    BlockManagerImpl manager(options);
+
+    RequestSamplingParam sampling_param;
+    StoppingChecker stopping_checker;
+    stopping_checker.set_max_generated_tokens(/*tokens=*/1);
+    SequenceParams seq_params;
+    seq_params.seq_capacity = kSequenceTokens + 1;
+    seq_params.stopping_checker = &stopping_checker;
+    seq_params.sampling_param = &sampling_param;
+    seq_params.request_id = "chunked";
+
+    std::vector<int32_t> first_tokens(kSequenceTokens);
+    std::iota(first_tokens.begin(), first_tokens.end(), /*value=*/100);
+    IncrementalDecoder first_decoder(/*prompt=*/"",
+                                     kSequenceTokens,
+                                     /*echo=*/false,
+                                     /*skip_special_tokens=*/false);
+    Sequence first_sequence(/*index=*/0,
+                            first_tokens,
+                            /*input_embedding=*/torch::Tensor(),
+                            /*mm_data=*/MMData(),
+                            std::move(first_decoder),
+                            seq_params);
+    first_sequence.add_blocks(BlockType::KV,
+                              manager.allocate(kBlocksPerSequence));
+    first_sequence.kv_state().incr_kv_cache_tokens_num(/*size=*/3);
+
+    seq_params.request_id = "finished";
+    std::vector<int32_t> second_tokens(kSequenceTokens);
+    std::iota(second_tokens.begin(), second_tokens.end(), /*value=*/100000);
+    IncrementalDecoder second_decoder(/*prompt=*/"",
+                                      kSequenceTokens,
+                                      /*echo=*/false,
+                                      /*skip_special_tokens=*/false);
+    Sequence second_sequence(/*index=*/1,
+                             second_tokens,
+                             /*input_embedding=*/torch::Tensor(),
+                             /*mm_data=*/MMData(),
+                             std::move(second_decoder),
+                             seq_params);
+    second_sequence.add_blocks(BlockType::KV,
+                               manager.allocate(kBlocksPerSequence));
+    second_sequence.kv_state().incr_kv_cache_tokens_num(/*size=*/5);
+
+    // 2 * 32768 scheduled tokens meet the multithread threshold. The first
+    // sequence has two remaining prompt tokens; only the second may sample.
+    Batch batch;
+    batch.add(&first_sequence, kQueryTokens);
+    batch.add(&second_sequence, kQueryTokens);
+    LlmForwardInput forward_input =
+        batch.prepare_forward_input(ModelArgs(), thread_pool);
+    EXPECT_TRUE(torch::equal(forward_input.token_ids,
+                             make_cpu_tensor(expected_tokens)));
+    EXPECT_TRUE(torch::equal(forward_input.positions,
+                             make_cpu_tensor(expected_positions)));
+
+    const auto& input_params = forward_input.input_params;
+    EXPECT_TRUE(input_params.meta.batch_forward_type.is_chunked_prefill());
+    EXPECT_EQ(input_params.meta.num_sequences, 2);
+    EXPECT_EQ(input_params.meta.q_max_seq_len, 32768);
+    EXPECT_EQ(input_params.meta.kv_max_seq_len, 32773);
+    EXPECT_EQ(first_sequence.kv_state().kv_cache_tokens_num(), 32771u);
+    EXPECT_EQ(second_sequence.kv_state().kv_cache_tokens_num(), 32773u);
+    EXPECT_TRUE(torch::equal(input_params.attention.device.new_cache_slots,
+                             make_cpu_tensor(expected_slots)));
+    ASSERT_EQ(input_params.attention.device.block_tables.dim(), 2);
+    EXPECT_EQ(input_params.attention.device.block_tables.size(0), 2);
+    EXPECT_EQ(input_params.attention.device.block_tables.size(1), 257);
+    EXPECT_TRUE(
+        torch::equal(input_params.attention.device.block_tables.flatten(),
+                     make_cpu_tensor(expected_block_ids)));
+
+#if defined(USE_NPU)
+    const std::vector<int32_t> expected_q_seq_lens = {32768, 32768};
+    const std::vector<int32_t> expected_kv_seq_lens = {32771, 32773};
+#else
+    const std::vector<int32_t> expected_q_seq_lens = {0, 32768, 65536};
+    const std::vector<int32_t> expected_kv_seq_lens = {0, 32771, 65544};
+#endif
+    EXPECT_EQ(input_params.attention.host.q_seq_lens, expected_q_seq_lens);
+    EXPECT_EQ(input_params.attention.host.kv_seq_lens, expected_kv_seq_lens);
+    EXPECT_TRUE(torch::equal(input_params.attention.device.q_seq_lens,
+                             make_cpu_tensor(expected_q_seq_lens)));
+    EXPECT_TRUE(torch::equal(input_params.attention.device.kv_seq_lens,
+                             make_cpu_tensor(expected_kv_seq_lens)));
+    EXPECT_EQ(input_params.attention.host.q_cu_seq_lens,
+              std::vector<int32_t>({32768, 65536}));
+#if defined(USE_NPU) || defined(USE_MUSA)
+    EXPECT_EQ(input_params.attention.host.kv_cache_tokens_nums,
+              std::vector<int32_t>({3, 5}));
+    EXPECT_TRUE(torch::equal(input_params.attention.device.kv_cache_tokens_nums,
+                             make_cpu_tensor(std::vector<int32_t>({3, 5}))));
+#endif
+    EXPECT_EQ(input_params.embedding.embedding_ids, std::vector<int32_t>({-1}));
+    EXPECT_EQ(input_params.embedding.request_ids,
+              std::vector<std::string>({"finished"}));
+    EXPECT_EQ(input_params.embedding.linear_state_ids,
+              std::vector<int32_t>({-1, -1}));
+    EXPECT_EQ(input_params.embedding.extra_token_ids,
+              std::vector<int32_t>({32871, -1}));
+    EXPECT_TRUE(torch::equal(forward_input.sampling_params.selected_token_idxes,
+                             make_cpu_tensor(std::vector<int32_t>({65535}))));
+    EXPECT_TRUE(torch::equal(forward_input.sampling_params.sample_idxes,
+                             make_cpu_tensor(std::vector<int32_t>({0}))));
+  };
+
+  verify(/*thread_pool=*/nullptr);
+  ThreadPool thread_pool(/*num_threads=*/2);
+  verify(&thread_pool);
 }
 
 TEST(BatchTest, ThreadedBatchPinsEveryLinearRestoreSourceUntilRelease) {

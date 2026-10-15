@@ -20,15 +20,18 @@ limitations under the License.
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include "core/framework/batch/batch_group.h"
 #include "core/framework/block/block_manager_pool.h"
 #include "core/framework/config/execution_config.h"
+#include "core/framework/config/service_config.h"
 #include "core/framework/model/model_args.h"
 #include "core/framework/request/sequence.h"
 #include "core/framework/request/stopping_checker.h"
+#include "core/framework/sampling/json_object_grammar.h"
 #include "core/framework/sampling/sampling_params.h"
 #include "core/kv_cache/block/block_manager_impl.h"
 
@@ -50,9 +53,11 @@ StoppingChecker& test_stopping_checker() {
   return checker;
 }
 
-Sequence make_sequence(const std::vector<int32_t>& token_ids,
-                       const std::string& request_id,
-                       bool is_graph_warmup = false) {
+Sequence make_sequence(
+    const std::vector<int32_t>& token_ids,
+    const std::string& request_id,
+    bool is_graph_warmup = false,
+    std::shared_ptr<const JsonObjectGrammar> grammar = nullptr) {
   SequenceParams params;
   params.seq_capacity = token_ids.size() + 8;
   params.stopping_checker = &test_stopping_checker();
@@ -62,6 +67,7 @@ Sequence make_sequence(const std::vector<int32_t>& token_ids,
   params.logprobs = false;
   params.request_id = request_id;
   params.is_graph_warmup = is_graph_warmup;
+  params.json_object_grammar = std::move(grammar);
 
   IncrementalDecoder decoder(/*prompt=*/"",
                              /*num_prompt_tokens=*/token_ids.size(),
@@ -114,6 +120,22 @@ class ScopedGraphMode final {
   bool previous_value_;
 };
 
+class ScopedJsonObjectOutput final {
+ public:
+  explicit ScopedJsonObjectOutput(bool enabled)
+      : previous_value_(
+            ServiceConfig::get_instance().enable_json_object_output()) {
+    ServiceConfig::get_instance().enable_json_object_output(enabled);
+  }
+
+  ~ScopedJsonObjectOutput() {
+    ServiceConfig::get_instance().enable_json_object_output(previous_value_);
+  }
+
+ private:
+  bool previous_value_;
+};
+
 TEST(ForwardInputFactoryTest, AggregatesDpMetadataAndMixedForwardTypes) {
   BlockManager::Options manager_options;
   manager_options.num_blocks(8).block_size(4);
@@ -155,6 +177,117 @@ TEST(ForwardInputFactoryTest, AggregatesDpMetadataAndMixedForwardTypes) {
   }
   EXPECT_TRUE(inputs[0].input_params.meta.batch_forward_type.is_prefill());
   EXPECT_TRUE(inputs[1].input_params.meta.batch_forward_type.is_decode());
+}
+
+TEST(ForwardInputFactoryTest, DpMetadataIsIndependentAcrossRanksAndCalls) {
+  ScopedJsonObjectOutput json_output(/*enabled=*/true);
+  ScopedGraphMode graph_mode(/*enabled=*/false);
+  BlockManager::Options manager_options;
+  manager_options.num_blocks(8).block_size(4);
+  BlockManagerImpl manager(manager_options);
+
+  Sequence first = make_sequence({10, 11}, "first");
+  std::shared_ptr<const JsonObjectGrammar> grammar =
+      std::make_shared<const JsonObjectGrammar>(
+          std::vector<std::string>{"{", "}", ""},
+          std::unordered_set<int32_t>{2});
+  Sequence second = make_sequence({20, 21, 22},
+                                  "json",
+                                  /*is_graph_warmup=*/false,
+                                  std::move(grammar));
+  add_kv_block(&first, &manager);
+  add_kv_block(&second, &manager);
+
+  BatchGroup batches(3);
+  batches[0] = make_batch(&first);
+  batches[1] = make_batch(&second);
+  auto factory = make_factory(
+      /*dp_size=*/3,
+      /*cp_size=*/1,
+      /*max_tokens_per_batch=*/0,
+      /*enable_dp_global_json_object_active=*/true);
+  std::vector<LlmForwardInput> inputs;
+  bool is_graph_warmup = false;
+  factory.create_inputs(batches, ModelArgs(), inputs, is_graph_warmup);
+
+  ASSERT_EQ(inputs.size(), 3u);
+  const std::vector<int32_t> token_counts = {2, 3, 0};
+  const std::vector<int32_t> sequence_counts = {1, 1, 0};
+  const std::vector<int32_t> json_active = {0, 1, 0};
+  const std::vector<int32_t> is_decode = {0, 0, 0};
+  const std::vector<uint64_t> generations =
+      inputs.front().input_params.parallel.dp_global_batch_generations;
+  ASSERT_EQ(generations.size(), 3u);
+  for (const auto& input : inputs) {
+    const auto& parallel = input.input_params.parallel;
+    EXPECT_EQ(parallel.dp_global_token_nums, token_counts);
+    EXPECT_EQ(parallel.raw_dp_global_token_nums, token_counts);
+    EXPECT_EQ(parallel.dp_global_sequence_nums, sequence_counts);
+    EXPECT_EQ(parallel.dp_global_kv_max_seq_lens, token_counts);
+    EXPECT_EQ(parallel.dp_global_json_object_active, json_active);
+    EXPECT_EQ(parallel.dp_is_decode, is_decode);
+    EXPECT_EQ(parallel.dp_global_batch_generations, generations);
+  }
+
+  auto& last_parallel = inputs.back().input_params.parallel;
+  ASSERT_EQ(last_parallel.dp_global_token_nums.size(), 3u);
+  ASSERT_EQ(last_parallel.raw_dp_global_token_nums.size(), 3u);
+  ASSERT_EQ(last_parallel.dp_global_sequence_nums.size(), 3u);
+  ASSERT_EQ(last_parallel.dp_global_kv_max_seq_lens.size(), 3u);
+  ASSERT_EQ(last_parallel.dp_global_json_object_active.size(), 3u);
+  ASSERT_EQ(last_parallel.dp_is_decode.size(), 3u);
+  ASSERT_EQ(last_parallel.dp_global_batch_generations.size(), 3u);
+  last_parallel.dp_global_token_nums[0] = 9;
+  EXPECT_EQ(last_parallel.raw_dp_global_token_nums, token_counts);
+  last_parallel.raw_dp_global_token_nums[1] = 8;
+  EXPECT_EQ(last_parallel.dp_global_token_nums,
+            (std::vector<int32_t>{9, 3, 0}));
+  last_parallel.dp_global_sequence_nums[0] = 7;
+  last_parallel.dp_global_kv_max_seq_lens[1] = 6;
+  last_parallel.dp_global_json_object_active[1] = 0;
+  last_parallel.dp_is_decode[2] = 1;
+  last_parallel.dp_global_batch_generations[0] = 99;
+
+  auto expect_first_rank_metadata = [&] {
+    const auto& parallel = inputs.front().input_params.parallel;
+    EXPECT_EQ(parallel.dp_global_token_nums, token_counts);
+    EXPECT_EQ(parallel.raw_dp_global_token_nums, token_counts);
+    EXPECT_EQ(parallel.dp_global_sequence_nums, sequence_counts);
+    EXPECT_EQ(parallel.dp_global_kv_max_seq_lens, token_counts);
+    EXPECT_EQ(parallel.dp_global_json_object_active, json_active);
+    EXPECT_EQ(parallel.dp_is_decode, is_decode);
+    EXPECT_EQ(parallel.dp_global_batch_generations, generations);
+  };
+  expect_first_rank_metadata();
+
+  BatchGroup empty_batches(3);
+  std::vector<LlmForwardInput> next_inputs;
+  factory.create_inputs(
+      empty_batches, ModelArgs(), next_inputs, is_graph_warmup);
+  ASSERT_EQ(next_inputs.size(), 3u);
+  for (const auto& input : next_inputs) {
+    const auto& parallel = input.input_params.parallel;
+    EXPECT_EQ(parallel.dp_global_token_nums, is_decode);
+    EXPECT_EQ(parallel.raw_dp_global_token_nums, is_decode);
+    EXPECT_EQ(parallel.dp_global_sequence_nums, is_decode);
+    EXPECT_EQ(parallel.dp_global_kv_max_seq_lens, is_decode);
+    EXPECT_EQ(parallel.dp_global_json_object_active, is_decode);
+    EXPECT_EQ(parallel.dp_is_decode, is_decode);
+    ASSERT_EQ(parallel.dp_global_batch_generations.size(), 3u);
+    EXPECT_NE(parallel.dp_global_batch_generations[0], 99u);
+  }
+  expect_first_rank_metadata();
+  EXPECT_EQ(last_parallel.dp_global_token_nums,
+            (std::vector<int32_t>{9, 3, 0}));
+  EXPECT_EQ(last_parallel.raw_dp_global_token_nums,
+            (std::vector<int32_t>{2, 8, 0}));
+  EXPECT_EQ(last_parallel.dp_global_sequence_nums,
+            (std::vector<int32_t>{7, 1, 0}));
+  EXPECT_EQ(last_parallel.dp_global_kv_max_seq_lens,
+            (std::vector<int32_t>{2, 6, 0}));
+  EXPECT_EQ(last_parallel.dp_global_json_object_active, is_decode);
+  EXPECT_EQ(last_parallel.dp_is_decode, (std::vector<int32_t>{0, 0, 1}));
+  EXPECT_EQ(last_parallel.dp_global_batch_generations[0], 99u);
 }
 
 TEST(ForwardInputFactoryTest, EmptyRanksInheritGraphDecodeMetadata) {
