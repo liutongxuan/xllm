@@ -164,3 +164,14 @@ if(USE_NPU)
     "${CMAKE_BINARY_DIR}/third_party/spdlog/libspdlog.a"
     "-Wl,--no-whole-archive")
 endif()
+
+cc_test(
+  NO_NPU_RUNTIME
+  NAME
+    disagg_pd_request_converter_test
+  SRCS
+    disagg_pd_request_converter_test.cpp
+  DEPS
+    :distributed_runtime
+    GTest::gtest_main
+)

@@ -17,10 +17,12 @@ limitations under the License.
 
 #include <glog/logging.h>
 
+#include <cstdint>
 #include <utility>
+#include <vector>
 
-#include "common/global_flags.h"
 #include "common/types.h"
+#include "core/distributed_runtime/disagg_pd_request_converter.h"
 #include "core/distributed_runtime/distributed_virtual_memory_coordinator.h"
 #include "core/distributed_runtime/engine.h"
 #include "core/framework/block/block_manager_pool.h"
@@ -79,81 +81,19 @@ std::shared_ptr<Request> DisaggPDServiceImpl::generate_request(
   }
 
   std::string prompt = req.prompt();
-  std::vector<int> prompt_tokens(req.prompt_tokens().begin(),
-                                 req.prompt_tokens().end());
+  std::vector<int32_t> prompt_tokens(req.prompt_tokens().begin(),
+                                     req.prompt_tokens().end());
 
-  RequestSamplingParam sampling_param;
-  sampling_param.frequency_penalty = req.frequency_penalty();
-  sampling_param.presence_penalty = req.presence_penalty();
-  sampling_param.repetition_penalty = req.repetition_penalty();
-  sampling_param.temperature = req.temperature();
-  sampling_param.top_p = req.top_p();
-  sampling_param.min_p = req.min_p();
-  if (req.has_seed()) {
-    sampling_param.seed = req.seed();
-  }
-  sampling_param.min_tokens = req.min_tokens();
-  sampling_param.vocab_size = req.vocab_size();
-  for (const auto& [token, bias] : req.logit_bias()) {
-    sampling_param.logit_bias.emplace(token, bias);
-  }
-  if (req.allowed_token_ids_size() > 0) {
-    sampling_param.allowed_token_ids = std::vector<int32_t>(
-        req.allowed_token_ids().begin(), req.allowed_token_ids().end());
-  }
-  sampling_param.all_stop_token_ids.assign(req.all_stop_token_ids().begin(),
-                                           req.all_stop_token_ids().end());
-  sampling_param.bad_words_token_ids.reserve(req.bad_words_token_ids_size());
-  for (const auto& word : req.bad_words_token_ids()) {
-    sampling_param.bad_words_token_ids.emplace_back(word.seq_tokens().begin(),
-                                                    word.seq_tokens().end());
-  }
-  sampling_param.top_k = req.top_k();
-  sampling_param.logprobs = req.logprobs();
-  sampling_param.top_logprobs = req.top_logprobs();
-  sampling_param.is_embeddings = req.is_embeddings();
-  sampling_param.json_object = req.json_object();
+  RequestSamplingParam sampling_param = make_disagg_sampling_param(req);
   const bool json_object = sampling_param.json_object;
-
-  SchedulerParam scheduler_param;
-  scheduler_param.offline = req.offline();
-  scheduler_param.priority = static_cast<xllm::RequestPriority>(req.priority());
-  if (!req.offline()) {
-    scheduler_param.ttft_slo_ms = req.ttft_slo_ms();
-    scheduler_param.tpot_slo_ms = req.tpot_slo_ms();
-    scheduler_param.ttlt_slo_ms = req.ttlt_slo_ms();
-    scheduler_param.tpot_priority_weight = req.tpot_priority_weight();
-    scheduler_param.ttft_priority_weight = req.ttft_priority_weight();
-    scheduler_param.ttlt_priority_weight = req.ttlt_priority_weight();
-    scheduler_param.priority_weight = req.priority_weight();
-  }
-
-  std::unordered_set<int32_t> stop_tokens;
-  for (auto& stop_token_id : req.stop_token_ids()) {
-    stop_tokens.insert(stop_token_id);
-  }
-  std::vector<std::vector<int32_t>> stop_sequences;
-  std::vector<std::string> stop_strings;
-  stop_sequences.reserve(req.stop_sequences_size());
-  stop_strings.reserve(req.stop_sequences_size());
-  for (auto& stop_sequence : req.stop_sequences()) {
-    auto stop_seq_tokens = std::vector<int32_t>(
-        stop_sequence.seq_tokens().begin(), stop_sequence.seq_tokens().end());
-    stop_sequences.push_back(std::move(stop_seq_tokens));
-    stop_strings.emplace_back(stop_sequence.stop_string());
-  }
-  StoppingChecker stopping_checker(req.max_tokens(),
-                                   req.max_context_len(),
-                                   req.eos_token_id(),
-                                   req.ignore_eos(),
-                                   std::move(stop_tokens),
-                                   std::move(stop_sequences),
-                                   std::move(stop_strings),
-                                   req.min_tokens());
+  SchedulerParam scheduler_param = make_disagg_scheduler_param(req);
+  StoppingChecker stopping_checker = make_disagg_stopping_checker(req);
 
   auto output_callback = [this](const RequestOutput& output) -> bool {
     // response to xllm service to avoid the redirect cost.
-    if (xservice_client_ == nullptr) return false;
+    if (xservice_client_ == nullptr) {
+      return false;
+    }
     auto return_status = xservice_client_->generations({output});
     CHECK_EQ(return_status.size(), 1)
         << "return size of generations is not equal to 1";

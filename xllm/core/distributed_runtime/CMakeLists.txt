@@ -44,6 +44,7 @@ cc_library(
     rec_master.h
     disagg_pd_service.h
     disagg_pd_service_impl.h
+    disagg_pd_request_converter.h
     distributed_worker_manager.h
     remote_worker.h
     worker_server.h
@@ -69,6 +70,7 @@ cc_library(
     rec_master.cpp
     disagg_pd_service.cpp
     disagg_pd_service_impl.cpp
+    disagg_pd_request_converter.cpp
     distributed_worker_manager.cpp
     kv_cache_transfer_coordinator.cpp
     remote_worker.cpp
