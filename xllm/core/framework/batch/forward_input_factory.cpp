@@ -17,7 +17,9 @@ limitations under the License.
 
 #include <glog/logging.h>
 
+#include <cstddef>
 #include <limits>
+#include <utility>
 
 #include "core/framework/batch/batch_group.h"
 #include "core/framework/config/execution_config.h"
@@ -52,7 +54,9 @@ void ForwardInputFactory::create_inputs(BatchGroup& batches,
       << "Split DP batch failed with dp_size as " << options_.dp_size
       << " and actual batch size as " << batches.size() << ".";
 
+  inputs.clear();
   PreparationState state;
+  state.inputs.swap(inputs);
   state.inputs.reserve(options_.dp_size);
   state.dp_token_counts.resize(options_.dp_size);
   state.dp_sequence_counts.resize(options_.dp_size);
@@ -149,16 +153,30 @@ void ForwardInputFactory::finalize_inputs(PreparationState& state) {
     input.input_params.meta.is_graph_warmup = state.is_graph_warmup;
     auto& parallel = input.input_params.parallel;
     parallel.dp_global_token_nums = state.dp_token_counts;
-    parallel.dp_global_sequence_nums = state.dp_sequence_counts;
-    parallel.raw_dp_global_token_nums = state.dp_token_counts;
     parallel.dp_global_batch_generations = dp_batch_generations_;
-    parallel.dp_global_kv_max_seq_lens = state.dp_kv_max_seq_lens;
-    parallel.dp_global_json_object_active = state.dp_global_json_object_active;
-    parallel.dp_is_decode = state.dp_is_decode;
     if (input.input_params.meta.batch_forward_type.is_empty()) {
       input.input_params.meta.batch_forward_type = state.batch_forward_type;
     }
   }
+
+  // Every rank owns independent metadata. Once the preceding ranks have their
+  // copies, the last rank can retain the temporary buffers without allocating
+  // another set. Keep its mutable and raw token counts independent as well.
+  for (size_t dp_rank = 0; dp_rank + 1 < state.inputs.size(); ++dp_rank) {
+    auto& parallel = state.inputs[dp_rank].input_params.parallel;
+    parallel.dp_global_sequence_nums = state.dp_sequence_counts;
+    parallel.raw_dp_global_token_nums = state.dp_token_counts;
+    parallel.dp_global_kv_max_seq_lens = state.dp_kv_max_seq_lens;
+    parallel.dp_global_json_object_active = state.dp_global_json_object_active;
+    parallel.dp_is_decode = state.dp_is_decode;
+  }
+  auto& last_parallel = state.inputs.back().input_params.parallel;
+  last_parallel.dp_global_sequence_nums = std::move(state.dp_sequence_counts);
+  last_parallel.raw_dp_global_token_nums = std::move(state.dp_token_counts);
+  last_parallel.dp_global_kv_max_seq_lens = std::move(state.dp_kv_max_seq_lens);
+  last_parallel.dp_global_json_object_active =
+      std::move(state.dp_global_json_object_active);
+  last_parallel.dp_is_decode = std::move(state.dp_is_decode);
 }
 
 void ForwardInputFactory::annotate_eplb_inputs(PreparationState& state) {
