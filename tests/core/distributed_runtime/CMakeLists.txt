@@ -6,6 +6,17 @@ include(cc_test)
 cc_test(
   NO_NPU_RUNTIME
   NAME
+    worker_model_codec_test
+  SRCS
+    worker_model_codec_test.cpp
+  DEPS
+    :worker_model_codec
+    GTest::gtest_main
+)
+
+cc_test(
+  NO_NPU_RUNTIME
+  NAME
     kv_transfer_topology_test
   SRCS
     kv_transfer_topology_test.cpp

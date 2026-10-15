@@ -7,6 +7,26 @@ if(USE_NPU OR USE_CUDA OR USE_MUSA OR USE_MLU OR USE_DCU)
 endif()
 
 cc_library(
+  NAME
+    worker_model_codec
+  HDRS
+    worker_model_codec.h
+  SRCS
+    worker_model_codec_llm.cpp
+    worker_model_codec_vlm.cpp
+    worker_model_codec_rec.cpp
+    worker_model_codec_dit.cpp
+  DEPS
+    :common
+    :config
+    :sampler
+    :util
+    glog::glog
+    proto::xllm_proto
+    torch
+)
+
+cc_library(
   NAME 
     distributed_runtime
   HDRS
