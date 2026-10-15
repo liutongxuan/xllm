@@ -24,7 +24,9 @@ limitations under the License.
 #include <cstdint>
 #include <iterator>
 #include <limits>
+#include <numeric>
 #include <thread>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -252,18 +254,38 @@ ForwardInputBuilder::ForwardInputBuilder(
   CHECK_GT(cp_size_, 0);
   // Reserve space for better performance
   const size_t reserve_size = 1024;
-  state_.flatten_tokens_vec.reserve(reserve_size);
-  state_.flatten_positions_vec.reserve(reserve_size);
+  size_t token_reserve = 0;
+  size_t block_reserve = 0;
+  for (size_t sequence_idx = 0; sequence_idx < sequences_.size();
+       ++sequence_idx) {
+    Sequence* sequence = sequences_[sequence_idx];
+    token_reserve +=
+        std::min(sequence->num_need_compute_tokens(),
+                 static_cast<size_t>(allowed_max_tokens_[sequence_idx]));
+    block_reserve += sequence->kv_state().num_blocks(BlockType::KV);
+  }
+  token_reserve = std::max(token_reserve, reserve_size);
+  state_.flatten_tokens_vec.reserve(token_reserve);
+  state_.flatten_positions_vec.reserve(token_reserve);
   state_.sampling.reserve(sequences.size());
   state_.mrope_positions_vec.reserve(sequences.size());
   state_.block_tables_vec.reserve(sequences.size());
   state_.acc_logprob_vec.reserve(sequences.size());
-  state_.mtp_shifted_token_ids.reserve(reserve_size);
+  state_.new_token_slot_ids.reserve(token_reserve);
+  state_.kv_cache_tokens_nums.reserve(sequences.size());
+  state_.paged_kv_indices.reserve(block_reserve);
+  state_.paged_kv_indptr.reserve(sequences.size() + 1);
+  state_.paged_kv_last_page_len.reserve(sequences.size());
   const EPLBConfig& eplb_config = EPLBConfig::get_instance();
   build_eplb_decode_token_mask_ = eplb_config.enable_eplb();
   if (build_eplb_decode_token_mask_) {
-    state_.eplb_decode_token_mask.reserve(reserve_size);
+    state_.eplb_decode_token_mask.reserve(token_reserve);
   }
+#if defined(USE_NPU) || defined(USE_MLU) || defined(USE_CUDA) || \
+    defined(USE_ILU) || defined(USE_DCU) || defined(USE_MUSA)
+  state_.seq_lens.reserve(sequences.size() + 1);
+  state_.q_seq_lens.reserve(sequences.size() + 1);
+#endif
   is_graph_warmup_ =
       !sequences_.empty() &&
       std::all_of(sequences_.begin(), sequences_.end(), [](Sequence* sequence) {
@@ -274,7 +296,6 @@ ForwardInputBuilder::ForwardInputBuilder(
   if (args_ != nullptr) {
     use_mrope_ = (args_->rope_scaling_rope_type() == "mrope");
   }
-  write_block_ids_.clear();
   state_.batch_forward_type = batch_forward_type;
 }
 
@@ -502,21 +523,49 @@ void ForwardInputBuilder::process_sequences_multithreaded() {
 
   // safe state for each thread
   std::vector<BuilderState> thread_builder_states;
-  std::vector<std::unordered_set<int32_t>> thread_write_block_ids;
   thread_builder_states.resize(threads_num);
-  thread_write_block_ids.resize(threads_num);
 
-  for (auto& thread_state : thread_builder_states) {
+  for (size_t thread_idx = 0; thread_idx < threads_num; ++thread_idx) {
+    BuilderState& thread_state = thread_builder_states[thread_idx];
     thread_state.batch_forward_type = state_.batch_forward_type;
+    const size_t thread_start_idx = thread_idx * sequences_per_thread;
+    const size_t thread_end_idx =
+        std::min(thread_start_idx + sequences_per_thread,
+                 static_cast<size_t>(num_sequences_));
+    size_t thread_token_reserve = 0;
+    for (size_t sequence_idx = thread_start_idx; sequence_idx < thread_end_idx;
+         ++sequence_idx) {
+      const Sequence* sequence = sequences_[sequence_idx];
+      thread_token_reserve +=
+          std::min(sequence->num_need_compute_tokens(),
+                   static_cast<size_t>(allowed_max_tokens_[sequence_idx]));
+    }
+    thread_state.flatten_tokens_vec.reserve(thread_token_reserve);
+    if (use_mrope_) {
+      thread_state.mrope_positions_vec.reserve(thread_end_idx -
+                                               thread_start_idx);
+    } else {
+      thread_state.flatten_positions_vec.reserve(thread_token_reserve);
+    }
     // Reserve per-thread scratch so parallel processing does not repeatedly
     // reallocate (which serializes on the allocator and erodes the speedup).
     thread_state.sampling.reserve(sequences_per_thread);
     thread_state.block_tables_vec.reserve(sequences_per_thread);
-    thread_state.new_token_slot_ids.reserve(sequences_per_thread);
+    thread_state.new_token_slot_ids.reserve(thread_token_reserve);
     thread_state.kv_cache_tokens_nums.reserve(sequences_per_thread);
-#if defined(USE_NPU) || defined(USE_MUSA)
-    thread_state.seq_lens.reserve(sequences_per_thread);
-    thread_state.q_seq_lens.reserve(sequences_per_thread);
+    size_t thread_block_reserve = 0;
+    for (size_t sequence_idx = thread_start_idx; sequence_idx < thread_end_idx;
+         ++sequence_idx) {
+      Sequence* sequence = sequences_[sequence_idx];
+      thread_block_reserve += sequence->kv_state().num_blocks(BlockType::KV);
+    }
+    thread_state.paged_kv_indices.reserve(thread_block_reserve);
+    thread_state.paged_kv_indptr.reserve(sequences_per_thread + 1);
+    thread_state.paged_kv_last_page_len.reserve(sequences_per_thread);
+#if defined(USE_NPU) || defined(USE_MLU) || defined(USE_CUDA) || \
+    defined(USE_ILU) || defined(USE_DCU) || defined(USE_MUSA)
+    thread_state.seq_lens.reserve(sequences_per_thread + 1);
+    thread_state.q_seq_lens.reserve(sequences_per_thread + 1);
 #endif
     thread_state.embedding_ids.reserve(sequences_per_thread);
     thread_state.linear_state_ids.reserve(sequences_per_thread);
@@ -524,18 +573,18 @@ void ForwardInputBuilder::process_sequences_multithreaded() {
     thread_state.request_ids.reserve(sequences_per_thread);
     thread_state.extra_token_ids.reserve(sequences_per_thread);
     thread_state.scheduled_mm_data_vec.reserve(sequences_per_thread);
+    if (build_eplb_decode_token_mask_) {
+      thread_state.eplb_decode_token_mask.reserve(thread_token_reserve);
+    }
   }
 
   // parallel processing function
   auto process_sequences_range =
-      [&](size_t thread_start_idx,
-          size_t thread_end_idx,
-          BuilderState& state,
-          std::unordered_set<int32_t>& write_block_ids) {
+      [&](size_t thread_start_idx, size_t thread_end_idx, BuilderState& state) {
         for (size_t i = thread_start_idx;
              i < thread_end_idx && i < static_cast<size_t>(num_sequences_);
              ++i) {
-          process_single_sequence(i, &state, &write_block_ids);
+          process_single_sequence(i, &state);
         }
       };
 
@@ -549,13 +598,10 @@ void ForwardInputBuilder::process_sequences_multithreaded() {
                             thread_start_idx,
                             thread_end_idx,
                             &thread_builder_states,
-                            &thread_write_block_ids,
                             thread_idx,
                             &counter]() mutable {
-      process_sequences_range(thread_start_idx,
-                              thread_end_idx,
-                              thread_builder_states[thread_idx],
-                              thread_write_block_ids[thread_idx]);
+      process_sequences_range(
+          thread_start_idx, thread_end_idx, thread_builder_states[thread_idx]);
       counter.decrement_count();
     });
   }
@@ -742,15 +788,10 @@ void ForwardInputBuilder::process_sequences_multithreaded() {
       }
     }
   }
-  for (const auto& write_block_ids : thread_write_block_ids) {
-    write_block_ids_.insert(write_block_ids.begin(), write_block_ids.end());
-  }
 }
 
-void ForwardInputBuilder::process_single_sequence(
-    int32_t seq_index,
-    BuilderState* state_ptr,
-    std::unordered_set<int32_t>* write_block_ids_ptr) {
+void ForwardInputBuilder::process_single_sequence(int32_t seq_index,
+                                                  BuilderState* state_ptr) {
   BuilderState& state = state_ptr ? *state_ptr : state_;
 
   auto* sequence = sequences_[seq_index];
@@ -802,12 +843,8 @@ void ForwardInputBuilder::process_single_sequence(
   }
 
   // Setup KV cache
-  setup_kv_cache_info(sequence,
-                      n_kv_cache_tokens,
-                      seq_len,
-                      padded_q_seq_len,
-                      state_ptr,
-                      write_block_ids_ptr);
+  setup_kv_cache_info(
+      sequence, n_kv_cache_tokens, seq_len, padded_q_seq_len, state_ptr);
 
   // Input for beam search kernel
   if (::xllm::BeamSearchConfig::get_instance().enable_beam_search_kernel() &&
@@ -822,12 +859,9 @@ void ForwardInputBuilder::extract_tokens_and_positions(
     uint32_t seq_len,
     BuilderState* state_ptr) {
   BuilderState& state = state_ptr ? *state_ptr : state_;
-  const size_t seq_token_begin = state.flatten_tokens_vec.size();
-
   const auto& token_ids = sequence->tokens();
   const uint32_t n_tokens = token_ids.size();
   const auto& sample_slots = sequence->sample_slots();
-  size_t sample_slot_idx = 0;
 
   // Handle MRope positions
   if (use_mrope_) {
@@ -836,34 +870,46 @@ void ForwardInputBuilder::extract_tokens_and_positions(
   }
 
   // Process real tokens
-  for (uint32_t j = n_kv_cache_tokens; j < seq_len; ++j) {
-    state.flatten_tokens_vec.emplace_back(token_ids[j]);
-
+  if (sample_slots.empty()) {
+    state.flatten_tokens_vec.insert(state.flatten_tokens_vec.end(),
+                                    token_ids.begin() + n_kv_cache_tokens,
+                                    token_ids.begin() + seq_len);
     if (!use_mrope_) {
-      state.flatten_positions_vec.push_back(static_cast<int32_t>(j));
+      const size_t position_begin = state.flatten_positions_vec.size();
+      state.flatten_positions_vec.resize(position_begin +
+                                         (seq_len - n_kv_cache_tokens));
+      std::iota(state.flatten_positions_vec.begin() + position_begin,
+                state.flatten_positions_vec.end(),
+                n_kv_cache_tokens);
     }
-
-    if (sample_slots.empty()) {
-      // Non-sample requests only select the last prompt token.
-      if (j + 1 < n_tokens) continue;
+    // Only a final prefill chunk or decode step has a sampling row.
+    if (seq_len == n_tokens) {
       handle_sampling_parameters(sequence, state_ptr);
-      continue;
     }
+  } else {
+    size_t sample_slot_idx = 0;
+    for (uint32_t j = n_kv_cache_tokens; j < seq_len; ++j) {
+      state.flatten_tokens_vec.emplace_back(token_ids[j]);
+      if (!use_mrope_) {
+        state.flatten_positions_vec.push_back(static_cast<int32_t>(j));
+      }
 
-    // Sample requests need one sampling entry per selector hit. The logits for
-    // selector start position come from the preceding token's hidden state.
-    while (sample_slot_idx < sample_slots.size()) {
-      const uint32_t sample_source_position =
-          get_sample_source_position(sample_slots[sample_slot_idx]);
-      if (sample_source_position < j) {
+      // Sample requests need one sampling entry per selector hit. The logits
+      // for selector start position come from the preceding token's hidden
+      // state.
+      while (sample_slot_idx < sample_slots.size()) {
+        const uint32_t sample_source_position =
+            get_sample_source_position(sample_slots[sample_slot_idx]);
+        if (sample_source_position < j) {
+          ++sample_slot_idx;
+          continue;
+        }
+        if (sample_source_position > j) {
+          break;
+        }
+        handle_sampling_parameters(sequence, state_ptr);
         ++sample_slot_idx;
-        continue;
       }
-      if (sample_source_position > j) {
-        break;
-      }
-      handle_sampling_parameters(sequence, state_ptr);
-      ++sample_slot_idx;
     }
   }
 
@@ -1048,16 +1094,12 @@ torch::Tensor ForwardInputBuilder::get_mrope_positions(Sequence* sequence,
   }
 }
 
-void ForwardInputBuilder::setup_kv_cache_info(
-    Sequence* sequence,
-    uint32_t n_kv_cache_tokens,
-    uint32_t seq_len,
-    uint32_t q_seq_len,
-    BuilderState* state_ptr,
-    std::unordered_set<int32_t>* write_block_ids_ptr) {
+void ForwardInputBuilder::setup_kv_cache_info(Sequence* sequence,
+                                              uint32_t n_kv_cache_tokens,
+                                              uint32_t seq_len,
+                                              uint32_t q_seq_len,
+                                              BuilderState* state_ptr) {
   BuilderState& state = state_ptr ? *state_ptr : state_;
-  std::unordered_set<int32_t>& write_block_ids =
-      write_block_ids_ptr ? *write_block_ids_ptr : write_block_ids_;
 
   sequence->kv_state().incr_kv_cache_tokens_num(/*size=*/q_seq_len);
 
@@ -1126,14 +1168,6 @@ void ForwardInputBuilder::setup_kv_cache_info(
   int32_t last_page_len =
       (seq_len % block_size == 0) ? block_size : seq_len % block_size;
   state.paged_kv_last_page_len.push_back(last_page_len);
-
-  // calculate the block ids that need to be written
-  int32_t kv_cache_block_idx = n_kv_cache_tokens / block_size;
-  for (auto iter = block_ids.cbegin() + kv_cache_block_idx;
-       iter != block_ids.cend();
-       ++iter) {
-    write_block_ids.insert(*iter);
-  }
 
   auto& transfer_kv_info = sequence->kv_state().transfer_kv_info();
   if (transfer_kv_info.has_value()) {

@@ -22,7 +22,6 @@ limitations under the License.
 #include <cstdint>
 #include <limits>
 #include <string>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -155,10 +154,8 @@ class ForwardInputBuilder final {
   };
 
   // Helper methods for sequence processing
-  void process_single_sequence(
-      int32_t seq_index,
-      BuilderState* state_ptr = nullptr,
-      std::unordered_set<int32_t>* write_block_ids_ptr = nullptr);
+  void process_single_sequence(int32_t seq_index,
+                               BuilderState* state_ptr = nullptr);
   void process_multi_modal_inputs(Sequence* sequence,
                                   uint32_t n_kv_cache_tokens,
                                   uint32_t q_seq_len,
@@ -181,13 +178,11 @@ class ForwardInputBuilder final {
 
   void handle_sampling_parameters(Sequence* sequence,
                                   BuilderState* state_ptr = nullptr);
-  void setup_kv_cache_info(
-      Sequence* sequence,
-      uint32_t n_kv_cache_tokens,
-      uint32_t seq_len,
-      uint32_t q_seq_len,
-      BuilderState* state_ptr = nullptr,
-      std::unordered_set<int32_t>* write_block_ids_ptr = nullptr);
+  void setup_kv_cache_info(Sequence* sequence,
+                           uint32_t n_kv_cache_tokens,
+                           uint32_t seq_len,
+                           uint32_t q_seq_len,
+                           BuilderState* state_ptr = nullptr);
 
   // Input data
   const std::vector<Sequence*>& sequences_;
@@ -209,7 +204,6 @@ class ForwardInputBuilder final {
   int32_t cp_size_ = 1;
 
   // copy in and out cache contents
-  std::unordered_set<int32_t> write_block_ids_;
   std::vector<BlockTransferInfo>* swap_block_transfer_infos_ = nullptr;
 
   // thread pool for multithreaded processing, not owned
