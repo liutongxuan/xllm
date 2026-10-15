@@ -2854,6 +2854,22 @@ inline uint64_t get_input_layout_size(const RawInputLayoutHeader& layout) {
   return layout.tensor_arena_offset + layout.tensor_arena_bytes;
 }
 
+bool input_layout_fits(const RawInputLayoutHeader& layout,
+                       size_t segment_size) {
+  constexpr uint64_t kOverhead = sizeof(ControlMetadata) + sizeof(uint64_t);
+  return segment_size >= kOverhead &&
+         layout.tensor_arena_offset <= segment_size - kOverhead &&
+         layout.tensor_arena_bytes <=
+             segment_size - kOverhead - layout.tensor_arena_offset;
+}
+
+bool supports_rec_shm_input(const RecForwardInput& input) {
+  return !input.decoder_sampling_params.selected_token_idxes.defined() &&
+         std::holds_alternative<std::monostate>(
+             input.input_params.rec_params) &&
+         !input.step_decode.has_value();
+}
+
 template <typename Input>
 bool packed_proto_to_forward_input_impl(
     const proto::PackedForwardInput& packed_forward_input,
@@ -3000,12 +3016,8 @@ template <typename Input>
 inline void serialize_forward_input_sections(
     const Input& input,
     RawInputSerializeContext& context) {
-  const torch::Tensor host_token_ids =
-      to_cpu_contiguous(input.host_token_ids());
-  const torch::Tensor host_positions =
-      to_cpu_contiguous(input.host_positions());
-  write_tensor(context, host_token_ids);
-  write_tensor(context, host_positions);
+  write_tensor(context, input.host_token_ids());
+  write_tensor(context, input.host_positions());
 
   const auto& input_params = input.input_params;
   write_data(context.descriptor, input_params.meta.batch_forward_type.value());
@@ -3674,11 +3686,31 @@ std::string ForwardSharedMemoryManager::create_unique_name(
   return filename;
 }
 
+bool ForwardSharedMemoryManager::can_write_input(const DiTForwardInput& input,
+                                                 size_t segment_size) {
+  return input_layout_fits(calculate_dit_input_layout(input), segment_size);
+}
+
+bool ForwardSharedMemoryManager::can_write_input(const LlmForwardInput& input,
+                                                 size_t segment_size) {
+  return input_layout_fits(calculate_forward_input_layout(input), segment_size);
+}
+
+bool ForwardSharedMemoryManager::can_write_input(const VlmForwardInput& input,
+                                                 size_t segment_size) {
+  return input_layout_fits(calculate_forward_input_layout(input), segment_size);
+}
+
+bool ForwardSharedMemoryManager::can_write_input(const RecForwardInput& input,
+                                                 size_t segment_size) {
+  return supports_rec_shm_input(input) &&
+         input_layout_fits(calculate_forward_input_layout(input), segment_size);
+}
+
 bool ForwardSharedMemoryManager::input_write(const DiTForwardInput& input) {
   const RawInputLayoutHeader layout = calculate_dit_input_layout(input);
   const uint64_t payload_size = get_input_layout_size(layout);
-  const uint64_t overhead = sizeof(ControlMetadata) + sizeof(uint64_t);
-  if (size() < overhead || payload_size > size() - overhead) {
+  if (!input_layout_fits(layout, static_cast<size_t>(size()))) {
     LOG(ERROR) << "DiT input exceeds shared memory segment size";
     return false;
   }
@@ -3724,19 +3756,11 @@ bool ForwardSharedMemoryManager::input_read(DiTForwardInput& input) {
 
 template <typename Input>
 bool ForwardSharedMemoryManager::write_token_input(const Input& input) {
-  if constexpr (std::is_same_v<Input, RecForwardInput>) {
-    if (!std::holds_alternative<std::monostate>(
-            input.input_params.rec_params) ||
-        input.step_decode.has_value()) {
-      LOG(ERROR) << "Rec input transport is not supported";
-      return false;
-    }
-  }
   const RawInputLayoutHeader layout = calculate_forward_input_layout(input);
   const uint64_t payload_size = get_input_layout_size(layout);
   const uint64_t total_size =
       sizeof(ControlMetadata) + type_size<uint64_t> + payload_size;
-  if (unlikely(total_size > size())) {
+  if (unlikely(!input_layout_fits(layout, static_cast<size_t>(size())))) {
     LOG(ERROR) << "forward input size overflow, total_size: " << total_size
                << ", shm size: " << size();
     return false;
@@ -3813,8 +3837,8 @@ bool ForwardSharedMemoryManager::input_write(const LlmForwardInput& input) {
 }
 
 bool ForwardSharedMemoryManager::input_write(const RecForwardInput& input) {
-  if (input.decoder_sampling_params.selected_token_idxes.defined()) {
-    LOG(ERROR) << "Decoder sampling requires local Rec execution";
+  if (!supports_rec_shm_input(input)) {
+    LOG(ERROR) << "Rec input transport is not supported";
     return false;
   }
   return write_token_input(input);

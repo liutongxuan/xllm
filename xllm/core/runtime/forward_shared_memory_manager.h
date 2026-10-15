@@ -113,6 +113,17 @@ class ForwardSharedMemoryManager : public SharedMemoryManager {
   bool input_write(const DiTForwardInput& input);
   bool input_read(DiTForwardInput& input);
 
+  // Check transport support and capacity without copying tensor payloads.
+  // Every rank in a DP group must select the same transport before execution.
+  static bool can_write_input(const DiTForwardInput& input,
+                              size_t segment_size);
+  static bool can_write_input(const RecForwardInput& input,
+                              size_t segment_size);
+  static bool can_write_input(const VlmForwardInput& input,
+                              size_t segment_size);
+  static bool can_write_input(const LlmForwardInput& input,
+                              size_t segment_size);
+
   bool input_write(const RecForwardInput& input);
   bool input_read(RecForwardInput& input,
                   const torch::Device& device,

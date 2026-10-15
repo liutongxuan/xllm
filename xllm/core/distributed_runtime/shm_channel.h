@@ -46,6 +46,7 @@ class ShmChannel : public CommChannel {
 
  private:
   bool enable_shm_ = false;
+  size_t input_shm_size_ = 0;
   std::unique_ptr<ForwardSharedMemoryManager> input_shm_manager_ = nullptr;
   std::unique_ptr<ForwardSharedMemoryManager> output_shm_manager_ = nullptr;
 };

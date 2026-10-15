@@ -130,7 +130,67 @@ class ShmChannelTest : public ::testing::Test {
     ASSERT_TRUE(channel_->init_brpc(address_));
   }
 
-  static constexpr uint64_t kInputBytes = 64;
+  template <typename Input>
+  void expect_input_capacity(const Input& input) {
+    proto::PackedForwardInput packed;
+    ASSERT_TRUE(input.to_packed_proto(&packed));
+    const size_t segment_size =
+        sizeof(ControlMetadata) + sizeof(uint64_t) + packed.payload().size();
+    EXPECT_TRUE(
+        ForwardSharedMemoryManager::can_write_input(input, segment_size));
+    EXPECT_FALSE(
+        ForwardSharedMemoryManager::can_write_input(input, segment_size - 1));
+    EXPECT_FALSE(ForwardSharedMemoryManager::can_write_input(input, 0));
+    bool is_creator = false;
+    ForwardSharedMemoryManager writer(writer_->name() + "_input_capacity",
+                                      segment_size,
+                                      is_creator,
+                                      ForwardType::RAW_INPUT);
+    ASSERT_TRUE(is_creator);
+    EXPECT_TRUE(writer.input_write(input));
+  }
+
+  template <typename Input>
+  void expect_group_input_fallback(
+      const Input& oversized,
+      const Input& small,
+      void (ShmChannel::*execute)(const Input&, OutputPromise&)) {
+    ASSERT_FALSE(
+        ForwardSharedMemoryManager::can_write_input(oversized, kInputBytes));
+    ASSERT_TRUE(
+        ForwardSharedMemoryManager::can_write_input(small, kInputBytes));
+    use_driver_channel();
+    ShmChannel follower(
+        /*dp_group=*/0, /*rank=*/1, /*is_driver=*/false, options_);
+    ASSERT_TRUE(follower.init_brpc(address_));
+
+    // A follower can be scheduled before the driver. It must choose BRPC
+    // independently instead of waiting for an unpublished SHM input.
+    const std::array<ShmChannel*, 2> channels = {&follower, channel_.get()};
+    for (const Input* input : {&oversized, &small}) {
+      for (ShmChannel* channel : channels) {
+        OutputPromise promise;
+        auto future = promise.getSemiFuture();
+        (channel->*execute)(*input, promise);
+        ASSERT_TRUE(std::move(future).get().has_value());
+      }
+    }
+    EXPECT_EQ(service_.execution_count(), 4);
+    const std::string name = ForwardSharedMemoryManager::create_unique_name(
+        "xllm_" + net::extract_port(address_),
+        /*dp_group=*/0,
+        ForwardType::RAW_INPUT,
+        /*rank=*/0);
+    bool is_creator = true;
+    ForwardSharedMemoryManager input_reader(
+        name, kInputBytes, is_creator, ForwardType::RAW_INPUT);
+    ASSERT_FALSE(is_creator);
+    EXPECT_EQ(static_cast<const ControlMetadata*>(input_reader.base_address())
+                  ->version,
+              0);
+  }
+
+  static constexpr uint64_t kInputBytes = 4096;
   static constexpr uint64_t kOutputBytes = 4096;
   bool previous_contiguous_ = false;
   std::string address_;
@@ -239,6 +299,8 @@ TEST_F(ShmChannelTest, DecodeFailureDoesNotReexecuteAndNextReadRecovers) {
 }
 
 TEST_F(ShmChannelTest, InputWriteFailureFallsBackBeforePublishingRequest) {
+  constexpr uint64_t kSmallInputBytes = 64;
+  options_.input_shm_size(kSmallInputBytes);
   use_driver_channel();
   OutputPromise promise;
   auto future = promise.getSemiFuture();
@@ -255,11 +317,80 @@ TEST_F(ShmChannelTest, InputWriteFailureFallsBackBeforePublishingRequest) {
       /*rank=*/0);
   bool is_creator = true;
   ForwardSharedMemoryManager input_reader(
-      name, kInputBytes, is_creator, ForwardType::RAW_INPUT);
+      name, kSmallInputBytes, is_creator, ForwardType::RAW_INPUT);
   ASSERT_FALSE(is_creator);
   EXPECT_EQ(
       static_cast<const ControlMetadata*>(input_reader.base_address())->version,
       0);
+}
+
+TEST_F(ShmChannelTest, LlmOverflowFallsBackForEveryRankAndStaysOnBrpc) {
+  LlmForwardInput oversized;
+  oversized.token_ids = torch::zeros({kInputBytes * 2}, torch::kInt32);
+  expect_group_input_fallback(
+      oversized, LlmForwardInput(), &ShmChannel::execute_llm_model_async);
+}
+
+TEST_F(ShmChannelTest, VlmOverflowFallsBackForEveryRankAndStaysOnBrpc) {
+  VlmForwardInput oversized;
+  oversized.token_ids = torch::zeros({kInputBytes * 2}, torch::kInt32);
+  expect_group_input_fallback(
+      oversized, VlmForwardInput(), &ShmChannel::execute_vlm_model_async);
+}
+
+TEST_F(ShmChannelTest, RecOverflowFallsBackForEveryRankAndStaysOnBrpc) {
+  RecForwardInput oversized;
+  oversized.token_ids = torch::zeros({kInputBytes * 2}, torch::kInt32);
+  expect_group_input_fallback(
+      oversized, RecForwardInput(), &ShmChannel::execute_rec_model_async);
+}
+
+TEST_F(ShmChannelTest, DitOverflowFallsBackForEveryRankAndStaysOnBrpc) {
+  DiTForwardInput oversized;
+  oversized.prompts = {std::string(kInputBytes * 2, 'x')};
+  expect_group_input_fallback(
+      oversized, DiTForwardInput(), &ShmChannel::execute_dit_model_async);
+}
+
+TEST_F(ShmChannelTest, InputPreflightMatchesExactPackedSize) {
+  LlmForwardInput llm_input;
+  llm_input.token_ids =
+      torch::arange(8, torch::kInt32).reshape({2, 4}).transpose(0, 1);
+  ASSERT_FALSE(llm_input.token_ids.is_contiguous());
+  ASSERT_NO_FATAL_FAILURE(expect_input_capacity(llm_input));
+  VlmForwardInput vlm_input;
+  vlm_input.positions =
+      torch::arange(8, torch::kInt64).reshape({2, 4}).transpose(0, 1);
+  ASSERT_NO_FATAL_FAILURE(expect_input_capacity(vlm_input));
+  RecForwardInput rec_input;
+  ASSERT_NO_FATAL_FAILURE(expect_input_capacity(rec_input));
+  DiTForwardInput dit_input;
+  dit_input.prompts = {"capacity boundary"};
+  ASSERT_NO_FATAL_FAILURE(expect_input_capacity(dit_input));
+}
+
+TEST_F(ShmChannelTest, RecPreflightRejectsUnsupportedFieldsBeforePublishing) {
+  bool is_creator = false;
+  ForwardSharedMemoryManager writer(writer_->name() + "_rec_input",
+                                    kInputBytes,
+                                    is_creator,
+                                    ForwardType::RAW_INPUT);
+  ASSERT_TRUE(is_creator);
+  RecForwardInput input;
+  input.decoder_sampling_params.selected_token_idxes =
+      torch::tensor({0}, torch::kInt32);
+  EXPECT_FALSE(ForwardSharedMemoryManager::can_write_input(input, kInputBytes));
+  EXPECT_FALSE(writer.input_write(input));
+  input.decoder_sampling_params.selected_token_idxes = torch::Tensor();
+  input.step_decode.emplace();
+  EXPECT_FALSE(ForwardSharedMemoryManager::can_write_input(input, kInputBytes));
+  EXPECT_FALSE(writer.input_write(input));
+  input.step_decode.reset();
+  input.input_params.mutable_onerec_params();
+  EXPECT_FALSE(ForwardSharedMemoryManager::can_write_input(input, kInputBytes));
+  EXPECT_FALSE(writer.input_write(input));
+  EXPECT_EQ(static_cast<const ControlMetadata*>(writer.base_address())->version,
+            0);
 }
 
 }  // namespace
