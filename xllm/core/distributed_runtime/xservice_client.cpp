@@ -407,8 +407,20 @@ std::vector<std::string> XServiceClient::get_all_xservice_addrs() {
   return addrs;
 }
 
+bool XServiceClient::generation(const RequestOutput& output) {
+  const std::vector<bool> results =
+      send_generations(std::span<const RequestOutput>(&output, /*count=*/1));
+  CHECK_EQ(results.size(), 1);
+  return results.front();
+}
+
 std::vector<bool> XServiceClient::generations(
     const std::vector<RequestOutput>& outputs) {
+  return send_generations(outputs);
+}
+
+std::vector<bool> XServiceClient::send_generations(
+    std::span<const RequestOutput> outputs) {
   std::vector<bool> results(outputs.size(), false);
   std::string master_addr;
   {
@@ -544,10 +556,10 @@ std::vector<bool> XServiceClient::generations(
 
   // Fire all RPCs asynchronously
   size_t idx = 0;
-  for (const auto& pair : service_requests_map) {
+  for (auto& pair : service_requests_map) {
     auto& ctx = contexts[idx++];
     ctx.service_addr = pair.first;
-    ctx.gens = pair.second;
+    ctx.gens = std::move(pair.second);
     service_order.push_back(ctx.service_addr);
 
     if (!connect_to_xservice(ctx.service_addr)) {

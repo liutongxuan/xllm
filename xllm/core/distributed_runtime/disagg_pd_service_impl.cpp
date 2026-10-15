@@ -96,10 +96,7 @@ std::shared_ptr<Request> DisaggPDServiceImpl::generate_request(
     if (xservice_client_ == nullptr) {
       return false;
     }
-    auto return_status = xservice_client_->generations({output});
-    CHECK_EQ(return_status.size(), 1)
-        << "return size of generations is not equal to 1";
-    return return_status[0];
+    return xservice_client_->generation(output);
   };
 
   auto batch_output_callback =

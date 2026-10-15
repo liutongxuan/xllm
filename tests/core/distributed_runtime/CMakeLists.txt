@@ -186,3 +186,16 @@ cc_test(
     :distributed_runtime
     GTest::gtest_main
 )
+
+cc_test(
+  NO_NPU_RUNTIME
+  NAME
+    xservice_client_test
+  SRCS
+    xservice_client_test.cpp
+  DEPS
+    :distributed_runtime
+    GTest::gtest_main
+    brpc
+    glog::glog
+)
