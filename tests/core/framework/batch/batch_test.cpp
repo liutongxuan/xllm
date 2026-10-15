@@ -2279,7 +2279,6 @@ TEST(BatchTest, ForwardOutputShmRoundTripPreservesJsonObjectErrors) {
   bool is_reader_creator = false;
   ForwardSharedMemoryManager reader_manager(
       shm_name, 1 << 20, is_reader_creator, ForwardType::RAW_OUTPUT);
-  const torch::Tensor undefined;
   const torch::Tensor next_tokens =
       torch::tensor({{30, 31, -1}, {40, 41, 42}}, torch::kInt64);
   const std::vector<SpeculativeTokenStats> speculative_token_stats = {{1, 3},
@@ -2287,25 +2286,14 @@ TEST(BatchTest, ForwardOutputShmRoundTripPreservesJsonObjectErrors) {
   const std::vector<JsonObjectOutputError> errors = {
       {"req-error#0", "prior token violates json_object grammar"}};
 
-  ASSERT_TRUE(writer_manager.raw_output_write(next_tokens,
-                                              undefined,
-                                              undefined,
-                                              undefined,
-                                              undefined,
-                                              /*mm_embeddings=*/{},
-                                              speculative_token_stats,
-                                              /*dit_images=*/{},
-                                              /*dit_text_output=*/{},
-                                              /*dit_audio=*/{},
-                                              undefined,
-                                              /*prepared_layer_id=*/-1,
-                                              undefined,
-                                              undefined,
-                                              undefined,
-                                              errors));
+  ForwardOutput forward_output;
+  forward_output.sample_output.next_tokens = next_tokens;
+  forward_output.json_object_errors = errors;
+  ASSERT_TRUE(
+      writer_manager.llm_output_write(forward_output, speculative_token_stats));
 
   RawForwardOutput round_trip;
-  reader_manager.raw_output_read(round_trip);
+  ASSERT_TRUE(reader_manager.llm_output_read(round_trip));
 
   ASSERT_EQ(round_trip.outputs.size(), 2u);
   EXPECT_EQ(round_trip.outputs[0].speculative_token_stats.accepted_tokens, 1);

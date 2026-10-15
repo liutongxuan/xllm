@@ -13,9 +13,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "shm_channel.h"
+#include "core/distributed_runtime/shm_channel.h"
 
-#include "common/global_flags.h"
+#include <glog/logging.h>
+
+#include <utility>
+
 #include "runtime/vlm_forward_params.h"
 #include "util/net.h"
 
@@ -47,75 +50,96 @@ ShmChannel::ShmChannel(int dp_group,
             << " and size: " << options.output_shm_size();
 }
 
-bool ShmChannel::execute_model_with_shm(const LlmForwardInput& input,
-                                        RawForwardOutput& raw_output) {
-  if (input_shm_manager_) {
-    bool use_shm_ret = input_shm_manager_->input_write(input);
-    if (!use_shm_ret) {
-      enable_shm_ = false;
-      LOG(ERROR)
-          << "RemoteWorker SharedMemoryManager write failed, fallback to brpc.";
-      return false;
-    }
-  }
-  output_shm_manager_->raw_output_read(raw_output);
-  return true;
-}
-
-template <typename Input>
-bool ShmChannel::execute_model_async_impl(
-    const Input& input,
-    folly::Promise<std::optional<RawForwardOutput>>& promise) {
-  if (enable_shm_) {
-    if (input_shm_manager_ && !input_shm_manager_->input_write(input)) {
-      enable_shm_ = false;
-      LOG(ERROR)
-          << "RemoteWorker SharedMemoryManager write failed, fallback to brpc.";
-    } else {
-      RawForwardOutput output;
-      output_shm_manager_->raw_output_read(output);
-      promise.setValue(std::move(output));
-      return true;
-    }
-  }
-  return false;
-}
-
 void ShmChannel::execute_llm_model_async(
     const LlmForwardInput& input,
     folly::Promise<std::optional<RawForwardOutput>>& promise) {
   if (enable_shm_) {
-    RawForwardOutput raw_output;
-    bool shm_success = execute_model_with_shm(input, raw_output);
-    if (shm_success) {
-      promise.setValue(raw_output);
+    if (input_shm_manager_ && !input_shm_manager_->input_write(input)) {
+      enable_shm_ = false;
+      LOG(ERROR) << "LLM shared-memory input write failed, fallback to brpc";
+    } else {
+      RawForwardOutput output;
+      if (!output_shm_manager_->llm_output_read(output)) {
+        LOG(ERROR) << "LLM shared-memory output read failed";
+        // The model has already executed. Retrying with BRPC would execute it
+        // twice and advance worker state again.
+        promise.setValue(std::nullopt);
+        return;
+      }
+      promise.setValue(std::move(output));
       return;
     }
   }
   execute_llm_model_with_brpc(input, promise);
 }
+
 void ShmChannel::execute_dit_model_async(
     const DiTForwardInput& input,
     folly::Promise<std::optional<RawForwardOutput>>& promise) {
-  if (!execute_model_async_impl(input, promise)) {
-    execute_dit_model_with_brpc(input, promise);
+  if (enable_shm_) {
+    if (input_shm_manager_ && !input_shm_manager_->input_write(input)) {
+      enable_shm_ = false;
+      LOG(ERROR) << "DIT shared-memory input write failed, fallback to brpc";
+    } else {
+      RawForwardOutput output;
+      if (!output_shm_manager_->dit_output_read(output)) {
+        LOG(ERROR) << "DIT shared-memory output read failed";
+        // The model has already executed. Retrying with BRPC would execute it
+        // twice and advance worker state again.
+        promise.setValue(std::nullopt);
+        return;
+      }
+      promise.setValue(std::move(output));
+      return;
+    }
   }
+  execute_dit_model_with_brpc(input, promise);
 }
 
 void ShmChannel::execute_rec_model_async(
     const RecForwardInput& input,
     folly::Promise<std::optional<RawForwardOutput>>& promise) {
-  if (!execute_model_async_impl(input, promise)) {
-    execute_rec_model_with_brpc(input, promise);
+  if (enable_shm_) {
+    if (input_shm_manager_ && !input_shm_manager_->input_write(input)) {
+      enable_shm_ = false;
+      LOG(ERROR) << "REC shared-memory input write failed, fallback to brpc";
+    } else {
+      RawForwardOutput output;
+      if (!output_shm_manager_->rec_output_read(output)) {
+        LOG(ERROR) << "REC shared-memory output read failed";
+        // The model has already executed. Retrying with BRPC would execute it
+        // twice and advance worker state again.
+        promise.setValue(std::nullopt);
+        return;
+      }
+      promise.setValue(std::move(output));
+      return;
+    }
   }
+  execute_rec_model_with_brpc(input, promise);
 }
 
 void ShmChannel::execute_vlm_model_async(
     const VlmForwardInput& input,
     folly::Promise<std::optional<RawForwardOutput>>& promise) {
-  if (!execute_model_async_impl(input, promise)) {
-    execute_vlm_model_with_brpc(input, promise);
+  if (enable_shm_) {
+    if (input_shm_manager_ && !input_shm_manager_->input_write(input)) {
+      enable_shm_ = false;
+      LOG(ERROR) << "VLM shared-memory input write failed, fallback to brpc";
+    } else {
+      RawForwardOutput output;
+      if (!output_shm_manager_->vlm_output_read(output)) {
+        LOG(ERROR) << "VLM shared-memory output read failed";
+        // The model has already executed. Retrying with BRPC would execute it
+        // twice and advance worker state again.
+        promise.setValue(std::nullopt);
+        return;
+      }
+      promise.setValue(std::move(output));
+      return;
+    }
   }
+  execute_vlm_model_with_brpc(input, promise);
 }
 
 }  // namespace xllm

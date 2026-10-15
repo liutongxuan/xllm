@@ -1969,31 +1969,6 @@ inline void read_swap_blocks(ReadContext& context,
   }
 }
 
-inline void read_vector_tensor(const char*& buffer,
-                               std::vector<torch::Tensor>& tensor_vec) {
-  int32_t tensor_num;
-  read_data(buffer, tensor_num);
-  tensor_vec.resize(tensor_num);
-  for (size_t i = 0; i < tensor_num; ++i) {
-    read_tensor(buffer, tensor_vec[i]);
-  }
-}
-
-inline void read_embedding_output_metadata(const char*& buffer,
-                                           EmbeddingOutputMetadata& metadata) {
-  uint64_t metadata_size;
-  read_data(buffer, metadata_size);
-  metadata.clear();
-  metadata.reserve(metadata_size);
-  for (uint64_t index = 0; index < metadata_size; ++index) {
-    std::string name;
-    read_string(buffer, name);
-    torch::Tensor tensor;
-    read_tensor(buffer, tensor);
-    metadata.emplace(std::move(name), std::move(tensor));
-  }
-}
-
 inline void read_vector_tensor(ReadContext& context,
                                std::vector<torch::Tensor>& tensor_vec,
                                Stream* stream = nullptr,
@@ -2537,25 +2512,6 @@ bool deserialize_dit_input_payload(const char* payload,
   return true;
 }
 
-// Reads a tensor vector and clones each entry so it owns storage
-// independent of the SHM segment.
-inline void read_vector_tensor_cloned(const char*& buffer,
-                                      std::vector<torch::Tensor>& tensors) {
-  read_vector_tensor(buffer, tensors);
-  for (auto& tensor : tensors) {
-    if (tensor.defined()) {
-      tensor = tensor.clone();
-    }
-  }
-}
-
-inline void read_dit_forward_output(const char*& buffer,
-                                    DiTForwardOutput& output) {
-  read_vector_tensor_cloned(buffer, output.tensors);
-  read_string_vector(buffer, output.text_output);
-  read_vector_tensor_cloned(buffer, output.audio_tensors);
-}
-
 template <typename Input>
 inline void initialize_device_buffer_session(ReadContext& context,
                                              Input& forward_input,
@@ -2962,30 +2918,6 @@ size_t calculate_json_object_errors_size(
   return size;
 }
 
-size_t calculate_raw_forward_output_size(const RawForwardOutput& output) {
-  size_t size = 0;
-
-  size += type_size<uint64_t>;
-  for (const auto& sample : output.outputs) {
-    size += calculate_raw_sample_output_size(sample);
-  }
-
-  size += calculate_json_object_errors_size(output.json_object_errors);
-
-  size += get_vector_size(output.expert_load_data);
-  size += get_vector_size(output.src_seq_idxes);
-  size += get_vector_size(output.out_tokens);
-  size += get_vector_size(output.out_logprobs);
-  size += type_size<int64_t>;  // prepared_token
-  const bool has_dit_forward_output = has_dit_output(output);
-  size += type_size<bool>;
-  if (has_dit_forward_output) {
-    size += get_dit_forward_output_size(output.dit_forward_output);
-  }
-
-  return size;
-}
-
 void write_raw_token(char*& buffer, const RawToken& token) {
   write_data(buffer, token.id);
 
@@ -3010,37 +2942,6 @@ void write_raw_sample_output(char*& buffer, const RawSampleOutput& sample) {
   write_data(buffer, sample.speculative_token_stats.proposed_tokens);
 }
 
-void read_raw_token(const char*& buffer, RawToken& token) {
-  read_data(buffer, token.id);
-
-  bool has_logprob;
-  read_data(buffer, has_logprob);
-  if (has_logprob) {
-    float logprob_val;
-    read_data(buffer, logprob_val);
-    token.logprob = logprob_val;
-  } else {
-    token.logprob = std::nullopt;
-  }
-
-  read_vector(buffer, token.top_tokens);
-  read_vector(buffer, token.top_logprobs);
-  read_vector(buffer, token.embeddings);
-}
-
-void read_raw_sample_output(const char*& buffer, RawSampleOutput& sample) {
-  uint64_t token_count;
-  read_data(buffer, token_count);
-  sample.tokens.resize(token_count);
-  for (auto& token : sample.tokens) {
-    read_raw_token(buffer, token);
-  }
-  read_vector_tensor(buffer, sample.mm_embeddings);
-  read_embedding_output_metadata(buffer, sample.mm_embeddings_metadata);
-  read_data(buffer, sample.speculative_token_stats.accepted_tokens);
-  read_data(buffer, sample.speculative_token_stats.proposed_tokens);
-}
-
 void write_json_object_errors(
     char*& buffer,
     const std::vector<JsonObjectOutputError>& errors) {
@@ -3048,65 +2949,6 @@ void write_json_object_errors(
   for (const JsonObjectOutputError& error : errors) {
     write_string(buffer, error.sample_sequence_id);
     write_string(buffer, error.message);
-  }
-}
-
-void read_json_object_errors(const char*& buffer,
-                             std::vector<JsonObjectOutputError>& errors) {
-  uint64_t error_count;
-  read_data(buffer, error_count);
-  errors.resize(error_count);
-  for (JsonObjectOutputError& error : errors) {
-    read_string(buffer, error.sample_sequence_id);
-    read_string(buffer, error.message);
-  }
-}
-
-void deserialize_raw_forward_output(const char* buffer,
-                                    RawForwardOutput& output) {
-  uint64_t outputs_count;
-  read_data(buffer, outputs_count);
-  output.outputs.resize(outputs_count);
-  for (auto& sample : output.outputs) {
-    read_raw_sample_output(buffer, sample);
-  }
-
-  read_json_object_errors(buffer, output.json_object_errors);
-
-  read_vector(buffer, output.expert_load_data);
-  read_vector(buffer, output.src_seq_idxes);
-  read_vector(buffer, output.out_tokens);
-  read_vector(buffer, output.out_logprobs);
-
-  read_data(buffer, output.prepared_token);
-
-  bool has_dit_forward_output = false;
-  read_data(buffer, has_dit_forward_output);
-  if (has_dit_forward_output) {
-    read_dit_forward_output(buffer, output.dit_forward_output);
-  }
-}
-
-void serialize_raw_forward_output(const RawForwardOutput& output,
-                                  char*& buffer) {
-  write_data(buffer, static_cast<uint64_t>(output.outputs.size()));
-  for (const auto& sample : output.outputs) {
-    write_raw_sample_output(buffer, sample);
-  }
-
-  write_json_object_errors(buffer, output.json_object_errors);
-
-  write_vector(buffer, output.expert_load_data);
-  write_vector(buffer, output.src_seq_idxes);
-  write_vector(buffer, output.out_tokens);
-  write_vector(buffer, output.out_logprobs);
-
-  write_data(buffer, output.prepared_token);
-
-  const bool has_dit_forward_output = has_dit_output(output);
-  write_data(buffer, has_dit_forward_output);
-  if (has_dit_forward_output) {
-    write_dit_forward_output(buffer, output.dit_forward_output);
   }
 }
 
@@ -3397,133 +3239,201 @@ void serialize_dit_input(const DiTForwardInput& input,
   buffer = payload_base + get_input_layout_size(layout);
 }
 
-void convert_tensor_to_raw_output(
-    const torch::Tensor& next_tokens,
-    const torch::Tensor& logprobs,
-    const torch::Tensor& top_tokens,
-    const torch::Tensor& top_logprobs,
-    const torch::Tensor& embeddings,
-    const std::vector<std::vector<torch::Tensor>>& mm_embeddings,
-    const std::vector<torch::Tensor>& dit_images,
-    const std::vector<std::string>& dit_text_output,
-    const std::vector<torch::Tensor>& dit_audio,
-    const torch::Tensor& expert_load_data,
-    int64_t prepared_token,
-    const torch::Tensor& src_seq_idxes,
-    const torch::Tensor& out_tokens,
-    const torch::Tensor& out_logprobs,
-    RawForwardOutput& raw_output) {
-  SampleOutput sample_output;
-  sample_output.next_tokens = next_tokens;
-  sample_output.logprobs = logprobs;
-  sample_output.top_tokens = top_tokens;
-  sample_output.top_logprobs = top_logprobs;
-  raw_output.prepared_token = prepared_token;
+bool valid_host_output_tensor(const torch::Tensor& tensor,
+                              torch::ScalarType dtype) {
+  return !tensor.defined() ||
+         (tensor.device().is_cpu() && tensor.is_contiguous() &&
+          tensor.scalar_type() == dtype);
+}
 
-  if (::xllm::EPLBConfig::get_instance().enable_eplb()) {
-    torch::Tensor expert_load_data_flattened =
-        expert_load_data.view({-1}).contiguous();
-    if (expert_load_data_flattened.defined()) {
-      const int64_t* data_ptr = expert_load_data_flattened.data_ptr<int64_t>();
-      size_t size = static_cast<size_t>(expert_load_data_flattened.size(0));
-      raw_output.expert_load_data.assign(data_ptr, data_ptr + size);
+bool valid_dense_output_tensor(const torch::Tensor& tensor) {
+  if (!tensor.defined() || !tensor.device().is_cpu() ||
+      !tensor.is_contiguous() || tensor.dim() == 0 || tensor.dim() > 64) {
+    return false;
+  }
+  const torch::ScalarType dtype = tensor.scalar_type();
+  return torch::isIntegralType(dtype, /*includeBool=*/true) ||
+         torch::isFloatingType(dtype) || torch::isComplexType(dtype);
+}
+
+// Bounds and ownership are transport concerns shared by the independent output
+// readers. Tensor payloads must outlive reuse or destruction of the SHM
+// segment.
+class ShmOutputReader final {
+ public:
+  ShmOutputReader(const char* cursor, uint64_t remaining)
+      : cursor_(cursor), remaining_(remaining) {}
+
+  template <typename T>
+  bool read(T& value) {
+    if (sizeof(T) > remaining_) {
+      return false;
+    }
+    std::memcpy(&value, cursor_, sizeof(T));
+    advance(sizeof(T));
+    return true;
+  }
+
+  bool read_bool(bool& value) {
+    uint8_t encoded = 0;
+    if (!read(encoded) || encoded > 1) {
+      return false;
+    }
+    value = encoded != 0;
+    return true;
+  }
+
+  bool read_count(uint64_t& count, uint64_t minimum_record_bytes) {
+    return read(count) && count <= remaining_ / minimum_record_bytes;
+  }
+
+  template <typename T>
+  bool read_vector(std::vector<T>& values) {
+    uint64_t count = 0;
+    if (!read_count(count, sizeof(T))) {
+      return false;
+    }
+    values.resize(count);
+    const uint64_t bytes = count * sizeof(T);
+    if (bytes > 0) {
+      std::memcpy(values.data(), cursor_, bytes);
+      advance(bytes);
+    }
+    return true;
+  }
+
+  bool read_string(std::string& value) {
+    uint64_t bytes = 0;
+    if (!read(bytes) || bytes > remaining_) {
+      return false;
+    }
+    value.assign(cursor_, bytes);
+    advance(bytes);
+    return true;
+  }
+
+  bool read_tensor(torch::Tensor& tensor) {
+    uint64_t rank = 0;
+    if (!read_count(rank, sizeof(int64_t)) || rank > 64) {
+      return false;
+    }
+    if (rank == 0) {
+      tensor = {};
+      return true;
+    }
+    std::vector<int64_t> shape(rank);
+    uint64_t elements = 1;
+    for (int64_t& dimension : shape) {
+      if (!read(dimension) || dimension < 0 ||
+          (elements != 0 &&
+           static_cast<uint64_t>(dimension) >
+               std::numeric_limits<int64_t>::max() / elements)) {
+        return false;
+      }
+      elements *= static_cast<uint64_t>(dimension);
+    }
+    int8_t encoded_dtype = 0;
+    uint64_t bytes = 0;
+    if (!read(encoded_dtype) || encoded_dtype < 0 ||
+        encoded_dtype >= static_cast<int8_t>(torch::ScalarType::Undefined) ||
+        !read(bytes)) {
+      return false;
+    }
+    const torch::ScalarType dtype =
+        static_cast<torch::ScalarType>(encoded_dtype);
+    if (!torch::isIntegralType(dtype, /*includeBool=*/true) &&
+        !torch::isFloatingType(dtype) && !torch::isComplexType(dtype)) {
+      return false;
+    }
+    const uint64_t element_bytes = torch::elementSize(dtype);
+    if (elements > std::numeric_limits<uint64_t>::max() / element_bytes ||
+        bytes != elements * element_bytes || bytes > remaining_) {
+      return false;
+    }
+    tensor = torch::empty(
+        shape, torch::TensorOptions().dtype(dtype).device(torch::kCPU));
+    if (bytes > 0) {
+      std::memcpy(tensor.data_ptr(), cursor_, bytes);
+      advance(bytes);
+    }
+    return true;
+  }
+
+  bool read_tensors(std::vector<torch::Tensor>& tensors) {
+    int32_t count = 0;
+    if (!read(count) || count < 0 ||
+        static_cast<uint64_t>(count) > remaining_ / sizeof(uint64_t)) {
+      return false;
+    }
+    tensors.resize(count);
+    for (torch::Tensor& tensor : tensors) {
+      if (!read_tensor(tensor) || !tensor.defined()) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+ private:
+  void advance(uint64_t bytes) {
+    cursor_ += bytes;
+    remaining_ -= bytes;
+  }
+
+  const char* cursor_;
+  uint64_t remaining_;
+};
+
+bool read_raw_token(ShmOutputReader& reader, RawToken& token) {
+  bool has_logprob = false;
+  if (!reader.read(token.id) || !reader.read_bool(has_logprob)) {
+    return false;
+  }
+  if (has_logprob) {
+    float logprob = 0;
+    if (!reader.read(logprob)) {
+      return false;
+    }
+    token.logprob = logprob;
+  }
+  return reader.read_vector(token.top_tokens) &&
+         reader.read_vector(token.top_logprobs) &&
+         token.top_tokens.size() == token.top_logprobs.size() &&
+         reader.read_vector(token.embeddings);
+}
+
+bool read_raw_sample_output(ShmOutputReader& reader, RawSampleOutput& sample) {
+  uint64_t token_count = 0;
+  constexpr uint64_t kMinimumTokenBytes =
+      sizeof(int64_t) + sizeof(bool) + 3 * sizeof(uint64_t);
+  if (!reader.read_count(token_count, kMinimumTokenBytes)) {
+    return false;
+  }
+  sample.tokens.resize(token_count);
+  for (RawToken& token : sample.tokens) {
+    if (!read_raw_token(reader, token)) {
+      return false;
     }
   }
+  return reader.read_tensors(sample.mm_embeddings) &&
+         reader.read(sample.speculative_token_stats.accepted_tokens) &&
+         reader.read(sample.speculative_token_stats.proposed_tokens);
+}
 
-  if (src_seq_idxes.defined() && src_seq_idxes.numel() > 0) {
-    const int32_t* data_ptr = src_seq_idxes.data_ptr<int32_t>();
-    size_t size = static_cast<size_t>(src_seq_idxes.size(0));
-    raw_output.src_seq_idxes.assign(data_ptr, data_ptr + size);
+bool read_json_object_errors(ShmOutputReader& reader,
+                             std::vector<JsonObjectOutputError>& errors) {
+  uint64_t count = 0;
+  if (!reader.read_count(count, 2 * sizeof(uint64_t))) {
+    return false;
   }
-
-  if (out_tokens.defined() && out_tokens.numel() > 0) {
-    const int32_t* data_ptr = out_tokens.data_ptr<int32_t>();
-    size_t size = static_cast<size_t>(out_tokens.size(0));
-    raw_output.out_tokens.assign(data_ptr, data_ptr + size);
-  }
-
-  if (out_logprobs.defined() && out_logprobs.numel() > 0) {
-    const float* data_ptr = out_logprobs.data_ptr<float>();
-    size_t size = static_cast<size_t>(out_logprobs.size(0));
-    raw_output.out_logprobs.assign(data_ptr, data_ptr + size);
-  }
-
-  int32_t num_seqs =
-      next_tokens.defined() ? static_cast<int32_t>(next_tokens.size(0)) : 0;
-  if (embeddings.defined() && embeddings.numel() > 0) {
-    num_seqs = std::max(num_seqs, static_cast<int32_t>(embeddings.size(0)));
-  }
-  if (!mm_embeddings.empty()) {
-    num_seqs = std::max(num_seqs, static_cast<int32_t>(mm_embeddings.size()));
-  }
-
-  raw_output.outputs.reserve(num_seqs);
-  raw_output.dit_forward_output.tensors = dit_images;
-  raw_output.dit_forward_output.text_output = dit_text_output;
-  raw_output.dit_forward_output.audio_tensors = dit_audio;
-  for (int32_t output_idx = 0; output_idx < num_seqs; ++output_idx) {
-    RawSampleOutput raw_sample_output;
-
-    if (next_tokens.defined() && next_tokens.dim() == 2) {
-      const auto curr_embeddings =
-          embeddings.defined() ? embeddings[output_idx] : embeddings;
-
-      const int64_t num_tokens = next_tokens.size(1);
-      raw_sample_output.tokens.reserve(num_tokens);
-
-      for (int64_t i = 0; i < num_tokens; ++i) {
-        const Token token = sample_output.token_at(output_idx, i);
-        if (token.id == -1) {
-          break;
-        }
-
-        RawToken raw_token;
-        raw_token.id = token.id;
-        raw_token.logprob = token.logprob;
-        raw_token.top_tokens = token.top_tokens;
-        raw_token.top_logprobs = token.top_logprobs;
-
-        if (curr_embeddings.defined()) {
-          const auto token_embeddings = curr_embeddings[i];
-          if (token_embeddings.defined()) {
-            const float* emb_ptr = token_embeddings.data_ptr<float>();
-            size_t emb_size = static_cast<size_t>(token_embeddings.size(0));
-            raw_token.embeddings.assign(emb_ptr, emb_ptr + emb_size);
-          }
-        }
-
-        raw_sample_output.tokens.push_back(std::move(raw_token));
-      }
-    } else {
-      RawToken raw_token;
-
-      if (next_tokens.defined() && next_tokens.numel() > 0) {
-        const Token token = sample_output.token_at(output_idx);
-        raw_token.id = token.id;
-        raw_token.logprob = token.logprob;
-        raw_token.top_tokens = token.top_tokens;
-        raw_token.top_logprobs = token.top_logprobs;
-      } else {
-        raw_token.id = -1;
-        raw_token.logprob = std::nullopt;
-      }
-
-      if (embeddings.defined()) {
-        const auto token_embeddings = embeddings[output_idx];
-        if (token_embeddings.defined()) {
-          const float* emb_ptr = token_embeddings.data_ptr<float>();
-          size_t emb_size = static_cast<size_t>(token_embeddings.size(0));
-          raw_token.embeddings.assign(emb_ptr, emb_ptr + emb_size);
-        }
-      }
-
-      raw_sample_output.tokens.push_back(std::move(raw_token));
+  errors.resize(count);
+  for (JsonObjectOutputError& error : errors) {
+    if (!reader.read_string(error.sample_sequence_id) ||
+        !reader.read_string(error.message)) {
+      return false;
     }
-    if (output_idx < static_cast<int32_t>(mm_embeddings.size())) {
-      raw_sample_output.mm_embeddings = mm_embeddings[output_idx];
-    }
-    raw_output.outputs.push_back(std::move(raw_sample_output));
   }
+  return true;
 }
 
 }  // namespace
@@ -3935,77 +3845,737 @@ bool ForwardSharedMemoryManager::input_read(
   return read_token_input(input, device, policy);
 }
 
-bool ForwardSharedMemoryManager::raw_output_write(
-    const torch::Tensor& next_tokens,
-    const torch::Tensor& logprobs,
-    const torch::Tensor& top_tokens,
-    const torch::Tensor& top_logprobs,
-    const torch::Tensor& embeddings,
-    const std::vector<std::vector<torch::Tensor>>& mm_embeddings,
-    const std::vector<SpeculativeTokenStats>& speculative_token_stats,
-    const std::vector<torch::Tensor>& dit_images,
-    const std::vector<std::string>& dit_text_output,
-    const std::vector<torch::Tensor>& dit_audio,
-    const torch::Tensor& expert_load_data,
-    int64_t prepared_token,
-    const torch::Tensor& src_seq_idxes,
-    const torch::Tensor& out_tokens,
-    const torch::Tensor& out_logprobs,
-    const std::vector<JsonObjectOutputError>& json_object_errors) {
-  RawForwardOutput output;
-  convert_tensor_to_raw_output(next_tokens,
-                               logprobs,
-                               top_tokens,
-                               top_logprobs,
-                               embeddings,
-                               mm_embeddings,
-                               dit_images,
-                               dit_text_output,
-                               dit_audio,
-                               expert_load_data,
-                               prepared_token,
-                               src_seq_idxes,
-                               out_tokens,
-                               out_logprobs,
-                               output);
-  if (!speculative_token_stats.empty()) {
-    CHECK_EQ(output.outputs.size(), speculative_token_stats.size())
-        << "speculative token stats must match raw output rows.";
-    for (size_t i = 0; i < speculative_token_stats.size(); ++i) {
-      output.outputs[i].speculative_token_stats = speculative_token_stats[i];
+bool ForwardSharedMemoryManager::llm_output_write(
+    const ForwardOutput& output,
+    const std::vector<SpeculativeTokenStats>& speculative_token_stats) {
+  const SampleOutput& sampled = output.sample_output;
+  const torch::Tensor& tokens = sampled.next_tokens;
+  const torch::Tensor& embeddings = sampled.embeddings;
+  const BeamSearchOutput& beam = output.beam_search_output;
+  if (!output.dit_forward_output.tensors.empty() ||
+      !output.dit_forward_output.text_output.empty() ||
+      (tokens.defined() &&
+       (!tokens.device().is_cpu() || !tokens.is_contiguous() ||
+        (tokens.scalar_type() != torch::kInt32 &&
+         tokens.scalar_type() != torch::kInt64) ||
+        (tokens.dim() != 1 && tokens.dim() != 2))) ||
+      !valid_host_output_tensor(sampled.logprobs, torch::kFloat32) ||
+      !valid_host_output_tensor(sampled.top_tokens, torch::kInt64) ||
+      !valid_host_output_tensor(sampled.top_logprobs, torch::kFloat32) ||
+      !valid_host_output_tensor(embeddings, torch::kFloat32) ||
+      !valid_host_output_tensor(output.expert_load_data, torch::kInt64) ||
+      !valid_host_output_tensor(beam.src_seq_idxes, torch::kInt32) ||
+      !valid_host_output_tensor(beam.out_tokens, torch::kInt32) ||
+      !valid_host_output_tensor(beam.out_logprobs, torch::kFloat32)) {
+    LOG(ERROR) << "Invalid LLM shared-memory output tensor layout";
+    return false;
+  }
+  if (sampled.top_tokens.defined() != sampled.top_logprobs.defined() ||
+      (sampled.top_tokens.defined() && !sampled.logprobs.defined()) ||
+      (sampled.logprobs.defined() &&
+       (!tokens.defined() || sampled.logprobs.sizes() != tokens.sizes()))) {
+    LOG(ERROR) << "Invalid LLM sampled probability layout";
+    return false;
+  }
+  if (sampled.top_tokens.defined()) {
+    if (!tokens.defined() || sampled.top_tokens.dim() != tokens.dim() + 1 ||
+        sampled.top_tokens.sizes() != sampled.top_logprobs.sizes() ||
+        sampled.top_tokens.sizes().slice(0, tokens.dim()) != tokens.sizes()) {
+      LOG(ERROR) << "Invalid LLM top-k output layout";
+      return false;
     }
   }
-  output.json_object_errors = json_object_errors;
-  uint64_t total_size = sizeof(ControlMetadata);
-  total_size += calculate_raw_forward_output_size(output);
-  if (unlikely(total_size > size())) {
-    LOG(ERROR) << "raw output size overflow, total_size: " << total_size
-               << ", shm size: " << size();
+  if (embeddings.defined()) {
+    const int64_t expected_rank = tokens.defined() && tokens.dim() == 2 ? 3 : 2;
+    if (embeddings.dim() != expected_rank || embeddings.numel() == 0 ||
+        (tokens.defined() && embeddings.size(0) != tokens.size(0)) ||
+        (tokens.defined() && tokens.dim() == 2 &&
+         embeddings.size(1) != tokens.size(1))) {
+      LOG(ERROR) << "Invalid LLM embedding output layout";
+      return false;
+    }
+  }
+  int64_t row_count = tokens.defined() ? tokens.size(0) : 0;
+  if (embeddings.defined()) {
+    row_count = std::max(row_count, embeddings.size(0));
+  }
+  row_count =
+      std::max(row_count, static_cast<int64_t>(sampled.mm_embeddings.size()));
+  if ((tokens.defined() && (tokens.dim() == 2 || tokens.numel() > 0) &&
+       tokens.size(0) != row_count) ||
+      (embeddings.defined() && embeddings.size(0) != row_count) ||
+      (!speculative_token_stats.empty() &&
+       speculative_token_stats.size() != static_cast<size_t>(row_count))) {
+    LOG(ERROR) << "Mismatched LLM shared-memory output row counts";
+    return false;
+  }
+  for (const auto& row : sampled.mm_embeddings) {
+    for (const torch::Tensor& tensor : row) {
+      if (!valid_dense_output_tensor(tensor)) {
+        LOG(ERROR) << "Invalid LLM multimodal embedding tensor";
+        return false;
+      }
+    }
+  }
+  const int64_t beam_count =
+      beam.src_seq_idxes.defined() ? beam.src_seq_idxes.numel() : 0;
+  if (beam_count != (beam.out_tokens.defined() ? beam.out_tokens.numel() : 0) ||
+      beam_count !=
+          (beam.out_logprobs.defined() ? beam.out_logprobs.numel() : 0)) {
+    LOG(ERROR) << "Mismatched LLM beam output field counts";
     return false;
   }
 
-  char* data_ptr = static_cast<char*>(base_address()) + sizeof(ControlMetadata);
-  serialize_raw_forward_output(output, data_ptr);
+  RawForwardOutput encoded;
+  encoded.prepared_token = output.prepared_token;
+  encoded.json_object_errors = output.json_object_errors;
+  if (output.expert_load_data.defined() &&
+      output.expert_load_data.numel() > 0 &&
+      ::xllm::EPLBConfig::get_instance().enable_eplb()) {
+    const int64_t* values = output.expert_load_data.const_data_ptr<int64_t>();
+    encoded.expert_load_data.assign(values,
+                                    values + output.expert_load_data.numel());
+  }
+  if (beam_count > 0) {
+    const int32_t* indices = beam.src_seq_idxes.const_data_ptr<int32_t>();
+    encoded.src_seq_idxes.assign(indices, indices + beam_count);
+    const int32_t* beam_tokens = beam.out_tokens.const_data_ptr<int32_t>();
+    encoded.out_tokens.assign(beam_tokens, beam_tokens + beam_count);
+    const float* probabilities = beam.out_logprobs.const_data_ptr<float>();
+    encoded.out_logprobs.assign(probabilities, probabilities + beam_count);
+  }
+  encoded.outputs.reserve(row_count);
+  for (int64_t row_index = 0; row_index < row_count; ++row_index) {
+    RawSampleOutput row;
+    const torch::Tensor row_embeddings =
+        embeddings.defined() ? embeddings[row_index] : torch::Tensor();
+    const int64_t token_count =
+        tokens.defined() && tokens.dim() == 2 ? tokens.size(1) : 1;
+    row.tokens.reserve(token_count);
+    for (int64_t token_index = 0; token_index < token_count; ++token_index) {
+      Token token(-1);
+      if (tokens.defined() && tokens.numel() > 0) {
+        token = tokens.dim() == 2 ? sampled.token_at(row_index, token_index)
+                                  : sampled.token_at(row_index);
+      }
+      if (tokens.defined() && tokens.dim() == 2 && token.id == -1) {
+        break;
+      }
+      RawToken raw_token;
+      raw_token.id = token.id;
+      raw_token.logprob = token.logprob;
+      raw_token.top_tokens = token.top_tokens;
+      raw_token.top_logprobs = token.top_logprobs;
+      const torch::Tensor token_embeddings =
+          row_embeddings.defined() && tokens.defined() && tokens.dim() == 2
+              ? row_embeddings[token_index]
+              : row_embeddings;
+      if (token_embeddings.defined() && token_embeddings.numel() > 0) {
+        const float* values = token_embeddings.const_data_ptr<float>();
+        raw_token.embeddings.assign(values, values + token_embeddings.numel());
+      }
+      row.tokens.emplace_back(std::move(raw_token));
+    }
+    if (row_index < static_cast<int64_t>(sampled.mm_embeddings.size())) {
+      row.mm_embeddings = sampled.mm_embeddings[row_index];
+    }
+    if (!speculative_token_stats.empty()) {
+      row.speculative_token_stats = speculative_token_stats[row_index];
+    }
+    encoded.outputs.emplace_back(std::move(row));
+  }
+
+  uint64_t payload_bytes = sizeof(uint64_t);
+  for (const RawSampleOutput& row : encoded.outputs) {
+    payload_bytes += calculate_raw_sample_output_size(row);
+  }
+  payload_bytes +=
+      calculate_json_object_errors_size(encoded.json_object_errors);
+  payload_bytes += get_vector_size(encoded.expert_load_data);
+  payload_bytes += get_vector_size(encoded.src_seq_idxes);
+  payload_bytes += get_vector_size(encoded.out_tokens);
+  payload_bytes += get_vector_size(encoded.out_logprobs);
+  payload_bytes += sizeof(int64_t) + sizeof(bool);
+  if (size() < static_cast<int64_t>(sizeof(ControlMetadata)) ||
+      payload_bytes > static_cast<uint64_t>(size()) - sizeof(ControlMetadata)) {
+    LOG(ERROR) << "LLM shared-memory output size exceeds segment capacity";
+    return false;
+  }
+  char* cursor = static_cast<char*>(base_address()) + sizeof(ControlMetadata);
+  write_data(cursor, static_cast<uint64_t>(encoded.outputs.size()));
+  for (const RawSampleOutput& row : encoded.outputs) {
+    write_raw_sample_output(cursor, row);
+  }
+  write_json_object_errors(cursor, encoded.json_object_errors);
+  write_vector(cursor, encoded.expert_load_data);
+  write_vector(cursor, encoded.src_seq_idxes);
+  write_vector(cursor, encoded.out_tokens);
+  write_vector(cursor, encoded.out_logprobs);
+  write_data(cursor, encoded.prepared_token);
+  write_data(cursor, /*has_dit_output=*/false);
   std::atomic_thread_fence(std::memory_order_release);
   control_ptr_->version = ++last_version_;
   return true;
 }
 
-void ForwardSharedMemoryManager::raw_output_read(RawForwardOutput& output) {
-  while (true) {
-    if (control_ptr_->version != last_version_) {
-      last_version_ = control_ptr_->version;
-      std::atomic_thread_fence(std::memory_order_acquire);
-      break;
-    }
+bool ForwardSharedMemoryManager::llm_output_read(RawForwardOutput& output) {
+  while (control_ptr_->version == last_version_) {
     std::this_thread::sleep_for(std::chrono::nanoseconds(kNumWaitNanoseconds));
   }
+  last_version_ = control_ptr_->version;
+  std::atomic_thread_fence(std::memory_order_acquire);
+  if (size() < static_cast<int64_t>(sizeof(ControlMetadata))) {
+    return false;
+  }
+  ShmOutputReader reader(
+      static_cast<const char*>(base_address()) + sizeof(ControlMetadata),
+      static_cast<uint64_t>(size()) - sizeof(ControlMetadata));
+  RawForwardOutput decoded;
+  uint64_t rows = 0;
+  constexpr uint64_t kMinimumRowBytes =
+      sizeof(uint64_t) + sizeof(int32_t) + 2 * sizeof(int64_t);
+  if (!reader.read_count(rows, kMinimumRowBytes)) {
+    return false;
+  }
+  decoded.outputs.resize(rows);
+  for (RawSampleOutput& row : decoded.outputs) {
+    if (!read_raw_sample_output(reader, row)) {
+      return false;
+    }
+  }
+  bool has_dit_output = false;
+  if (!read_json_object_errors(reader, decoded.json_object_errors) ||
+      !reader.read_vector(decoded.expert_load_data) ||
+      !reader.read_vector(decoded.src_seq_idxes) ||
+      !reader.read_vector(decoded.out_tokens) ||
+      !reader.read_vector(decoded.out_logprobs) ||
+      !reader.read(decoded.prepared_token) ||
+      !reader.read_bool(has_dit_output) || has_dit_output ||
+      decoded.src_seq_idxes.size() != decoded.out_tokens.size() ||
+      decoded.src_seq_idxes.size() != decoded.out_logprobs.size()) {
+    LOG(ERROR) << "Invalid LLM shared-memory output fields";
+    return false;
+  }
+  output = std::move(decoded);
+  return true;
+}
 
-  const char* data_ptr =
-      static_cast<char*>(base_address()) + sizeof(ControlMetadata);
-  deserialize_raw_forward_output(data_ptr, output);
+bool ForwardSharedMemoryManager::vlm_output_write(
+    const ForwardOutput& output,
+    const std::vector<SpeculativeTokenStats>& speculative_token_stats) {
+  const SampleOutput& sampled = output.sample_output;
+  const torch::Tensor& tokens = sampled.next_tokens;
+  const torch::Tensor& embeddings = sampled.embeddings;
+  const BeamSearchOutput& beam = output.beam_search_output;
+  if (!output.dit_forward_output.tensors.empty() ||
+      !output.dit_forward_output.text_output.empty() ||
+      (tokens.defined() &&
+       (!tokens.device().is_cpu() || !tokens.is_contiguous() ||
+        (tokens.scalar_type() != torch::kInt32 &&
+         tokens.scalar_type() != torch::kInt64) ||
+        (tokens.dim() != 1 && tokens.dim() != 2))) ||
+      !valid_host_output_tensor(sampled.logprobs, torch::kFloat32) ||
+      !valid_host_output_tensor(sampled.top_tokens, torch::kInt64) ||
+      !valid_host_output_tensor(sampled.top_logprobs, torch::kFloat32) ||
+      !valid_host_output_tensor(embeddings, torch::kFloat32) ||
+      !valid_host_output_tensor(output.expert_load_data, torch::kInt64) ||
+      !valid_host_output_tensor(beam.src_seq_idxes, torch::kInt32) ||
+      !valid_host_output_tensor(beam.out_tokens, torch::kInt32) ||
+      !valid_host_output_tensor(beam.out_logprobs, torch::kFloat32)) {
+    LOG(ERROR) << "Invalid VLM shared-memory output tensor layout";
+    return false;
+  }
+  if (sampled.top_tokens.defined() != sampled.top_logprobs.defined() ||
+      (sampled.top_tokens.defined() && !sampled.logprobs.defined()) ||
+      (sampled.logprobs.defined() &&
+       (!tokens.defined() || sampled.logprobs.sizes() != tokens.sizes()))) {
+    LOG(ERROR) << "Invalid VLM sampled probability layout";
+    return false;
+  }
+  if (sampled.top_tokens.defined()) {
+    if (!tokens.defined() || sampled.top_tokens.dim() != tokens.dim() + 1 ||
+        sampled.top_tokens.sizes() != sampled.top_logprobs.sizes() ||
+        sampled.top_tokens.sizes().slice(0, tokens.dim()) != tokens.sizes()) {
+      LOG(ERROR) << "Invalid VLM top-k output layout";
+      return false;
+    }
+  }
+  if (embeddings.defined()) {
+    const int64_t expected_rank = tokens.defined() && tokens.dim() == 2 ? 3 : 2;
+    if (embeddings.dim() != expected_rank || embeddings.numel() == 0 ||
+        (tokens.defined() && embeddings.size(0) != tokens.size(0)) ||
+        (tokens.defined() && tokens.dim() == 2 &&
+         embeddings.size(1) != tokens.size(1))) {
+      LOG(ERROR) << "Invalid VLM embedding output layout";
+      return false;
+    }
+  }
+  int64_t row_count = tokens.defined() ? tokens.size(0) : 0;
+  if (embeddings.defined()) {
+    row_count = std::max(row_count, embeddings.size(0));
+  }
+  row_count =
+      std::max(row_count, static_cast<int64_t>(sampled.mm_embeddings.size()));
+  if ((tokens.defined() && (tokens.dim() == 2 || tokens.numel() > 0) &&
+       tokens.size(0) != row_count) ||
+      (embeddings.defined() && embeddings.size(0) != row_count) ||
+      (!speculative_token_stats.empty() &&
+       speculative_token_stats.size() != static_cast<size_t>(row_count))) {
+    LOG(ERROR) << "Mismatched VLM shared-memory output row counts";
+    return false;
+  }
+  for (const auto& row : sampled.mm_embeddings) {
+    for (const torch::Tensor& tensor : row) {
+      if (!valid_dense_output_tensor(tensor)) {
+        LOG(ERROR) << "Invalid VLM multimodal embedding tensor";
+        return false;
+      }
+    }
+  }
+  const int64_t beam_count =
+      beam.src_seq_idxes.defined() ? beam.src_seq_idxes.numel() : 0;
+  if (beam_count != (beam.out_tokens.defined() ? beam.out_tokens.numel() : 0) ||
+      beam_count !=
+          (beam.out_logprobs.defined() ? beam.out_logprobs.numel() : 0)) {
+    LOG(ERROR) << "Mismatched VLM beam output field counts";
+    return false;
+  }
 
-  return;
+  RawForwardOutput encoded;
+  encoded.prepared_token = output.prepared_token;
+  encoded.json_object_errors = output.json_object_errors;
+  if (output.expert_load_data.defined() &&
+      output.expert_load_data.numel() > 0 &&
+      ::xllm::EPLBConfig::get_instance().enable_eplb()) {
+    const int64_t* values = output.expert_load_data.const_data_ptr<int64_t>();
+    encoded.expert_load_data.assign(values,
+                                    values + output.expert_load_data.numel());
+  }
+  if (beam_count > 0) {
+    const int32_t* indices = beam.src_seq_idxes.const_data_ptr<int32_t>();
+    encoded.src_seq_idxes.assign(indices, indices + beam_count);
+    const int32_t* beam_tokens = beam.out_tokens.const_data_ptr<int32_t>();
+    encoded.out_tokens.assign(beam_tokens, beam_tokens + beam_count);
+    const float* probabilities = beam.out_logprobs.const_data_ptr<float>();
+    encoded.out_logprobs.assign(probabilities, probabilities + beam_count);
+  }
+  encoded.outputs.reserve(row_count);
+  for (int64_t row_index = 0; row_index < row_count; ++row_index) {
+    RawSampleOutput row;
+    const torch::Tensor row_embeddings =
+        embeddings.defined() ? embeddings[row_index] : torch::Tensor();
+    const int64_t token_count =
+        tokens.defined() && tokens.dim() == 2 ? tokens.size(1) : 1;
+    row.tokens.reserve(token_count);
+    for (int64_t token_index = 0; token_index < token_count; ++token_index) {
+      Token token(-1);
+      if (tokens.defined() && tokens.numel() > 0) {
+        token = tokens.dim() == 2 ? sampled.token_at(row_index, token_index)
+                                  : sampled.token_at(row_index);
+      }
+      if (tokens.defined() && tokens.dim() == 2 && token.id == -1) {
+        break;
+      }
+      RawToken raw_token;
+      raw_token.id = token.id;
+      raw_token.logprob = token.logprob;
+      raw_token.top_tokens = token.top_tokens;
+      raw_token.top_logprobs = token.top_logprobs;
+      const torch::Tensor token_embeddings =
+          row_embeddings.defined() && tokens.defined() && tokens.dim() == 2
+              ? row_embeddings[token_index]
+              : row_embeddings;
+      if (token_embeddings.defined() && token_embeddings.numel() > 0) {
+        const float* values = token_embeddings.const_data_ptr<float>();
+        raw_token.embeddings.assign(values, values + token_embeddings.numel());
+      }
+      row.tokens.emplace_back(std::move(raw_token));
+    }
+    if (row_index < static_cast<int64_t>(sampled.mm_embeddings.size())) {
+      row.mm_embeddings = sampled.mm_embeddings[row_index];
+    }
+    if (!speculative_token_stats.empty()) {
+      row.speculative_token_stats = speculative_token_stats[row_index];
+    }
+    encoded.outputs.emplace_back(std::move(row));
+  }
+
+  uint64_t payload_bytes = sizeof(uint64_t);
+  for (const RawSampleOutput& row : encoded.outputs) {
+    payload_bytes += calculate_raw_sample_output_size(row);
+  }
+  payload_bytes +=
+      calculate_json_object_errors_size(encoded.json_object_errors);
+  payload_bytes += get_vector_size(encoded.expert_load_data);
+  payload_bytes += get_vector_size(encoded.src_seq_idxes);
+  payload_bytes += get_vector_size(encoded.out_tokens);
+  payload_bytes += get_vector_size(encoded.out_logprobs);
+  payload_bytes += sizeof(int64_t) + sizeof(bool);
+  if (size() < static_cast<int64_t>(sizeof(ControlMetadata)) ||
+      payload_bytes > static_cast<uint64_t>(size()) - sizeof(ControlMetadata)) {
+    LOG(ERROR) << "VLM shared-memory output size exceeds segment capacity";
+    return false;
+  }
+  char* cursor = static_cast<char*>(base_address()) + sizeof(ControlMetadata);
+  write_data(cursor, static_cast<uint64_t>(encoded.outputs.size()));
+  for (const RawSampleOutput& row : encoded.outputs) {
+    write_raw_sample_output(cursor, row);
+  }
+  write_json_object_errors(cursor, encoded.json_object_errors);
+  write_vector(cursor, encoded.expert_load_data);
+  write_vector(cursor, encoded.src_seq_idxes);
+  write_vector(cursor, encoded.out_tokens);
+  write_vector(cursor, encoded.out_logprobs);
+  write_data(cursor, encoded.prepared_token);
+  write_data(cursor, /*has_dit_output=*/false);
+  std::atomic_thread_fence(std::memory_order_release);
+  control_ptr_->version = ++last_version_;
+  return true;
+}
+
+bool ForwardSharedMemoryManager::vlm_output_read(RawForwardOutput& output) {
+  while (control_ptr_->version == last_version_) {
+    std::this_thread::sleep_for(std::chrono::nanoseconds(kNumWaitNanoseconds));
+  }
+  last_version_ = control_ptr_->version;
+  std::atomic_thread_fence(std::memory_order_acquire);
+  if (size() < static_cast<int64_t>(sizeof(ControlMetadata))) {
+    return false;
+  }
+  ShmOutputReader reader(
+      static_cast<const char*>(base_address()) + sizeof(ControlMetadata),
+      static_cast<uint64_t>(size()) - sizeof(ControlMetadata));
+  RawForwardOutput decoded;
+  uint64_t rows = 0;
+  constexpr uint64_t kMinimumRowBytes =
+      sizeof(uint64_t) + sizeof(int32_t) + 2 * sizeof(int64_t);
+  if (!reader.read_count(rows, kMinimumRowBytes)) {
+    return false;
+  }
+  decoded.outputs.resize(rows);
+  for (RawSampleOutput& row : decoded.outputs) {
+    if (!read_raw_sample_output(reader, row)) {
+      return false;
+    }
+  }
+  bool has_dit_output = false;
+  if (!read_json_object_errors(reader, decoded.json_object_errors) ||
+      !reader.read_vector(decoded.expert_load_data) ||
+      !reader.read_vector(decoded.src_seq_idxes) ||
+      !reader.read_vector(decoded.out_tokens) ||
+      !reader.read_vector(decoded.out_logprobs) ||
+      !reader.read(decoded.prepared_token) ||
+      !reader.read_bool(has_dit_output) || has_dit_output ||
+      decoded.src_seq_idxes.size() != decoded.out_tokens.size() ||
+      decoded.src_seq_idxes.size() != decoded.out_logprobs.size()) {
+    LOG(ERROR) << "Invalid VLM shared-memory output fields";
+    return false;
+  }
+  output = std::move(decoded);
+  return true;
+}
+
+bool ForwardSharedMemoryManager::rec_output_write(
+    const ForwardOutput& output,
+    const std::vector<SpeculativeTokenStats>& speculative_token_stats) {
+  const SampleOutput& sampled = output.sample_output;
+  const torch::Tensor& tokens = sampled.next_tokens;
+  const torch::Tensor& embeddings = sampled.embeddings;
+  const BeamSearchOutput& beam = output.beam_search_output;
+  if (!output.dit_forward_output.tensors.empty() ||
+      !output.dit_forward_output.text_output.empty() ||
+      (tokens.defined() &&
+       (!tokens.device().is_cpu() || !tokens.is_contiguous() ||
+        (tokens.scalar_type() != torch::kInt32 &&
+         tokens.scalar_type() != torch::kInt64) ||
+        (tokens.dim() != 1 && tokens.dim() != 2))) ||
+      !valid_host_output_tensor(sampled.logprobs, torch::kFloat32) ||
+      !valid_host_output_tensor(sampled.top_tokens, torch::kInt64) ||
+      !valid_host_output_tensor(sampled.top_logprobs, torch::kFloat32) ||
+      !valid_host_output_tensor(embeddings, torch::kFloat32) ||
+      !valid_host_output_tensor(output.expert_load_data, torch::kInt64) ||
+      !valid_host_output_tensor(beam.src_seq_idxes, torch::kInt32) ||
+      !valid_host_output_tensor(beam.out_tokens, torch::kInt32) ||
+      !valid_host_output_tensor(beam.out_logprobs, torch::kFloat32)) {
+    LOG(ERROR) << "Invalid REC shared-memory output tensor layout";
+    return false;
+  }
+  if (sampled.top_tokens.defined() != sampled.top_logprobs.defined() ||
+      (sampled.top_tokens.defined() && !sampled.logprobs.defined()) ||
+      (sampled.logprobs.defined() &&
+       (!tokens.defined() || sampled.logprobs.sizes() != tokens.sizes()))) {
+    LOG(ERROR) << "Invalid REC sampled probability layout";
+    return false;
+  }
+  if (sampled.top_tokens.defined()) {
+    if (!tokens.defined() || sampled.top_tokens.dim() != tokens.dim() + 1 ||
+        sampled.top_tokens.sizes() != sampled.top_logprobs.sizes() ||
+        sampled.top_tokens.sizes().slice(0, tokens.dim()) != tokens.sizes()) {
+      LOG(ERROR) << "Invalid REC top-k output layout";
+      return false;
+    }
+  }
+  if (embeddings.defined()) {
+    const int64_t expected_rank = tokens.defined() && tokens.dim() == 2 ? 3 : 2;
+    if (embeddings.dim() != expected_rank || embeddings.numel() == 0 ||
+        (tokens.defined() && embeddings.size(0) != tokens.size(0)) ||
+        (tokens.defined() && tokens.dim() == 2 &&
+         embeddings.size(1) != tokens.size(1))) {
+      LOG(ERROR) << "Invalid REC embedding output layout";
+      return false;
+    }
+  }
+  int64_t row_count = tokens.defined() ? tokens.size(0) : 0;
+  if (embeddings.defined()) {
+    row_count = std::max(row_count, embeddings.size(0));
+  }
+  row_count =
+      std::max(row_count, static_cast<int64_t>(sampled.mm_embeddings.size()));
+  if ((tokens.defined() && (tokens.dim() == 2 || tokens.numel() > 0) &&
+       tokens.size(0) != row_count) ||
+      (embeddings.defined() && embeddings.size(0) != row_count) ||
+      (!speculative_token_stats.empty() &&
+       speculative_token_stats.size() != static_cast<size_t>(row_count))) {
+    LOG(ERROR) << "Mismatched REC shared-memory output row counts";
+    return false;
+  }
+  for (const auto& row : sampled.mm_embeddings) {
+    for (const torch::Tensor& tensor : row) {
+      if (!valid_dense_output_tensor(tensor)) {
+        LOG(ERROR) << "Invalid REC multimodal embedding tensor";
+        return false;
+      }
+    }
+  }
+  const int64_t beam_count =
+      beam.src_seq_idxes.defined() ? beam.src_seq_idxes.numel() : 0;
+  if (beam_count != (beam.out_tokens.defined() ? beam.out_tokens.numel() : 0) ||
+      beam_count !=
+          (beam.out_logprobs.defined() ? beam.out_logprobs.numel() : 0)) {
+    LOG(ERROR) << "Mismatched REC beam output field counts";
+    return false;
+  }
+
+  RawForwardOutput encoded;
+  encoded.prepared_token = output.prepared_token;
+  encoded.json_object_errors = output.json_object_errors;
+  if (output.expert_load_data.defined() &&
+      output.expert_load_data.numel() > 0 &&
+      ::xllm::EPLBConfig::get_instance().enable_eplb()) {
+    const int64_t* values = output.expert_load_data.const_data_ptr<int64_t>();
+    encoded.expert_load_data.assign(values,
+                                    values + output.expert_load_data.numel());
+  }
+  if (beam_count > 0) {
+    const int32_t* indices = beam.src_seq_idxes.const_data_ptr<int32_t>();
+    encoded.src_seq_idxes.assign(indices, indices + beam_count);
+    const int32_t* beam_tokens = beam.out_tokens.const_data_ptr<int32_t>();
+    encoded.out_tokens.assign(beam_tokens, beam_tokens + beam_count);
+    const float* probabilities = beam.out_logprobs.const_data_ptr<float>();
+    encoded.out_logprobs.assign(probabilities, probabilities + beam_count);
+  }
+  encoded.outputs.reserve(row_count);
+  for (int64_t row_index = 0; row_index < row_count; ++row_index) {
+    RawSampleOutput row;
+    const torch::Tensor row_embeddings =
+        embeddings.defined() ? embeddings[row_index] : torch::Tensor();
+    const int64_t token_count =
+        tokens.defined() && tokens.dim() == 2 ? tokens.size(1) : 1;
+    row.tokens.reserve(token_count);
+    for (int64_t token_index = 0; token_index < token_count; ++token_index) {
+      Token token(-1);
+      if (tokens.defined() && tokens.numel() > 0) {
+        token = tokens.dim() == 2 ? sampled.token_at(row_index, token_index)
+                                  : sampled.token_at(row_index);
+      }
+      if (tokens.defined() && tokens.dim() == 2 && token.id == -1) {
+        break;
+      }
+      RawToken raw_token;
+      raw_token.id = token.id;
+      raw_token.logprob = token.logprob;
+      raw_token.top_tokens = token.top_tokens;
+      raw_token.top_logprobs = token.top_logprobs;
+      const torch::Tensor token_embeddings =
+          row_embeddings.defined() && tokens.defined() && tokens.dim() == 2
+              ? row_embeddings[token_index]
+              : row_embeddings;
+      if (token_embeddings.defined() && token_embeddings.numel() > 0) {
+        const float* values = token_embeddings.const_data_ptr<float>();
+        raw_token.embeddings.assign(values, values + token_embeddings.numel());
+      }
+      row.tokens.emplace_back(std::move(raw_token));
+    }
+    if (row_index < static_cast<int64_t>(sampled.mm_embeddings.size())) {
+      row.mm_embeddings = sampled.mm_embeddings[row_index];
+    }
+    if (!speculative_token_stats.empty()) {
+      row.speculative_token_stats = speculative_token_stats[row_index];
+    }
+    encoded.outputs.emplace_back(std::move(row));
+  }
+
+  uint64_t payload_bytes = sizeof(uint64_t);
+  for (const RawSampleOutput& row : encoded.outputs) {
+    payload_bytes += calculate_raw_sample_output_size(row);
+  }
+  payload_bytes +=
+      calculate_json_object_errors_size(encoded.json_object_errors);
+  payload_bytes += get_vector_size(encoded.expert_load_data);
+  payload_bytes += get_vector_size(encoded.src_seq_idxes);
+  payload_bytes += get_vector_size(encoded.out_tokens);
+  payload_bytes += get_vector_size(encoded.out_logprobs);
+  payload_bytes += sizeof(int64_t) + sizeof(bool);
+  if (size() < static_cast<int64_t>(sizeof(ControlMetadata)) ||
+      payload_bytes > static_cast<uint64_t>(size()) - sizeof(ControlMetadata)) {
+    LOG(ERROR) << "REC shared-memory output size exceeds segment capacity";
+    return false;
+  }
+  char* cursor = static_cast<char*>(base_address()) + sizeof(ControlMetadata);
+  write_data(cursor, static_cast<uint64_t>(encoded.outputs.size()));
+  for (const RawSampleOutput& row : encoded.outputs) {
+    write_raw_sample_output(cursor, row);
+  }
+  write_json_object_errors(cursor, encoded.json_object_errors);
+  write_vector(cursor, encoded.expert_load_data);
+  write_vector(cursor, encoded.src_seq_idxes);
+  write_vector(cursor, encoded.out_tokens);
+  write_vector(cursor, encoded.out_logprobs);
+  write_data(cursor, encoded.prepared_token);
+  write_data(cursor, /*has_dit_output=*/false);
+  std::atomic_thread_fence(std::memory_order_release);
+  control_ptr_->version = ++last_version_;
+  return true;
+}
+
+bool ForwardSharedMemoryManager::rec_output_read(RawForwardOutput& output) {
+  while (control_ptr_->version == last_version_) {
+    std::this_thread::sleep_for(std::chrono::nanoseconds(kNumWaitNanoseconds));
+  }
+  last_version_ = control_ptr_->version;
+  std::atomic_thread_fence(std::memory_order_acquire);
+  if (size() < static_cast<int64_t>(sizeof(ControlMetadata))) {
+    return false;
+  }
+  ShmOutputReader reader(
+      static_cast<const char*>(base_address()) + sizeof(ControlMetadata),
+      static_cast<uint64_t>(size()) - sizeof(ControlMetadata));
+  RawForwardOutput decoded;
+  uint64_t rows = 0;
+  constexpr uint64_t kMinimumRowBytes =
+      sizeof(uint64_t) + sizeof(int32_t) + 2 * sizeof(int64_t);
+  if (!reader.read_count(rows, kMinimumRowBytes)) {
+    return false;
+  }
+  decoded.outputs.resize(rows);
+  for (RawSampleOutput& row : decoded.outputs) {
+    if (!read_raw_sample_output(reader, row)) {
+      return false;
+    }
+  }
+  bool has_dit_output = false;
+  if (!read_json_object_errors(reader, decoded.json_object_errors) ||
+      !reader.read_vector(decoded.expert_load_data) ||
+      !reader.read_vector(decoded.src_seq_idxes) ||
+      !reader.read_vector(decoded.out_tokens) ||
+      !reader.read_vector(decoded.out_logprobs) ||
+      !reader.read(decoded.prepared_token) ||
+      !reader.read_bool(has_dit_output) || has_dit_output ||
+      decoded.src_seq_idxes.size() != decoded.out_tokens.size() ||
+      decoded.src_seq_idxes.size() != decoded.out_logprobs.size()) {
+    LOG(ERROR) << "Invalid REC shared-memory output fields";
+    return false;
+  }
+  output = std::move(decoded);
+  return true;
+}
+
+bool ForwardSharedMemoryManager::dit_output_write(
+    const DiTForwardOutput& output) {
+  for (const torch::Tensor& tensor : output.tensors) {
+    if (!valid_dense_output_tensor(tensor)) {
+      LOG(ERROR) << "Invalid DiT shared-memory output tensor";
+      return false;
+    }
+  }
+  const bool has_output =
+      !output.tensors.empty() || !output.text_output.empty();
+  // Preserve the existing RAW_OUTPUT framing while writing only DiT data.
+  uint64_t payload_bytes =
+      6 * sizeof(uint64_t) + sizeof(int64_t) + sizeof(bool);
+  if (has_output) {
+    payload_bytes += get_dit_forward_output_size(output);
+  }
+  if (size() < static_cast<int64_t>(sizeof(ControlMetadata)) ||
+      payload_bytes > static_cast<uint64_t>(size()) - sizeof(ControlMetadata)) {
+    LOG(ERROR) << "DiT shared-memory output size exceeds segment capacity";
+    return false;
+  }
+  char* cursor = static_cast<char*>(base_address()) + sizeof(ControlMetadata);
+  write_data(cursor, uint64_t{0});  // token rows
+  write_data(cursor, uint64_t{0});  // JSON errors
+  write_data(cursor, uint64_t{0});  // expert loads
+  write_data(cursor, uint64_t{0});  // beam source rows
+  write_data(cursor, uint64_t{0});  // beam tokens
+  write_data(cursor, uint64_t{0});  // beam probabilities
+  write_data(cursor, int64_t{-1});  // EPLB prepare token
+  write_data(cursor, has_output);
+  if (has_output) {
+    write_dit_forward_output(cursor, output);
+  }
+  std::atomic_thread_fence(std::memory_order_release);
+  control_ptr_->version = ++last_version_;
+  return true;
+}
+
+bool ForwardSharedMemoryManager::dit_output_read(RawForwardOutput& output) {
+  while (control_ptr_->version == last_version_) {
+    std::this_thread::sleep_for(std::chrono::nanoseconds(kNumWaitNanoseconds));
+  }
+  last_version_ = control_ptr_->version;
+  std::atomic_thread_fence(std::memory_order_acquire);
+  if (size() < static_cast<int64_t>(sizeof(ControlMetadata))) {
+    return false;
+  }
+  ShmOutputReader reader(
+      static_cast<const char*>(base_address()) + sizeof(ControlMetadata),
+      static_cast<uint64_t>(size()) - sizeof(ControlMetadata));
+  uint64_t token_rows = 0;
+  uint64_t json_errors = 0;
+  uint64_t expert_loads = 0;
+  uint64_t beam_rows = 0;
+  uint64_t beam_tokens = 0;
+  uint64_t beam_probabilities = 0;
+  int64_t prepare_token = -1;
+  bool has_output = false;
+  if (!reader.read(token_rows) || token_rows != 0 ||
+      !reader.read(json_errors) || json_errors != 0 ||
+      !reader.read(expert_loads) || expert_loads != 0 ||
+      !reader.read(beam_rows) || beam_rows != 0 || !reader.read(beam_tokens) ||
+      beam_tokens != 0 || !reader.read(beam_probabilities) ||
+      beam_probabilities != 0 || !reader.read(prepare_token) ||
+      prepare_token != -1 || !reader.read_bool(has_output)) {
+    LOG(ERROR) << "Invalid DiT shared-memory output fields";
+    return false;
+  }
+  RawForwardOutput decoded;
+  if (has_output) {
+    if (!reader.read_tensors(decoded.dit_forward_output.tensors)) {
+      return false;
+    }
+    uint64_t text_count = 0;
+    if (!reader.read_count(text_count, sizeof(uint64_t))) {
+      return false;
+    }
+    decoded.dit_forward_output.text_output.resize(text_count);
+    for (std::string& text : decoded.dit_forward_output.text_output) {
+      if (!reader.read_string(text)) {
+        return false;
+      }
+    }
+  }
+  output = std::move(decoded);
+  return true;
 }
 
 void ForwardSharedMemoryManager::clear() {

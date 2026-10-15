@@ -14,7 +14,7 @@ limitations under the License.
 ==============================================================================*/
 
 #pragma once
-#include "comm_channel.h"
+#include "core/distributed_runtime/comm_channel.h"
 #include "runtime/forward_shared_memory_manager.h"
 #include "runtime/options.h"
 
@@ -45,14 +45,6 @@ class ShmChannel : public CommChannel {
       folly::Promise<std::optional<RawForwardOutput>>& promise) override;
 
  private:
-  template <typename Input>
-  bool execute_model_async_impl(
-      const Input& input,
-      folly::Promise<std::optional<RawForwardOutput>>& promise);
-
-  bool execute_model_with_shm(const LlmForwardInput& input,
-                              RawForwardOutput& raw_output);
-
   bool enable_shm_ = false;
   std::unique_ptr<ForwardSharedMemoryManager> input_shm_manager_ = nullptr;
   std::unique_ptr<ForwardSharedMemoryManager> output_shm_manager_ = nullptr;

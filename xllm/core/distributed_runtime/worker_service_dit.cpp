@@ -63,24 +63,9 @@ void WorkerService::poll_dit_shm(
     }
     Timer timer;
     ForwardOutput cpu_output;
-    std::vector<SpeculativeTokenStats> speculative_token_stats;
     step_dit_model(input, cpu_output);
-    const bool write_ok = output_shm_manager->raw_output_write(
-        cpu_output.sample_output.next_tokens,
-        cpu_output.sample_output.logprobs,
-        cpu_output.sample_output.top_tokens,
-        cpu_output.sample_output.top_logprobs,
-        cpu_output.sample_output.embeddings,
-        cpu_output.sample_output.mm_embeddings,
-        speculative_token_stats,
-        cpu_output.dit_forward_output.tensors,
-        cpu_output.dit_forward_output.text_output,
-        cpu_output.expert_load_data,
-        cpu_output.prepared_token,
-        cpu_output.beam_search_output.src_seq_idxes,
-        cpu_output.beam_search_output.out_tokens,
-        cpu_output.beam_search_output.out_logprobs,
-        cpu_output.json_object_errors);
+    const bool write_ok =
+        output_shm_manager->dit_output_write(cpu_output.dit_forward_output);
     CHECK(write_ok) << "dit worker output shared memory write failed";
     COUNTER_ADD(worker_service_latency_seconds, timer.elapsed_seconds());
   }
