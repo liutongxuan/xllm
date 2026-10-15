@@ -20,14 +20,15 @@ limitations under the License.
 #include <mutex>
 #include <string>
 
+#include "core/distributed_runtime/xservice_client.h"
+#include "core/framework/sampling/json_object_grammar.h"
 #include "disagg_pd.pb.h"
-#include "distributed_runtime/xservice_client.h"
-#include "framework/sampling/json_object_grammar.h"
 
 namespace xllm {
 
 class Engine;
 class Request;
+class Sequence;
 class DisaggPDScheduler;
 
 // a class to handle disagg_pd requests
@@ -69,6 +70,11 @@ class DisaggPDServiceImpl {
   std::mutex json_object_grammar_mutex_;
   std::shared_ptr<const JsonObjectGrammar> json_object_grammar_;
   std::shared_ptr<const JsonObjectGrammar> json_reasoning_grammar_;
+
+ private:
+  void append_virtual_kv_cache_offsets(Sequence& sequence,
+                                       const std::string& request_id,
+                                       proto::DisaggResponse* response);
 };
 
 }  // namespace xllm

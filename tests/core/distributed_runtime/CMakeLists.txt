@@ -175,3 +175,14 @@ cc_test(
     :distributed_runtime
     GTest::gtest_main
 )
+
+cc_test(
+  NO_NPU_RUNTIME
+  NAME
+    disagg_pd_kv_response_test
+  SRCS
+    disagg_pd_kv_response_test.cpp
+  DEPS
+    :distributed_runtime
+    GTest::gtest_main
+)
