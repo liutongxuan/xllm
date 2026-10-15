@@ -516,8 +516,9 @@ void ForwardInputBuilder::process_sequences() {
 
 void ForwardInputBuilder::process_sequences_multithreaded() {
   const size_t threads_num = thread_pool_->size();
+  const size_t sequence_count = static_cast<size_t>(num_sequences_);
   const size_t sequences_per_thread =
-      (num_sequences_ + threads_num - 1) / threads_num;
+      (sequence_count + threads_num - 1) / threads_num;
 
   BlockingCounter counter(threads_num);
 
@@ -528,10 +529,10 @@ void ForwardInputBuilder::process_sequences_multithreaded() {
   for (size_t thread_idx = 0; thread_idx < threads_num; ++thread_idx) {
     BuilderState& thread_state = thread_builder_states[thread_idx];
     thread_state.batch_forward_type = state_.batch_forward_type;
-    const size_t thread_start_idx = thread_idx * sequences_per_thread;
+    const size_t thread_start_idx =
+        std::min(thread_idx * sequences_per_thread, sequence_count);
     const size_t thread_end_idx =
-        std::min(thread_start_idx + sequences_per_thread,
-                 static_cast<size_t>(num_sequences_));
+        std::min(thread_start_idx + sequences_per_thread, sequence_count);
     size_t thread_token_reserve = 0;
     for (size_t sequence_idx = thread_start_idx; sequence_idx < thread_end_idx;
          ++sequence_idx) {
@@ -581,18 +582,17 @@ void ForwardInputBuilder::process_sequences_multithreaded() {
   // parallel processing function
   auto process_sequences_range =
       [&](size_t thread_start_idx, size_t thread_end_idx, BuilderState& state) {
-        for (size_t i = thread_start_idx;
-             i < thread_end_idx && i < static_cast<size_t>(num_sequences_);
-             ++i) {
+        for (size_t i = thread_start_idx; i < thread_end_idx; ++i) {
           process_single_sequence(i, &state);
         }
       };
 
   // Start parallel tasks
   for (size_t thread_idx = 0; thread_idx < threads_num; ++thread_idx) {
-    size_t thread_start_idx = thread_idx * sequences_per_thread;
-    size_t thread_end_idx = std::min(thread_start_idx + sequences_per_thread,
-                                     static_cast<size_t>(num_sequences_));
+    const size_t thread_start_idx =
+        std::min(thread_idx * sequences_per_thread, sequence_count);
+    const size_t thread_end_idx =
+        std::min(thread_start_idx + sequences_per_thread, sequence_count);
 
     thread_pool_->schedule([process_sequences_range,
                             thread_start_idx,

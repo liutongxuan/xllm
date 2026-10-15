@@ -2522,6 +2522,61 @@ TEST(BatchTest, SampleRequestKeepsThreadedForwardBuilderOffsetsStable) {
             std::vector<int32_t>({-1, -1}));
 }
 
+TEST(BatchTest, ThreadedMropeIgnoresEmptyTailPartitions) {
+  constexpr size_t kSequenceCount = 17;
+  constexpr size_t kThreadCount = 16;
+  constexpr size_t kTokensPerSequence = 3856;
+
+  BlockManager::Options options;
+  options.num_blocks(static_cast<uint32_t>(kSequenceCount + 1))
+      .block_size(static_cast<uint32_t>(kTokensPerSequence + 8));
+  BlockManagerImpl manager(options);
+
+  std::vector<Sequence> sequence_storage;
+  sequence_storage.reserve(kSequenceCount);
+  std::vector<Sequence*> sequences;
+  sequences.reserve(kSequenceCount);
+  for (size_t sequence_idx = 0; sequence_idx < kSequenceCount; ++sequence_idx) {
+    sequence_storage.emplace_back(make_basic_sequence(std::vector<int32_t>(
+        kTokensPerSequence, static_cast<int32_t>(sequence_idx))));
+    Sequence& sequence = sequence_storage.back();
+    sequence.set_mrope_positions(torch::zeros(
+        {3, static_cast<int64_t>(kTokensPerSequence)}, torch::kInt));
+    sequence.add_blocks(BlockType::KV, manager.allocate(/*num_blocks=*/1));
+    sequences.emplace_back(&sequence);
+  }
+
+  const std::vector<uint32_t> allowed_max_tokens(kSequenceCount,
+                                                 kTokensPerSequence);
+  const std::vector<torch::Tensor> input_embeddings;
+  const std::vector<MMData> mm_data;
+  ModelArgs args;
+  args.rope_scaling_rope_type("mrope");
+  ThreadPool thread_pool(kThreadCount);
+  ForwardInputBuilder builder(sequences,
+                              allowed_max_tokens,
+                              input_embeddings,
+                              mm_data,
+                              /*swap_block_transfer_infos=*/nullptr,
+                              /*batch_id=*/1,
+                              &args,
+                              BatchForwardType::PREFILL,
+                              /*cp_size=*/1,
+                              &thread_pool);
+
+  LlmForwardInput forward_input;
+  ASSERT_NO_THROW({
+    forward_input = builder.build_forward_input(/*num_decoding_tokens=*/1,
+                                                /*min_decoding_batch_size=*/0);
+  });
+  EXPECT_EQ(forward_input.input_params.meta.num_sequences,
+            static_cast<int32_t>(kSequenceCount));
+  ASSERT_EQ(forward_input.positions.dim(), 2);
+  EXPECT_EQ(forward_input.positions.size(0), 3);
+  EXPECT_EQ(forward_input.positions.size(1),
+            static_cast<int64_t>(kSequenceCount * kTokensPerSequence));
+}
+
 TEST(BatchTest, DecodeMinBatchSizeDoesNotPadTransportState) {
   torch::Device device(Platform::type_torch(), 0);
   const uint32_t n_blocks = 8;

@@ -127,10 +127,10 @@ class BatchGroupFixture final {
                     size_t prompt_tokens,
                     Workload workload)
       : batches_(dp_size),
-        token_counts_(dp_size, 0),
-        sequence_counts_(dp_size, 0) {
-    stopping_checker_.set_max_generated_tokens(32);
-    stopping_checker_.set_ignore_eos(true);
+        token_counts_(dp_size, /*value=*/0),
+        sequence_counts_(dp_size, /*value=*/0) {
+    stopping_checker_.set_max_generated_tokens(/*max_generated_tokens=*/32);
+    stopping_checker_.set_ignore_eos(/*ignore_eos=*/true);
     managers_.reserve(dp_size);
     sequences_.reserve(dp_size * sequences_per_rank);
     initial_kv_states_.reserve(dp_size * sequences_per_rank);
@@ -204,7 +204,7 @@ class BatchGroupFixture final {
 
  private:
   std::unique_ptr<Sequence> make_sequence(size_t prompt_tokens, bool decode) {
-    const std::vector<int32_t> token_ids(prompt_tokens, 7);
+    const std::vector<int32_t> token_ids(prompt_tokens, /*value=*/7);
     SequenceParams params;
     params.seq_capacity = prompt_tokens + 8;
     params.stopping_checker = &stopping_checker_;
@@ -279,7 +279,9 @@ void benchmark_create_inputs(benchmark::State& state, Workload workload) {
   }
   for (auto _ : state) {
     state.PauseTiming();
-    inputs.clear();
+    // Production passes a fresh output vector. Release reused storage while
+    // timing is paused so allocator cleanup is excluded from the measurement.
+    std::vector<LlmForwardInput>().swap(inputs);
     fixture.restore();
     state.ResumeTiming();
     factory.create_inputs(
