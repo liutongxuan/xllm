@@ -3330,7 +3330,7 @@ class ShmOutputReader final {
       return false;
     }
     if (rank == 0) {
-      tensor = {};
+      tensor = torch::Tensor();
       return true;
     }
     std::vector<int64_t> shape(rank);
