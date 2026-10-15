@@ -127,3 +127,27 @@ target_link_libraries(batch_factory_benchmark
 target_link_options(batch_factory_benchmark
                     PRIVATE
                     $<$<BOOL:${USE_MLU}>:-Wl,--no-as-needed>)
+
+# Engine-owned factory: rank-local builders and global DP metadata, on CPU.
+cc_binary(
+  NAME
+    forward_input_factory_benchmark
+  SRCS
+    forward_input_factory_benchmark.cpp
+  DEPS
+    :batch
+    torch
+    benchmark::benchmark
+    $<$<BOOL:${USE_MLU}>:torch_mlu>
+    $<$<BOOL:${USE_NPU}>:torch_npu>
+)
+target_link_libraries(forward_input_factory_benchmark
+                      PUBLIC
+                      Python::Python
+                      $<$<BOOL:${USE_NPU}>:ascendcl>
+                      $<$<BOOL:${USE_NPU}>:hccl>
+                      $<$<BOOL:${USE_NPU}>:c_sec>
+                      $<$<BOOL:${USE_NPU}>:nnopbase>)
+target_link_options(forward_input_factory_benchmark
+                    PRIVATE
+                    $<$<BOOL:${USE_MLU}>:-Wl,--no-as-needed>)
