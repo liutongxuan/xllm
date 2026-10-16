@@ -41,6 +41,26 @@ constexpr std::array kTokenOutputMethods = {
     std::pair{&ForwardSharedMemoryManager::rec_output_write,
               &ForwardSharedMemoryManager::rec_output_read}};
 
+template <typename Value>
+void append_wire_value(std::string& frame, const Value& value) {
+  frame.append(reinterpret_cast<const char*>(&value), sizeof(value));
+}
+
+std::string make_metadata_frame() {
+  std::string frame;
+  append_wire_value(frame, uint64_t{1});
+  const std::string name = "token_tags";
+  append_wire_value(frame, static_cast<uint64_t>(name.size()));
+  frame.append(name);
+  append_wire_value(frame, uint64_t{1});  // tensor rank
+  append_wire_value(frame, uint64_t{2});  // tensor dimension
+  append_wire_value(frame, static_cast<int8_t>(torch::kInt64));
+  append_wire_value(frame, uint64_t{2 * sizeof(int64_t)});
+  append_wire_value(frame, int64_t{0});
+  append_wire_value(frame, int64_t{1});
+  return frame;
+}
+
 class ForwardSharedMemoryOutputTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -76,6 +96,21 @@ class ForwardSharedMemoryOutputTest : public ::testing::Test {
         ->version;
   }
 
+  void replace_empty_token_metadata(const std::string& metadata_frame) {
+    ASSERT_GE(metadata_frame.size(), sizeof(uint64_t));
+    ASSERT_LE(kTokenMetadataOffset + metadata_frame.size(), kSegmentBytes);
+    char* metadata =
+        static_cast<char*>(writer_->base_address()) + kTokenMetadataOffset;
+    std::memmove(metadata + metadata_frame.size(),
+                 metadata + sizeof(uint64_t),
+                 kSegmentBytes - kTokenMetadataOffset - metadata_frame.size());
+    std::memcpy(metadata, metadata_frame.data(), metadata_frame.size());
+  }
+
+  // One ordinary token without probabilities, embeddings, or MM tensors.
+  static constexpr size_t kTokenMetadataOffset =
+      sizeof(ControlMetadata) + 5 * sizeof(uint64_t) + sizeof(int64_t) +
+      sizeof(bool) + sizeof(int32_t);
   static constexpr size_t kSegmentBytes = 4096;
   bool previous_contiguous_ = false;
   bool previous_eplb_ = false;
@@ -277,6 +312,114 @@ TEST_F(ForwardSharedMemoryOutputTest,
 }
 
 TEST_F(ForwardSharedMemoryOutputTest,
+       TokenDomainsReadOwnedMetadataWithCompatibleRowFraming) {
+  RawForwardOutput output;
+  const torch::Tensor expected_tags = torch::tensor({0, 1}, torch::kInt64);
+  for (const auto& [write, read] : kTokenOutputMethods) {
+    ForwardOutput source;
+    source.sample_output.next_tokens = torch::tensor({7}, torch::kInt32);
+    source.prepared_token = 45;
+    ASSERT_TRUE((writer_.get()->*write)(source, {{2, 3}}));
+    uint64_t metadata_count = 1;
+    std::memcpy(&metadata_count,
+                static_cast<const char*>(writer_->base_address()) +
+                    kTokenMetadataOffset,
+                sizeof(metadata_count));
+    EXPECT_EQ(metadata_count, 0);
+    replace_empty_token_metadata(make_metadata_frame());
+    ASSERT_TRUE((reader_.get()->*read)(output));
+    ASSERT_EQ(output.outputs.size(), 1);
+    EXPECT_EQ(output.outputs[0].tokens[0].id, 7);
+    ASSERT_EQ(output.outputs[0].mm_embeddings_metadata.size(), 1);
+    EXPECT_TRUE(
+        torch::equal(output.outputs[0].mm_embeddings_metadata.at("token_tags"),
+                     expected_tags));
+    EXPECT_EQ(output.outputs[0].speculative_token_stats.accepted_tokens, 2);
+    EXPECT_EQ(output.outputs[0].speculative_token_stats.proposed_tokens, 3);
+    EXPECT_EQ(output.prepared_token, 45);
+
+    ASSERT_TRUE((writer_.get()->*write)(ForwardOutput(), {}));
+    RawForwardOutput empty;
+    ASSERT_TRUE((reader_.get()->*read)(empty));
+    EXPECT_TRUE(empty.outputs.empty());
+    EXPECT_TRUE(
+        torch::equal(output.outputs[0].mm_embeddings_metadata.at("token_tags"),
+                     expected_tags));
+  }
+  reader_.reset();
+  writer_.reset();
+  EXPECT_TRUE(
+      torch::equal(output.outputs[0].mm_embeddings_metadata.at("token_tags"),
+                   expected_tags));
+}
+
+TEST_F(ForwardSharedMemoryOutputTest,
+       MalformedMetadataFieldsFailWithoutMutatingOutput) {
+  const std::array<size_t, 3> malformed_offsets = {
+      0, sizeof(uint64_t), make_metadata_frame().size() - 3 * sizeof(uint64_t)};
+  for (const auto& [write, read] : kTokenOutputMethods) {
+    for (size_t offset : malformed_offsets) {
+      ForwardOutput source;
+      source.sample_output.next_tokens = torch::tensor({7}, torch::kInt32);
+      ASSERT_TRUE((writer_.get()->*write)(source, {}));
+      std::string metadata_frame = make_metadata_frame();
+      const uint64_t invalid_size = std::numeric_limits<uint64_t>::max();
+      std::memcpy(
+          metadata_frame.data() + offset, &invalid_size, sizeof(invalid_size));
+      replace_empty_token_metadata(metadata_frame);
+      RawForwardOutput output;
+      output.prepared_token = 81;
+      EXPECT_FALSE((reader_.get()->*read)(output));
+      EXPECT_TRUE(output.outputs.empty());
+      EXPECT_EQ(output.prepared_token, 81);
+    }
+  }
+}
+
+TEST_F(ForwardSharedMemoryOutputTest,
+       MetadataFramingIsIncludedInTokenCapacityChecks) {
+  // This embedding fits only when the required metadata count is omitted.
+  constexpr size_t kFixedFrameBytes = 11 * sizeof(uint64_t) +
+                                      4 * sizeof(int64_t) + 2 * sizeof(bool) +
+                                      sizeof(int32_t);
+  const int64_t embedding_width = static_cast<int64_t>(
+      (kSegmentBytes - sizeof(ControlMetadata) - kFixedFrameBytes) /
+          sizeof(float) +
+      1);
+  for (const auto& methods : kTokenOutputMethods) {
+    const auto write = methods.first;
+    ForwardOutput valid;
+    valid.sample_output.next_tokens = torch::tensor({7}, torch::kInt32);
+    ASSERT_TRUE((writer_.get()->*write)(valid, {}));
+    const std::string published(
+        static_cast<const char*>(writer_->base_address()), kSegmentBytes);
+    ForwardOutput overflow;
+    overflow.sample_output.embeddings =
+        torch::ones({1, embedding_width}, torch::kFloat32);
+    EXPECT_FALSE((writer_.get()->*write)(overflow, {}));
+    EXPECT_EQ(
+        std::memcmp(writer_->base_address(), published.data(), kSegmentBytes),
+        0);
+  }
+}
+
+TEST_F(ForwardSharedMemoryOutputTest,
+       TokenDomainsRejectAudioWithoutPublishing) {
+  ForwardOutput source;
+  source.sample_output.next_tokens = torch::tensor({7}, torch::kInt32);
+  ASSERT_TRUE(writer_->llm_output_write(source, {}));
+  const std::string published(static_cast<const char*>(writer_->base_address()),
+                              kSegmentBytes);
+  source.dit_forward_output.audio_tensors = {torch::ones({2})};
+  for (const auto& methods : kTokenOutputMethods) {
+    EXPECT_FALSE((writer_.get()->*methods.first)(source, {}));
+    EXPECT_EQ(
+        std::memcmp(writer_->base_address(), published.data(), kSegmentBytes),
+        0);
+  }
+}
+
+TEST_F(ForwardSharedMemoryOutputTest,
        VlmPreservesSpeculativeTokensWithMultimodalOutput) {
   ForwardOutput source;
   source.sample_output.next_tokens = torch::tensor({{7, 8, -1}}, torch::kInt64);
@@ -378,6 +521,21 @@ TEST_F(ForwardSharedMemoryOutputTest, DiTPreservesTextOnlyOutput) {
 }
 
 TEST_F(ForwardSharedMemoryOutputTest,
+       DiTPreservesAudioOnlyOutputAfterSourceMutation) {
+  DiTForwardOutput source;
+  source.audio_tensors = {torch::tensor({0.25f, -0.5f})};
+  ASSERT_TRUE(writer_->dit_output_write(source));
+  source.audio_tensors[0].zero_();
+  RawForwardOutput output;
+  ASSERT_TRUE(reader_->dit_output_read(output));
+  EXPECT_TRUE(output.dit_forward_output.tensors.empty());
+  EXPECT_TRUE(output.dit_forward_output.text_output.empty());
+  ASSERT_EQ(output.dit_forward_output.audio_tensors.size(), 1);
+  EXPECT_TRUE(torch::equal(output.dit_forward_output.audio_tensors[0],
+                           torch::tensor({0.25f, -0.5f})));
+}
+
+TEST_F(ForwardSharedMemoryOutputTest,
        LlmAllowsMissingExpertDataWhenEplbIsEnabled) {
   EPLBConfig::get_instance().enable_eplb(true);
   ForwardOutput source;
@@ -428,6 +586,7 @@ TEST_F(ForwardSharedMemoryOutputTest, EmptyDiTReadClearsPreviousOutput) {
   DiTForwardOutput source;
   source.text_output = {"first output"};
   source.tensors = {torch::ones({2})};
+  source.audio_tensors = {torch::ones({3})};
   ASSERT_TRUE(writer_->dit_output_write(source));
   RawForwardOutput output;
   ASSERT_TRUE(reader_->dit_output_read(output));
@@ -436,24 +595,31 @@ TEST_F(ForwardSharedMemoryOutputTest, EmptyDiTReadClearsPreviousOutput) {
   ASSERT_TRUE(reader_->dit_output_read(output));
   EXPECT_TRUE(output.dit_forward_output.text_output.empty());
   EXPECT_TRUE(output.dit_forward_output.tensors.empty());
+  EXPECT_TRUE(output.dit_forward_output.audio_tensors.empty());
 }
 
 TEST_F(ForwardSharedMemoryOutputTest,
        DiTTensorsSurviveOverwriteAndSegmentRelease) {
   const torch::Tensor expected = torch::tensor({1.0f, 2.0f, 3.0f});
+  const torch::Tensor expected_audio = torch::tensor({0.25f, -0.5f});
   DiTForwardOutput source;
   source.tensors = {expected};
+  source.audio_tensors = {expected_audio};
   source.text_output = {"first"};
   ASSERT_TRUE(writer_->dit_output_write(source));
   RawForwardOutput output;
   ASSERT_TRUE(reader_->dit_output_read(output));
   ASSERT_EQ(output.dit_forward_output.tensors.size(), 1);
   source.tensors = {torch::zeros({3})};
+  source.audio_tensors = {torch::zeros({2})};
   source.text_output = {"other"};
   ASSERT_TRUE(writer_->dit_output_write(source));
   reader_.reset();
   writer_.reset();
   EXPECT_TRUE(torch::equal(output.dit_forward_output.tensors[0], expected));
+  ASSERT_EQ(output.dit_forward_output.audio_tensors.size(), 1);
+  EXPECT_TRUE(
+      torch::equal(output.dit_forward_output.audio_tensors[0], expected_audio));
   EXPECT_EQ(output.dit_forward_output.text_output,
             (std::vector<std::string>{"first"}));
 }
@@ -499,9 +665,17 @@ TEST_F(ForwardSharedMemoryOutputTest,
   valid.text_output = {"first"};
   ASSERT_TRUE(writer_->dit_output_write(valid));
   const uint64_t version = published_version();
+  const std::string published(static_cast<const char*>(writer_->base_address()),
+                              kSegmentBytes);
   DiTForwardOutput overflow;
   overflow.text_output = {std::string(kSegmentBytes, 'x')};
   EXPECT_FALSE(writer_->dit_output_write(overflow));
+  overflow = DiTForwardOutput();
+  overflow.audio_tensors = {
+      torch::ones({static_cast<int64_t>(kSegmentBytes)}, torch::kFloat32)};
+  EXPECT_FALSE(writer_->dit_output_write(overflow));
+  EXPECT_EQ(
+      std::memcmp(writer_->base_address(), published.data(), kSegmentBytes), 0);
   EXPECT_EQ(published_version(), version);
   RawForwardOutput output;
   ASSERT_TRUE(reader_->dit_output_read(output));
@@ -515,6 +689,40 @@ TEST_F(ForwardSharedMemoryOutputTest, InvalidDiTTensorDoesNotPublishOutput) {
   source.tensors = {torch::tensor(1.0f)};
   EXPECT_FALSE(writer_->dit_output_write(source));
   EXPECT_EQ(published_version(), 0);
+}
+
+TEST_F(ForwardSharedMemoryOutputTest,
+       InvalidDiTAudioTensorDoesNotPublishOutput) {
+  DiTForwardOutput source;
+  source.audio_tensors = {torch::Tensor()};
+  EXPECT_FALSE(writer_->dit_output_write(source));
+  source.audio_tensors = {torch::tensor(1.0f)};
+  EXPECT_FALSE(writer_->dit_output_write(source));
+  source.audio_tensors = {torch::ones({2, 2}).transpose(0, 1)};
+  EXPECT_FALSE(writer_->dit_output_write(source));
+  EXPECT_EQ(published_version(), 0);
+}
+
+TEST_F(ForwardSharedMemoryOutputTest,
+       MalformedAudioTensorSizeFailsWithoutMutation) {
+  DiTForwardOutput source;
+  source.audio_tensors = {torch::ones({2})};
+  ASSERT_TRUE(writer_->dit_output_write(source));
+  // Empty image/text vectors precede the audio vector and its tensor header.
+  constexpr size_t kAudioTensorBytesOffset =
+      sizeof(ControlMetadata) + 6 * sizeof(uint64_t) + sizeof(int64_t) +
+      sizeof(bool) + 2 * sizeof(int32_t) + 2 * sizeof(uint64_t) +
+      sizeof(int64_t) + sizeof(int8_t);
+  const uint64_t invalid_bytes = kSegmentBytes;
+  std::memcpy(
+      static_cast<char*>(writer_->base_address()) + kAudioTensorBytesOffset,
+      &invalid_bytes,
+      sizeof(invalid_bytes));
+  RawForwardOutput output;
+  output.dit_forward_output.text_output = {"previous"};
+  EXPECT_FALSE(reader_->dit_output_read(output));
+  EXPECT_EQ(output.dit_forward_output.text_output,
+            (std::vector<std::string>{"previous"}));
 }
 
 TEST_F(ForwardSharedMemoryOutputTest,
