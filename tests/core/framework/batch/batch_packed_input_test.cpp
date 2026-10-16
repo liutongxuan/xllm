@@ -702,6 +702,107 @@ TEST(BatchPackedInputTest, RepeatedVlmUnpackReplacesMultiBlockTables) {
   expect_repeated_unpack_replaces_multi_block_tables<VlmForwardInput>();
 }
 
+namespace {
+
+template <typename Input>
+void expect_packed_sample_count_hint() {
+  ScopedContiguousInputBuffer contiguous_input_buffer(/*enabled=*/false);
+  Input source;
+  source.sampling_params.selected_token_idxes =
+      torch::tensor({0, 1}, torch::kInt32);
+  source.sampling_params.sample_idxes = torch::tensor({0, 1}, torch::kInt32);
+  proto::PackedForwardInput packed;
+  ASSERT_TRUE(source.to_packed_proto(&packed));
+  ASSERT_TRUE(packed.has_sample_count());
+  EXPECT_EQ(packed.sample_count(), 2);
+  Input lazy;
+  ASSERT_TRUE(lazy.from_packed_proto(packed));
+  EXPECT_EQ(lazy.input_host_sample_count, 2);
+  EXPECT_EQ(lazy.clone().input_host_sample_count, 2);
+  EXPECT_FALSE(lazy.sampling_params.sample_idxes.defined());
+  EXPECT_FALSE(lazy.sampling_params.selected_token_idxes.defined());
+
+  const void* retained_data = lazy.runtime.input_host_buffer.data_ptr();
+  packed.set_sample_count(-1);
+  EXPECT_FALSE(lazy.from_packed_proto(packed));
+  EXPECT_EQ(lazy.runtime.input_host_buffer.data_ptr(), retained_data);
+  packed.set_sample_count(std::numeric_limits<int32_t>::max());
+  EXPECT_FALSE(lazy.from_packed_proto(packed));
+  packed.set_sample_count(static_cast<int32_t>(
+      read_packed_uint64(packed.payload(), /*offset=*/32) / sizeof(int32_t) +
+      1));
+  EXPECT_FALSE(lazy.from_packed_proto(packed));
+
+  const std::string retained_proto = packed.SerializeAsString();
+  source.sampling_params.sample_idxes =
+      source.sampling_params.sample_idxes.reshape({1, 2});
+  EXPECT_FALSE(source.to_packed_proto(&packed));
+  EXPECT_EQ(packed.SerializeAsString(), retained_proto);
+
+  packed.clear_sample_count();
+  ASSERT_TRUE(lazy.from_packed_proto(packed));
+  EXPECT_EQ(lazy.input_host_sample_count, kUnknownPackedSampleCount);
+  Input unpacked;
+  ASSERT_TRUE(detail::unpack_from_input_host_buffer(
+      lazy,
+      torch::Device(torch::kCPU),
+      torch::kFloat32,
+      unpacked,
+      /*materialize_device_buffer=*/false));
+  EXPECT_EQ(unpacked.input_host_sample_count, 2);
+
+  Input empty;
+  ASSERT_TRUE(empty.to_packed_proto(&packed));
+  ASSERT_TRUE(lazy.from_packed_proto(packed));
+  EXPECT_EQ(lazy.input_host_sample_count, 0);
+  DiTForwardInput dit;
+  ASSERT_TRUE(dit.to_packed_proto(&packed));
+  EXPECT_FALSE(packed.has_sample_count());
+}
+
+template <typename Input>
+void expect_packed_sample_count_mismatch_rejected() {
+  ScopedContiguousInputBuffer contiguous_input_buffer(/*enabled=*/false);
+  Input source;
+  source.sampling_params.selected_token_idxes =
+      torch::tensor({0, 1}, torch::kInt32);
+  source.sampling_params.sample_idxes = torch::tensor({0, 1}, torch::kInt32);
+  proto::PackedForwardInput packed;
+  ASSERT_TRUE(source.to_packed_proto(&packed));
+  packed.set_sample_count(1);
+  Input lazy;
+  ASSERT_TRUE(lazy.from_packed_proto(packed));
+  EXPECT_DEATH(
+      {
+        Input unpacked;
+        detail::unpack_from_input_host_buffer(
+            lazy,
+            torch::Device(torch::kCPU),
+            torch::kFloat32,
+            unpacked,
+            /*materialize_device_buffer=*/false);
+      },
+      "Packed sample count does not match sample_idxes");
+}
+
+}  // namespace
+
+TEST(BatchPackedInputTest, LlmPackedSampleCountAvoidsMaterialization) {
+  expect_packed_sample_count_hint<LlmForwardInput>();
+}
+
+TEST(BatchPackedInputTest, VlmPackedSampleCountAvoidsMaterialization) {
+  expect_packed_sample_count_hint<VlmForwardInput>();
+}
+
+TEST(BatchPackedInputDeathTest, LlmPackedSampleCountMustMatchPayload) {
+  expect_packed_sample_count_mismatch_rejected<LlmForwardInput>();
+}
+
+TEST(BatchPackedInputDeathTest, VlmPackedSampleCountMustMatchPayload) {
+  expect_packed_sample_count_mismatch_rejected<VlmForwardInput>();
+}
+
 TEST(BatchPackedInputTest, PackedProtoLazyUnpackRestoresSampleIdxes) {
   RequestSamplingParam sampling_param;
   sampling_param.logprobs = true;

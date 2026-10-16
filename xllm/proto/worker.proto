@@ -360,6 +360,9 @@ message PackedForwardInput {
   // reject unversioned payloads and unsupported versions before materializing
   // tensors.
   bytes payload = 1;
+  // Optional token-domain overlap hint, checked against sample_idxes during
+  // worker preparation. Missing values retain the legacy lazy-unpack path.
+  optional int32 sample_count = 2;
 }
 
 message LLMForwardRequest {

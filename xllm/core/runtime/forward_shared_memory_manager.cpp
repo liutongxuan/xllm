@@ -2892,6 +2892,12 @@ bool packed_proto_to_forward_input_impl(
                          layout)) {
     return false;
   }
+  if (packed_forward_input.has_sample_count() &&
+      (packed_forward_input.sample_count() < 0 ||
+       static_cast<uint64_t>(packed_forward_input.sample_count()) >
+           layout.tensor_arena_bytes / sizeof(int32_t))) {
+    return false;
+  }
 
   forward_input.runtime.input_host_buffer =
       torch::empty({static_cast<int64_t>(payload.size())},
@@ -2904,6 +2910,10 @@ bool packed_proto_to_forward_input_impl(
               payload.size());
   forward_input.runtime.input_host_buffer_has_layout = true;
   forward_input.runtime.device_tensors_ready = false;
+  forward_input.input_host_sample_count =
+      packed_forward_input.has_sample_count()
+          ? packed_forward_input.sample_count()
+          : kUnknownPackedSampleCount;
   return true;
 }
 
@@ -3493,6 +3503,9 @@ bool unpack_native_input_host_buffer(const Input& input,
       device,
       /*stream=*/nullptr,
       materialize_device_buffer);
+  CHECK(input.input_host_sample_count == kUnknownPackedSampleCount ||
+        input.input_host_sample_count == output.input_host_sample_count)
+      << "Packed sample count does not match sample_idxes";
   auto normalize_float_param = [&](torch::Tensor& tensor) {
     if (tensor.defined() && tensor.scalar_type() != dtype) {
       tensor = tensor.to(torch::TensorOptions().device(device).dtype(dtype));
@@ -3594,6 +3607,18 @@ bool token_input_to_packed_proto(
       return false;
     }
   }
+  int32_t sample_count = 0;
+  const auto& sampling = input.sampling_params;
+  if (sampling.selected_token_idxes.defined() &&
+      sampling.selected_token_idxes.numel() > 0 &&
+      sampling.sample_idxes.defined()) {
+    if (sampling.sample_idxes.dim() != 1 ||
+        sampling.sample_idxes.numel() > std::numeric_limits<int32_t>::max()) {
+      LOG(ERROR) << "Packed sample indices must be a bounded vector";
+      return false;
+    }
+    sample_count = static_cast<int32_t>(sampling.sample_idxes.size(0));
+  }
   const RawInputLayoutHeader layout = calculate_forward_input_layout(input);
   const uint64_t payload_size = get_input_layout_size(layout);
   std::string payload;
@@ -3605,6 +3630,7 @@ bool token_input_to_packed_proto(
       << "packed forward input payload size mismatch";
 
   packed_forward_input->mutable_payload()->swap(payload);
+  packed_forward_input->set_sample_count(sample_count);
   return true;
 }
 
@@ -3652,6 +3678,7 @@ bool DiTForwardInput::to_packed_proto(
   char* cursor = payload.data();
   serialize_dit_input(*this, layout, cursor);
   packed_forward_input->mutable_payload()->swap(payload);
+  packed_forward_input->clear_sample_count();
   return true;
 }
 
