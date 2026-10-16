@@ -202,13 +202,17 @@ void WorkerService::step_llm_model(
   const bool task_pipeline = options_.enable_task_pipeline();
   const bool worker_prepare =
       task_pipeline && worker_->task_pipeline_uses_worker_prepare();
-  const bool worker_owned_packed_input =
-      worker_prepare && input.runtime.input_host_buffer_has_layout &&
-      input.runtime.input_host_buffer.defined();
-  if (options_.enable_schedule_overlap() &&
-      (!task_pipeline || (worker_prepare && !worker_owned_packed_input))) {
-    // Worker-owned slots reconstruct views from the owner retained through
-    // Consume.
+  const bool worker_rebuilds_host_views =
+      input.runtime.input_host_buffer_has_layout &&
+      input.runtime.input_host_buffer.defined() &&
+      input.runtime.input_host_buffer.device().is_cpu() &&
+      input.runtime.input_host_buffer.is_contiguous() &&
+      input.runtime.input_host_buffer.numel() > 0 &&
+      !input.runtime.device_tensors_ready;
+  if (options_.enable_schedule_overlap() && !worker_rebuilds_host_views &&
+      (!task_pipeline || worker_prepare)) {
+    // Packed preparation rebuilds views from its retained owner. Device-ready
+    // inputs reuse their existing views, which can still borrow shared memory.
     stabilize_llm_host_views(input);
   }
   auto future = worker_->step_async(input);

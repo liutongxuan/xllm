@@ -28,6 +28,7 @@ limitations under the License.
 #include <memory>
 #include <string>
 
+#include "core/framework/config/execution_config.h"
 #include "core/runtime/options.h"
 
 namespace xllm {
@@ -209,6 +210,86 @@ TEST(WorkerServiceModelRpcTest, LastLLMStepRequiresInitializedOverlapBackend) {
 
 TEST(WorkerServiceModelRpcTest, LastVLMStepRequiresInitializedOverlapBackend) {
   expect_last_step_rejections("vlm", &WorkerService::GetLastVLMStepResult);
+}
+
+class WorkerServiceInputLifetimeTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    auto& config = ExecutionConfig::get_instance();
+    previous_contiguous_ = config.use_contiguous_input_buffer();
+    config.use_contiguous_input_buffer(false);
+  }
+
+  void TearDown() override {
+    ExecutionConfig::get_instance().use_contiguous_input_buffer(
+        previous_contiguous_);
+  }
+
+ private:
+  bool previous_contiguous_ = false;
+};
+
+template <typename Input>
+void expect_deferred_input_rebuilds_owned_host_views() {
+  const torch::Tensor expected_tokens = torch::tensor({11, 12}, torch::kInt32);
+  const torch::Tensor expected_positions = torch::tensor({3, 4}, torch::kInt32);
+  const torch::Tensor expected_blocks = torch::tensor({{7, 8}}, torch::kInt32);
+  Input input;
+  {
+    const std::string name =
+        "worker_deferred_input_" + std::to_string(getpid()) + "_" +
+        ::testing::UnitTest::GetInstance()->current_test_info()->name();
+    bool is_creator = false;
+    ForwardSharedMemoryManager writer(
+        name, /*size=*/1 << 20, is_creator, ForwardType::RAW_INPUT);
+    ASSERT_TRUE(is_creator);
+    ForwardSharedMemoryManager reader(
+        name, /*size=*/1 << 20, is_creator, ForwardType::RAW_INPUT);
+    ASSERT_FALSE(is_creator);
+    Input source;
+    source.token_ids = expected_tokens;
+    source.positions = expected_positions;
+    source.input_params.attention.device.block_tables = expected_blocks;
+    ASSERT_TRUE(writer.input_write(source));
+    ASSERT_TRUE(reader.input_read(
+        input,
+        torch::Device(torch::kCPU),
+        InputDeviceMaterializationPolicy::DEFER_TO_WORKER_PREPARE));
+    ASSERT_TRUE(input.runtime.input_host_buffer.defined());
+    ASSERT_TRUE(input.runtime.input_host_buffer_has_layout);
+    ASSERT_FALSE(input.runtime.device_tensors_ready);
+
+    // Packed preparation must reconstruct all three views. Stabilizing these
+    // temporary fields would allocate copies that preparation discards.
+    input.token_ids_host = torch::full_like(expected_tokens, -1);
+    input.positions_host = torch::full_like(expected_positions, -1);
+    input.input_params.attention.host.block_tables =
+        torch::full_like(expected_blocks, -1);
+    source.token_ids = torch::full_like(expected_tokens, 99);
+    source.positions = torch::full_like(expected_positions, 99);
+    source.input_params.attention.device.block_tables =
+        torch::full_like(expected_blocks, 99);
+    ASSERT_TRUE(writer.input_write(source));
+  }
+
+  // The next SHM request has overwritten the segment and both mappings have
+  // gone away before the Worker prepares this input.
+  const auto prepared = input.to(torch::Device(torch::kCPU), torch::kFloat32);
+  input = Input();
+  EXPECT_TRUE(torch::equal(prepared.token_ids_host, expected_tokens));
+  EXPECT_TRUE(torch::equal(prepared.positions_host, expected_positions));
+  EXPECT_TRUE(torch::equal(prepared.input_params.attention.host.block_tables,
+                           expected_blocks));
+}
+
+TEST_F(WorkerServiceInputLifetimeTest,
+       DeferredLlmPreparationRebuildsOwnedHostViewsAfterShmOverwrite) {
+  expect_deferred_input_rebuilds_owned_host_views<LlmForwardInput>();
+}
+
+TEST_F(WorkerServiceInputLifetimeTest,
+       DeferredVlmPreparationRebuildsOwnedHostViewsAfterShmOverwrite) {
+  expect_deferred_input_rebuilds_owned_host_views<VlmForwardInput>();
 }
 
 TEST(WorkerServiceShutdownTest, JoinsIdleShmPollingThreadForEveryBackend) {

@@ -169,7 +169,15 @@ void WorkerService::step_vlm_model(
   speculative_token_stats.clear();
   CHECK(!options_.enable_task_pipeline())
       << "VLM does not support task pipeline";
-  if (options_.enable_schedule_overlap()) {
+  const bool worker_rebuilds_host_views =
+      input.runtime.input_host_buffer_has_layout &&
+      input.runtime.input_host_buffer.defined() &&
+      input.runtime.input_host_buffer.device().is_cpu() &&
+      input.runtime.input_host_buffer.is_contiguous() &&
+      input.runtime.input_host_buffer.numel() > 0 &&
+      !input.runtime.device_tensors_ready;
+  if (options_.enable_schedule_overlap() && !worker_rebuilds_host_views) {
+    // Device-ready inputs can still borrow host views from shared memory.
     stabilize_vlm_host_views(input);
   }
   auto future = worker_->step_async(input);
