@@ -19,6 +19,7 @@ limitations under the License.
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "core/distributed_runtime/xservice_client.h"
 #include "core/framework/sampling/json_object_grammar.h"
@@ -72,8 +73,9 @@ class DisaggPDServiceImpl {
   std::shared_ptr<const JsonObjectGrammar> json_reasoning_grammar_;
 
  private:
-  void append_virtual_kv_cache_offsets(Sequence& sequence,
+  void append_virtual_kv_cache_offsets(int32_t dp_rank,
                                        const std::string& request_id,
+                                       const std::vector<int32_t>& block_ids,
                                        proto::DisaggResponse* response);
 };
 

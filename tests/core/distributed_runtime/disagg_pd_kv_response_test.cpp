@@ -51,6 +51,29 @@ TEST(DisaggPDKVResponseTest, FlatKVExportsOnlyUnsharedSuffix) {
   EXPECT_EQ((*blocks)[0].ref_count(), 1u);
 }
 
+TEST(DisaggPDKVResponseTest, CollectsOnlyUnsharedFlatBlockIdsForVirtualMemory) {
+  KVCacheState state;
+  auto* blocks = state.mutable_blocks(BlockType::KV);
+  blocks->emplace_back(/*id=*/17, /*allocator=*/nullptr);
+  blocks->emplace_back(/*id=*/0, /*allocator=*/nullptr);
+  blocks->emplace_back(/*id=*/29, /*allocator=*/nullptr);
+  state.incr_shared_blocks_num(BlockType::KV, /*num=*/1);
+  proto::DisaggResponse response;
+  std::vector<int32_t> block_ids{91};
+  state.mutable_blocks(BlockType::LINEAR)
+      ->emplace_back(/*id=*/42, /*allocator=*/nullptr);
+
+  append_disagg_kv_transfer_groups(state,
+                                   /*include_linear_state=*/true,
+                                   &response,
+                                   &block_ids);
+
+  ASSERT_EQ(response.groups_size(), 2);
+  EXPECT_EQ(block_ids, (std::vector<int32_t>{91, 0, 29}));
+  EXPECT_EQ(group_ids(response.groups(0)), (std::vector<uint64_t>{0, 29}));
+  EXPECT_EQ(group_ids(response.groups(1)), (std::vector<uint64_t>{42}));
+}
+
 TEST(DisaggPDKVResponseTest, FlatKVRetainsEmptyGroupForFullySharedPrompt) {
   KVCacheState state;
   state.mutable_blocks(BlockType::KV)
@@ -58,10 +81,12 @@ TEST(DisaggPDKVResponseTest, FlatKVRetainsEmptyGroupForFullySharedPrompt) {
                      /*allocator=*/nullptr);
   state.incr_shared_blocks_num(BlockType::KV, /*num=*/1);
   proto::DisaggResponse response;
+  std::vector<int32_t> block_ids;
 
   append_disagg_kv_transfer_groups(
-      state, /*include_linear_state=*/false, &response);
+      state, /*include_linear_state=*/false, &response, &block_ids);
 
+  EXPECT_TRUE(block_ids.empty());
   ASSERT_EQ(response.groups_size(), 1);
   EXPECT_EQ(response.groups(0).remote_shared_num(), 1u);
   EXPECT_TRUE(response.groups(0).ids().empty());
@@ -87,9 +112,11 @@ TEST(DisaggPDKVResponseTest, GroupedCachesPreserveOrderPrefixesAndSWAGaps) {
                      /*allocator=*/nullptr);
   proto::DisaggResponse response;
 
+  std::vector<int32_t> block_ids;
   append_disagg_kv_transfer_groups(
-      state, /*include_linear_state=*/true, &response);
+      state, /*include_linear_state=*/true, &response, &block_ids);
 
+  EXPECT_TRUE(block_ids.empty());
   ASSERT_EQ(response.groups_size(), 4);
   EXPECT_EQ(response.groups(0).group_id(), cache_group_id(BlockType::SWA));
   EXPECT_EQ(group_ids(response.groups(0)),

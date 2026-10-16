@@ -160,28 +160,14 @@ void DisaggPDServiceImpl::release_reservation(
 }
 
 void DisaggPDServiceImpl::append_virtual_kv_cache_offsets(
-    Sequence& sequence,
+    int32_t dp_rank,
     const std::string& request_id,
+    const std::vector<int32_t>& block_ids,
     proto::DisaggResponse* response) {
   const auto* block_manager = engine_->block_manager_pool();
-  const auto& kv_state = sequence.kv_state();
   if (block_manager == nullptr ||
-      !block_manager->options().enable_virtual_memory() ||
-      kv_state.has_multi_block_export()) {
+      !block_manager->options().enable_virtual_memory() || block_ids.empty()) {
     return;
-  }
-
-  const auto blocks = kv_state.blocks(BlockType::KV);
-  const size_t shared_num = kv_state.shared_blocks_num(BlockType::KV);
-  CHECK_LE(shared_num, blocks.size());
-  if (shared_num == blocks.size()) {
-    return;
-  }
-  // Only virtual-memory managers need an additional contiguous ID buffer.
-  std::vector<int32_t> block_ids;
-  block_ids.reserve(blocks.size() - shared_num);
-  for (size_t i = shared_num; i < blocks.size(); ++i) {
-    block_ids.push_back(blocks[i].id());
   }
 
   std::vector<std::pair<std::vector<uint64_t>, std::vector<uint64_t>>>
@@ -195,7 +181,7 @@ void DisaggPDServiceImpl::append_virtual_kv_cache_offsets(
       static_cast<uint64_t>(kv_cache_block_tokens_) / 2;
   const bool offsets_available =
       DistributedVirtualMemoryCoordinator::get_instance()
-          .get_virtual_kv_cache_offsets(sequence.dp_rank(),
+          .get_virtual_kv_cache_offsets(dp_rank,
                                         block_options.model_id(),
                                         block_ids,
                                         block_size_bytes,
@@ -263,11 +249,18 @@ void DisaggPDServiceImpl::decode_recv_new_requests(
     }
 
     resp->set_dp_rank(sequence->dp_rank());
+    const auto* block_manager = engine_->block_manager_pool();
+    std::vector<int32_t> virtual_memory_block_ids;
     append_disagg_kv_transfer_groups(
         sequence->kv_state(),
         has_linear_attention_layers(engine_->model_args()),
-        resp);
-    append_virtual_kv_cache_offsets(*sequence, req.req_id(), resp);
+        resp,
+        block_manager != nullptr &&
+                block_manager->options().enable_virtual_memory()
+            ? &virtual_memory_block_ids
+            : nullptr);
+    append_virtual_kv_cache_offsets(
+        sequence->dp_rank(), req.req_id(), virtual_memory_block_ids, resp);
     resp->set_status_code(200);
   }
 }

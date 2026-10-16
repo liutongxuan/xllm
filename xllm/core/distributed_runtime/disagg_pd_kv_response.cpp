@@ -19,15 +19,18 @@ limitations under the License.
 
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 #include "core/framework/request/sequence_kv_state.h"
 #include "core/kv_cache/block/block.h"
 
 namespace xllm {
 
-void append_disagg_kv_transfer_groups(const KVCacheState& kv_state,
-                                      bool include_linear_state,
-                                      proto::DisaggResponse* response) {
+void append_disagg_kv_transfer_groups(
+    const KVCacheState& kv_state,
+    bool include_linear_state,
+    proto::DisaggResponse* response,
+    std::vector<int32_t>* virtual_memory_block_ids) {
   if (kv_state.has_multi_block_export()) {
     // Iterate borrowed slices directly, without allocating an export-view
     // vector or copying reference-counted Block handles.
@@ -61,8 +64,16 @@ void append_disagg_kv_transfer_groups(const KVCacheState& kv_state,
     group->set_remote_shared_num(static_cast<uint32_t>(shared_num));
     group->mutable_ids()->Reserve(
         static_cast<int32_t>(blocks.size() - shared_num));
+    if (virtual_memory_block_ids != nullptr) {
+      virtual_memory_block_ids->reserve(virtual_memory_block_ids->size() +
+                                        blocks.size() - shared_num);
+    }
     for (size_t i = shared_num; i < blocks.size(); ++i) {
-      group->add_ids(static_cast<uint64_t>(blocks[i].id()));
+      const int32_t block_id = blocks[i].id();
+      group->add_ids(static_cast<uint64_t>(block_id));
+      if (virtual_memory_block_ids != nullptr) {
+        virtual_memory_block_ids->push_back(block_id);
+      }
     }
   }
 

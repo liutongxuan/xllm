@@ -15,6 +15,9 @@ limitations under the License.
 
 #pragma once
 
+#include <cstdint>
+#include <vector>
+
 #include "disagg_pd.pb.h"
 
 namespace xllm {
@@ -23,8 +26,12 @@ class KVCacheState;
 
 // Flat KV exports only the unshared suffix. Grouped caches retain logical
 // positions, including shared prefixes and expired SWA placeholders.
-void append_disagg_kv_transfer_groups(const KVCacheState& kv_state,
-                                      bool include_linear_state,
-                                      proto::DisaggResponse* response);
+// When provided, virtual_memory_block_ids receives the unshared flat KV
+// IDs appended during serialization; grouped and linear IDs are excluded.
+void append_disagg_kv_transfer_groups(
+    const KVCacheState& kv_state,
+    bool include_linear_state,
+    proto::DisaggResponse* response,
+    std::vector<int32_t>* virtual_memory_block_ids = nullptr);
 
 }  // namespace xllm
