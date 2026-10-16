@@ -71,6 +71,80 @@ bool check_instance_name(const std::string& name) {
   return true;
 }
 
+void fill_generation_request(const RequestOutput& output,
+                             proto::DisaggStreamGeneration* request) {
+  request->set_req_id(output.request_id);
+  request->set_service_req_id(output.service_request_id);
+  if (output.status.has_value()) {
+    auto gen_status = request->mutable_gen_status();
+    gen_status->set_status_code(
+        static_cast<int32_t>(output.status.value().code()));
+    gen_status->set_status_msg(output.status.value().message());
+  }
+  request->set_finished(output.finished);
+  request->set_finished_on_prefill_instance(
+      output.finished_on_prefill_instance);
+  if (output.usage.has_value()) {
+    proto::OutputUsage* proto_usage = request->mutable_usage();
+    proto_usage->set_num_prompt_tokens(output.usage.value().num_prompt_tokens);
+    proto_usage->set_num_generated_tokens(
+        output.usage.value().num_generated_tokens);
+    proto_usage->set_num_total_tokens(output.usage.value().num_total_tokens);
+    proto_usage->set_num_cached_tokens(output.usage.value().num_cached_tokens);
+  }
+  request->mutable_outputs()->Reserve(
+      static_cast<int32_t>(output.outputs.size()));
+  for (const auto& seq_output : output.outputs) {
+    auto* proto_seq_out = request->mutable_outputs()->Add();
+    proto_seq_out->set_index(seq_output.index);
+    proto_seq_out->set_text(seq_output.text);
+    if (seq_output.finish_reason.has_value()) {
+      proto_seq_out->set_finish_reason(seq_output.finish_reason.value());
+    } else {
+      proto_seq_out->set_finish_reason("");
+    }
+    if (const auto* token = std::get_if<int32_t>(&seq_output.stop_reason)) {
+      proto_seq_out->mutable_stop_reason()->set_token_id(*token);
+    } else if (const auto* text =
+                   std::get_if<std::string>(&seq_output.stop_reason)) {
+      proto_seq_out->mutable_stop_reason()->set_stop_string(*text);
+    }
+    proto_seq_out->mutable_token_ids()->Reserve(
+        static_cast<int32_t>(seq_output.token_ids.size()));
+    for (const auto& value : seq_output.token_ids) {
+      *proto_seq_out->mutable_token_ids()->Add() = value;
+    }
+    if (!seq_output.logprobs.has_value()) {
+      continue;
+    }
+    const auto& logprobs = seq_output.logprobs.value();
+    proto_seq_out->mutable_logprobs()->Reserve(
+        static_cast<int32_t>(logprobs.size()));
+    for (const auto& logprob : logprobs) {
+      auto* proto_logprob = proto_seq_out->mutable_logprobs()->Add();
+      proto::LogProbData* log_prob_data =
+          proto_logprob->mutable_log_prob_data();
+      log_prob_data->set_token(logprob.token);
+      log_prob_data->set_token_id(logprob.token_id);
+      log_prob_data->set_logprob(logprob.logprob);
+      log_prob_data->set_finished_token(logprob.finished_token);
+      if (!logprob.top_logprobs.has_value()) {
+        continue;
+      }
+      const auto& top_logprobs = logprob.top_logprobs.value();
+      proto_logprob->mutable_top_logprobs()->Reserve(
+          static_cast<int32_t>(top_logprobs.size()));
+      for (const auto& top_logprob : top_logprobs) {
+        auto* top_log_prob_data = proto_logprob->mutable_top_logprobs()->Add();
+        top_log_prob_data->set_token(top_logprob.token);
+        top_log_prob_data->set_token_id(top_logprob.token_id);
+        top_log_prob_data->set_logprob(top_logprob.logprob);
+        top_log_prob_data->set_finished_token(top_logprob.finished_token);
+      }
+    }
+  }
+}
+
 }  // namespace
 
 bool XServiceClient::init(const std::string& etcd_addr,
@@ -408,10 +482,46 @@ std::vector<std::string> XServiceClient::get_all_xservice_addrs() {
 }
 
 bool XServiceClient::generation(const RequestOutput& output) {
-  const std::vector<bool> results =
-      send_generations(std::span<const RequestOutput>(&output, /*count=*/1));
-  CHECK_EQ(results.size(), 1);
-  return results.front();
+  std::string master_addr;
+  if (output.target_xservice_addr.empty()) {
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    master_addr = master_xservice_addr_;
+  }
+  const std::string& target_service = output.target_xservice_addr.empty()
+                                          ? master_addr
+                                          : output.target_xservice_addr;
+  if (target_service.empty()) {
+    LOG(ERROR) << "No target xservice address available for request_id: "
+               << output.request_id;
+    return false;
+  }
+  if (!connect_to_xservice(target_service)) {
+    LOG(ERROR) << "Failed to connect target xservice: " << target_service;
+    return false;
+  }
+
+  proto::DisaggStreamGenerations request;
+  fill_generation_request(output, request.mutable_gens()->Add());
+  proto::StatusSet response;
+  brpc::Controller cntl;
+  {
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    auto* service_stub = find_stub_locked(target_service);
+    if (service_stub == nullptr) {
+      LOG(ERROR) << "No stub available for xservice: " << target_service;
+      return false;
+    }
+    service_stub->Generations(&cntl, &request, &response, brpc::DoNothing());
+  }
+  brpc::Join(cntl.call_id());
+  if (cntl.Failed()) {
+    LOG(ERROR) << "Fail to response tokens to xservice server "
+               << target_service << ", error text: " << cntl.ErrorText();
+    return false;
+  }
+  CHECK_EQ(response.all_status_size(), 1)
+      << "The size of status set is not equal to the size of outputs";
+  return response.all_status(0).ok();
 }
 
 std::vector<bool> XServiceClient::generations(
@@ -455,83 +565,8 @@ std::vector<bool> XServiceClient::send_generations(
     auto& batch = service_batches[target_service];
     batch.output_indices.push_back(i);
 
-    // construct the request to corresponding service
-    auto& gens = batch.gens;
-    proto::DisaggStreamGeneration* req = gens.mutable_gens()->Add();
-    req->set_req_id(output.request_id);
-    req->set_service_req_id(output.service_request_id);
-    if (output.status.has_value()) {
-      auto gen_status = req->mutable_gen_status();
-      gen_status->set_status_code(
-          static_cast<int32_t>(output.status.value().code()));
-      gen_status->set_status_msg(output.status.value().message());
-    }
-    req->set_finished(output.finished);
-    req->set_finished_on_prefill_instance(output.finished_on_prefill_instance);
-    if (output.usage.has_value()) {
-      proto::OutputUsage* proto_usage = req->mutable_usage();
-      proto_usage->set_num_prompt_tokens(
-          output.usage.value().num_prompt_tokens);
-      proto_usage->set_num_generated_tokens(
-          output.usage.value().num_generated_tokens);
-      proto_usage->set_num_total_tokens(output.usage.value().num_total_tokens);
-      proto_usage->set_num_cached_tokens(
-          output.usage.value().num_cached_tokens);
-    }
-    req->mutable_outputs()->Reserve(output.outputs.size());
-    for (auto& seq_output : output.outputs) {
-      auto proto_seq_out = req->mutable_outputs()->Add();
-      proto_seq_out->set_index(seq_output.index);
-      proto_seq_out->set_text(seq_output.text);
-      if (seq_output.finish_reason.has_value()) {
-        proto_seq_out->set_finish_reason(seq_output.finish_reason.value());
-      } else {
-        proto_seq_out->set_finish_reason("");
-      }
-      if (const auto* token = std::get_if<int32_t>(&seq_output.stop_reason)) {
-        proto_seq_out->mutable_stop_reason()->set_token_id(*token);
-      } else if (const auto* text =
-                     std::get_if<std::string>(&seq_output.stop_reason)) {
-        proto_seq_out->mutable_stop_reason()->set_stop_string(*text);
-      }
-      proto_seq_out->mutable_token_ids()->Reserve(seq_output.token_ids.size());
-      for (const auto& value : seq_output.token_ids) {
-        *proto_seq_out->mutable_token_ids()->Add() = value;
-      }
-      if (seq_output.logprobs.has_value()) {
-        size_t logprobs_size = seq_output.logprobs.value().size();
-        proto_seq_out->mutable_logprobs()->Reserve(logprobs_size);
-        for (size_t j = 0; j < logprobs_size; ++j) {
-          auto logprob = proto_seq_out->mutable_logprobs()->Add();
-          proto::LogProbData* log_prob_data = logprob->mutable_log_prob_data();
-          log_prob_data->set_token(seq_output.logprobs.value()[j].token);
-          log_prob_data->set_token_id(seq_output.logprobs.value()[j].token_id);
-          log_prob_data->set_logprob(seq_output.logprobs.value()[j].logprob);
-          log_prob_data->set_finished_token(
-              seq_output.logprobs.value()[j].finished_token);
-          if (seq_output.logprobs.value()[j].top_logprobs.has_value()) {
-            size_t top_logprobs_size =
-                seq_output.logprobs.value()[j].top_logprobs.value().size();
-            for (size_t k = 0; k < top_logprobs_size; ++k) {
-              proto::LogProbData* top_log_prob_data =
-                  logprob->mutable_top_logprobs()->Add();
-              top_log_prob_data->set_token(
-                  seq_output.logprobs.value()[j].top_logprobs.value()[k].token);
-              top_log_prob_data->set_token_id(seq_output.logprobs.value()[j]
-                                                  .top_logprobs.value()[k]
-                                                  .token_id);
-              top_log_prob_data->set_logprob(seq_output.logprobs.value()[j]
-                                                 .top_logprobs.value()[k]
-                                                 .logprob);
-              top_log_prob_data->set_finished_token(
-                  seq_output.logprobs.value()[j]
-                      .top_logprobs.value()[k]
-                      .finished_token);
-            }
-          }
-        }
-      }
-    }
+    // Construct the request to corresponding service.
+    fill_generation_request(output, batch.gens.mutable_gens()->Add());
   }
 
   // Use brpc semi-synchronous RPC pattern (DoNothing + Join) instead of
