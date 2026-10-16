@@ -5,6 +5,15 @@ add_subdirectory(events)
 add_subdirectory(prefix)
 add_subdirectory(transfer)
 
+cc_library(
+  NAME
+    virtual_kv_cache_page_layout
+  HDRS
+    layout/virtual_kv_cache_page_layout.h
+  DEPS
+    glog::glog
+)
+
 # Domain ports shared by cache storage and framework allocation adapters.
 cc_library(
   NAME
@@ -17,6 +26,7 @@ cc_library(
     transfer/virtual_kv_cache_transfer_memory_provider.h
   DEPS
     :virtual_kv_cache_page_state
+    :virtual_kv_cache_page_layout
     torch
 )
 

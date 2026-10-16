@@ -73,8 +73,16 @@ class VirtualKVCacheMemoryRegions final {
       const char* name,
       std::vector<std::unique_ptr<MappedVirtualMemoryRegion>>& regions);
 
+  bool collect_page_targets(
+      const std::vector<offset_t>& offsets,
+      std::vector<std::pair<MappedVirtualMemoryRegion*, offset_t>>& targets)
+      const;
+
   std::vector<std::unique_ptr<MappedVirtualMemoryRegion>> k_regions_;
   std::vector<std::unique_ptr<MappedVirtualMemoryRegion>> v_regions_;
+  size_t k_block_bytes_ = 0;
+  size_t v_block_bytes_ = 0;
+  size_t num_blocks_ = 0;
   int64_t num_layers_ = 0;
 };
 

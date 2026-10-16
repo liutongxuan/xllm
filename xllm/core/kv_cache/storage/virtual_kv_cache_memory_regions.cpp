@@ -23,6 +23,7 @@ limitations under the License.
 #include <utility>
 
 #include "core/framework/allocator/torch/mapped_virtual_memory_tensor_view.h"
+#include "core/kv_cache/layout/virtual_kv_cache_page_layout.h"
 
 namespace xllm {
 
@@ -32,6 +33,8 @@ std::vector<torch::Tensor> VirtualKVCacheMemoryRegions::create_k_tensors(
     int64_t num_layers,
     const torch::Device& device,
     size_t page_size) {
+  k_block_bytes_ = VirtualKVCachePageLayout::tensor_block_bytes(
+      dims, torch::scalarTypeToTypeMeta(dtype).itemsize());
   return create_tensors(
       dims, dtype, num_layers, device, page_size, /*name=*/"K", k_regions_);
 }
@@ -42,6 +45,8 @@ std::vector<torch::Tensor> VirtualKVCacheMemoryRegions::create_v_tensors(
     int64_t num_layers,
     const torch::Device& device,
     size_t page_size) {
+  v_block_bytes_ = VirtualKVCachePageLayout::tensor_block_bytes(
+      dims, torch::scalarTypeToTypeMeta(dtype).itemsize());
   return create_tensors(
       dims, dtype, num_layers, device, page_size, /*name=*/"V", v_regions_);
 }
@@ -59,6 +64,9 @@ std::vector<torch::Tensor> VirtualKVCacheMemoryRegions::create_tensors(
   CHECK(regions.empty()) << name << " tensors already created";
   CHECK(!dims.empty()) << name << " tensor dims cannot be empty";
   CHECK_GT(num_layers, 0);
+  CHECK_GT(dims.front(), 0);
+  CHECK(num_blocks_ == 0 || num_blocks_ == static_cast<size_t>(dims.front()))
+      << "Number of KV cache blocks mismatch";
 
   size_t size = torch::scalarTypeToTypeMeta(dtype).itemsize();
   for (int64_t dim : dims) {
@@ -79,6 +87,7 @@ std::vector<torch::Tensor> VirtualKVCacheMemoryRegions::create_tensors(
   }
 
   num_layers_ = num_layers;
+  num_blocks_ = static_cast<size_t>(dims.front());
   std::vector<torch::Tensor> tensors;
   tensors.reserve(num_layers);
   regions.reserve(num_layers);
@@ -92,7 +101,10 @@ std::vector<torch::Tensor> VirtualKVCacheMemoryRegions::create_tensors(
   return tensors;
 }
 
-bool VirtualKVCacheMemoryRegions::map(const std::vector<offset_t>& offsets) {
+bool VirtualKVCacheMemoryRegions::collect_page_targets(
+    const std::vector<offset_t>& offsets,
+    std::vector<std::pair<MappedVirtualMemoryRegion*, offset_t>>& targets)
+    const {
   if (k_regions_.empty() || v_regions_.empty()) {
     LOG(ERROR) << "KV tensors not created";
     return false;
@@ -101,47 +113,77 @@ bool VirtualKVCacheMemoryRegions::map(const std::vector<offset_t>& offsets) {
   CHECK_GT(num_layers_, 0);
   CHECK_EQ(k_regions_.size(), num_layers_);
   CHECK_EQ(v_regions_.size(), num_layers_);
+  const size_t page_size = k_regions_.front()->page_size();
+  const VirtualKVCachePageLayout layout({k_block_bytes_, v_block_bytes_},
+                                        page_size);
+  const size_t k_pages = layout.pages_per_tensor(/*role_index=*/0);
+  const size_t v_pages = layout.pages_per_tensor(/*role_index=*/1);
+  CHECK_LE(k_pages, std::numeric_limits<size_t>::max() - v_pages);
+  const size_t pages_per_layer = k_pages + v_pages;
+  CHECK_LE(k_regions_.size(),
+           std::numeric_limits<size_t>::max() / pages_per_layer);
+  const size_t pages_per_offset = k_regions_.size() * pages_per_layer;
   CHECK_LE(offsets.size(),
-           std::numeric_limits<size_t>::max() / k_regions_.size() / 2);
-  std::vector<std::pair<MappedVirtualMemoryRegion*, offset_t>> targets;
-  targets.reserve(offsets.size() * k_regions_.size() * 2);
-  for (size_t i = 0; i < k_regions_.size(); ++i) {
-    for (offset_t offset : offsets) {
-      targets.emplace_back(k_regions_[i].get(), offset);
-      targets.emplace_back(v_regions_[i].get(), offset);
+           std::numeric_limits<size_t>::max() / pages_per_offset);
+  targets.reserve(offsets.size() * pages_per_offset);
+
+  const size_t complete_pages = num_blocks_ / layout.blocks_per_page();
+  for (offset_t offset : offsets) {
+    if (offset < 0 || static_cast<size_t>(offset) % page_size != 0 ||
+        static_cast<size_t>(offset) / page_size >= complete_pages) {
+      LOG(ERROR) << "Invalid KV logical page offset " << offset;
+      return false;
     }
   }
-  return MappedVirtualMemoryRegion::map_pages(targets);
+
+  const auto append_targets = [&offsets, &targets, page_size](
+                                  MappedVirtualMemoryRegion& region,
+                                  size_t pages_per_tensor) {
+    CHECK_EQ(region.page_size(), page_size);
+    CHECK_LE(pages_per_tensor, std::numeric_limits<size_t>::max() / page_size);
+    const size_t page_span = pages_per_tensor * page_size;
+    for (offset_t offset : offsets) {
+      if (static_cast<size_t>(offset) >
+          static_cast<size_t>(std::numeric_limits<offset_t>::max()) /
+              pages_per_tensor) {
+        LOG(ERROR) << "KV mapping offset exceeds supported range";
+        return false;
+      }
+      const size_t role_offset = static_cast<size_t>(offset) * pages_per_tensor;
+      if (page_span > region.size() ||
+          role_offset > region.size() - page_span) {
+        LOG(ERROR) << "KV logical page exceeds its tensor region";
+        return false;
+      }
+      for (size_t page = 0; page < pages_per_tensor; ++page) {
+        targets.emplace_back(
+            &region, static_cast<offset_t>(role_offset + page * page_size));
+      }
+    }
+    return true;
+  };
+  for (size_t i = 0; i < k_regions_.size(); ++i) {
+    if (!append_targets(*k_regions_[i], k_pages) ||
+        !append_targets(*v_regions_[i], v_pages)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool VirtualKVCacheMemoryRegions::map(const std::vector<offset_t>& offsets) {
+  std::vector<std::pair<MappedVirtualMemoryRegion*, offset_t>> targets;
+  return collect_page_targets(offsets, targets) &&
+         MappedVirtualMemoryRegion::map_pages(targets);
 }
 
 bool VirtualKVCacheMemoryRegions::unmap(const std::vector<offset_t>& offsets) {
-  if (k_regions_.empty() || v_regions_.empty()) {
-    LOG(ERROR) << "Cannot unmap before KV tensors are created";
+  std::vector<std::pair<MappedVirtualMemoryRegion*, offset_t>> targets;
+  if (!collect_page_targets(offsets, targets)) {
     return false;
   }
-
-  CHECK_GT(num_layers_, 0);
-  CHECK_EQ(k_regions_.size(), num_layers_);
-  CHECK_EQ(v_regions_.size(), num_layers_);
-  for (size_t i = 0; i < k_regions_.size(); ++i) {
-    const auto& k_region = k_regions_[i];
-    const auto& v_region = v_regions_[i];
-    for (offset_t offset : offsets) {
-      if (offset < 0 || static_cast<size_t>(offset) >= k_region->size() ||
-          static_cast<size_t>(offset) >= v_region->size() ||
-          static_cast<size_t>(offset) % k_region->page_size() != 0 ||
-          static_cast<size_t>(offset) % v_region->page_size() != 0) {
-        LOG(ERROR) << "Invalid KV unmapping offset " << offset;
-        return false;
-      }
-    }
-  }
-
-  for (size_t i = 0; i < k_regions_.size(); ++i) {
-    for (offset_t offset : offsets) {
-      CHECK(k_regions_[i]->unmap(offset));
-      CHECK(v_regions_[i]->unmap(offset));
-    }
+  for (const auto& [region, offset] : targets) {
+    CHECK(region->unmap(offset));
   }
   return true;
 }
@@ -159,6 +201,11 @@ VirtualKVCacheMemoryRegions::get_global_offsets_for_block(
   }
   if (k_regions_.empty() || v_regions_.empty()) {
     LOG(ERROR) << "KV tensors not created";
+    return {kInvalidOffset, kInvalidOffset};
+  }
+  if (k_block_bytes_ != v_block_bytes_) {
+    LOG(ERROR) << "Virtual memory KV transfer requires equal key and value "
+                  "block sizes";
     return {kInvalidOffset, kInvalidOffset};
   }
 

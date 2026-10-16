@@ -34,6 +34,43 @@ namespace xllm {
 namespace {
 
 constexpr size_t kPoolPages = 4;
+constexpr int64_t kBlockSize = 128;
+constexpr int64_t kLatentSize = 512;
+constexpr int64_t kRopeSize = 64;
+
+void fill_block_pattern(const torch::Tensor& tensor,
+                        int64_t block_id,
+                        uint8_t pattern) {
+  const size_t block_bytes =
+      static_cast<size_t>(tensor.stride(/*dim=*/0)) * tensor.element_size();
+  auto* block_ptr = static_cast<uint8_t*>(tensor.data_ptr()) +
+                    static_cast<size_t>(block_id) * block_bytes;
+  const std::vector<uint8_t> expected(block_bytes, pattern);
+  ASSERT_EQ(aclrtMemcpy(block_ptr,
+                        block_bytes,
+                        expected.data(),
+                        block_bytes,
+                        ACL_MEMCPY_HOST_TO_DEVICE),
+            ACL_SUCCESS);
+}
+
+void expect_block_pattern(const torch::Tensor& tensor,
+                          int64_t block_id,
+                          uint8_t pattern) {
+  SCOPED_TRACE(block_id);
+  const size_t block_bytes =
+      static_cast<size_t>(tensor.stride(/*dim=*/0)) * tensor.element_size();
+  const auto* block_ptr = static_cast<const uint8_t*>(tensor.data_ptr()) +
+                          static_cast<size_t>(block_id) * block_bytes;
+  std::vector<uint8_t> actual(block_bytes);
+  ASSERT_EQ(aclrtMemcpy(actual.data(),
+                        block_bytes,
+                        block_ptr,
+                        block_bytes,
+                        ACL_MEMCPY_DEVICE_TO_HOST),
+            ACL_SUCCESS);
+  EXPECT_EQ(actual, std::vector<uint8_t>(block_bytes, pattern));
+}
 
 class KVCacheMemoryEnvironment final : public ::testing::Environment {
  public:
@@ -63,9 +100,9 @@ class VirtualKVCacheMemoryRegistryTest : public ::testing::Test {
     page_size_ = vmm::get_recommended_granularity(device_.index());
     ASSERT_GT(page_size_, 0);
     auto& pool = PhysicalPagePool::get_instance();
-    pool.init(device_, kPoolPages, page_size_);
+    pool.init(device_, pool_pages(), page_size_);
     resources_initialized_ = true;
-    ASSERT_EQ(pool.num_available(), kPoolPages);
+    ASSERT_EQ(pool.num_available(), pool_pages());
     registry_.init(device_, page_size_);
   }
 
@@ -75,7 +112,7 @@ class VirtualKVCacheMemoryRegistryTest : public ::testing::Test {
     }
     registry_.clear();
     auto& pool = PhysicalPagePool::get_instance();
-    EXPECT_EQ(pool.num_available(), kPoolPages);
+    EXPECT_EQ(pool.num_available(), pool_pages());
     EXPECT_TRUE(pool.reset());
   }
 
@@ -85,10 +122,37 @@ class VirtualKVCacheMemoryRegistryTest : public ::testing::Test {
     registry_.create_v_tensors(model_id, dims, torch::kUInt8, num_layers);
   }
 
+  virtual size_t pool_pages() const { return kPoolPages; }
+
   const torch::Device device_{"npu:0"};
   VirtualKVCacheMemoryRegistry registry_;
   size_t page_size_ = 0;
   bool resources_initialized_ = false;
+};
+
+class VirtualMLAKVCacheMemoryRegistryTest final
+    : public VirtualKVCacheMemoryRegistryTest {
+ protected:
+  size_t pool_pages() const override { return 18; }
+
+  int64_t blocks_per_page() const {
+    return static_cast<int64_t>(page_size_ /
+                                (kBlockSize * kRopeSize * sizeof(uint16_t)));
+  }
+
+  std::pair<std::vector<torch::Tensor>, std::vector<torch::Tensor>>
+  create_mla_model(const std::string& model_id,
+                   int64_t num_blocks,
+                   int64_t num_layers) {
+    return {registry_.create_k_tensors(model_id,
+                                       {num_blocks, kBlockSize, 1, kLatentSize},
+                                       torch::kBFloat16,
+                                       num_layers),
+            registry_.create_v_tensors(model_id,
+                                       {num_blocks, kBlockSize, 1, kRopeSize},
+                                       torch::kBFloat16,
+                                       num_layers)};
+  }
 };
 
 TEST_F(VirtualKVCacheMemoryRegistryTest,
@@ -169,6 +233,118 @@ TEST_F(VirtualKVCacheMemoryRegistryTest,
   EXPECT_EQ(registry_.num_layers("model"), 2);
   EXPECT_TRUE(registry_.map("model", {0}));
   EXPECT_EQ(PhysicalPagePool::get_instance().num_available(), 0);
+}
+
+TEST_F(VirtualMLAKVCacheMemoryRegistryTest,
+       LatentAndRopeBoundariesKeepIndependentMappings) {
+  ASSERT_EQ(page_size_ % (kBlockSize * kLatentSize * sizeof(uint16_t)), 0);
+  const int64_t blocks_per_key_page = static_cast<int64_t>(
+      page_size_ / (kBlockSize * kLatentSize * sizeof(uint16_t)));
+  ASSERT_GT(blocks_per_key_page, 1);
+  const int64_t blocks_per_group = blocks_per_page();
+  auto [keys, values] =
+      create_mla_model("mla", 2 * blocks_per_group, /*num_layers=*/1);
+  auto& pool = PhysicalPagePool::get_instance();
+  const offset_t next_offset = static_cast<offset_t>(page_size_);
+  const offset_t invalid_offset = static_cast<offset_t>(2 * page_size_);
+  EXPECT_FALSE(registry_.map("mla", {0, invalid_offset}));
+  EXPECT_EQ(pool.num_available(), pool_pages());
+  ASSERT_TRUE(registry_.map("mla", {0, next_offset}));
+  EXPECT_EQ(pool.num_available(), 0);
+  ASSERT_TRUE(registry_.map("mla", {0, next_offset}));
+  EXPECT_EQ(pool.num_available(), 0);
+
+  const std::vector<int64_t> blocks = {0,
+                                       blocks_per_key_page - 1,
+                                       blocks_per_key_page,
+                                       blocks_per_group - 1,
+                                       blocks_per_group,
+                                       2 * blocks_per_group - 1};
+  for (size_t i = 0; i < blocks.size(); ++i) {
+    fill_block_pattern(keys.front(), blocks[i], static_cast<uint8_t>(20 + i));
+    fill_block_pattern(
+        values.front(), blocks[i], static_cast<uint8_t>(100 + i));
+  }
+  EXPECT_FALSE(registry_.unmap("mla", {0, invalid_offset}));
+  EXPECT_EQ(pool.num_available(), 0);
+  for (size_t i = 0; i < blocks.size(); ++i) {
+    expect_block_pattern(keys.front(), blocks[i], static_cast<uint8_t>(20 + i));
+    expect_block_pattern(
+        values.front(), blocks[i], static_cast<uint8_t>(100 + i));
+  }
+  EXPECT_EQ(registry_.get_global_offsets_for_block(
+                "mla", /*layer_id=*/0, /*block_id=*/0, page_size_),
+            std::make_pair(UINT64_MAX, UINT64_MAX));
+
+  ASSERT_TRUE(registry_.unmap("mla", {0}));
+  EXPECT_EQ(pool.num_available(), 9);
+  expect_block_pattern(keys.front(), blocks_per_group, /*pattern=*/24);
+  expect_block_pattern(values.front(), blocks_per_group, /*pattern=*/104);
+  expect_block_pattern(keys.front(), 2 * blocks_per_group - 1, /*pattern=*/25);
+  expect_block_pattern(
+      values.front(), 2 * blocks_per_group - 1, /*pattern=*/105);
+  ASSERT_TRUE(registry_.map("mla", {0}));
+  EXPECT_EQ(pool.num_available(), 0);
+  fill_block_pattern(keys.front(), /*block_id=*/0, /*pattern=*/50);
+  fill_block_pattern(values.front(), /*block_id=*/0, /*pattern=*/150);
+  expect_block_pattern(keys.front(), blocks_per_group, /*pattern=*/24);
+  expect_block_pattern(values.front(), blocks_per_group, /*pattern=*/104);
+}
+
+TEST_F(VirtualMLAKVCacheMemoryRegistryTest,
+       ShortageDoesNotPartiallyMapLatentRopeOrAnotherLayer) {
+  create_model("busy", /*num_layers=*/1);
+  auto [keys, values] =
+      create_mla_model("mla", blocks_per_page(), /*num_layers=*/2);
+  ASSERT_TRUE(registry_.map("busy", {0}));
+  auto& pool = PhysicalPagePool::get_instance();
+  ASSERT_EQ(pool.num_available(), 16);
+  const auto busy_offsets = registry_.get_global_offsets_for_block(
+      "busy", /*layer_id=*/0, /*block_id=*/0, page_size_);
+
+  EXPECT_FALSE(registry_.map("mla", {0}));
+  EXPECT_EQ(pool.num_available(), 16);
+  EXPECT_EQ(registry_.get_global_offsets_for_block(
+                "busy", /*layer_id=*/0, /*block_id=*/0, page_size_),
+            busy_offsets);
+  ASSERT_TRUE(registry_.unmap("mla", {0}));
+  EXPECT_EQ(pool.num_available(), 16);
+  ASSERT_TRUE(registry_.unmap("busy", {0}));
+  ASSERT_TRUE(registry_.map("mla", {0}));
+  EXPECT_EQ(pool.num_available(), 0);
+  for (size_t layer = 0; layer < keys.size(); ++layer) {
+    fill_block_pattern(
+        keys[layer], blocks_per_page() - 1, static_cast<uint8_t>(30 + layer));
+    fill_block_pattern(values[layer],
+                       blocks_per_page() - 1,
+                       static_cast<uint8_t>(130 + layer));
+  }
+  for (size_t layer = 0; layer < keys.size(); ++layer) {
+    expect_block_pattern(
+        keys[layer], blocks_per_page() - 1, static_cast<uint8_t>(30 + layer));
+    expect_block_pattern(values[layer],
+                         blocks_per_page() - 1,
+                         static_cast<uint8_t>(130 + layer));
+  }
+}
+
+TEST_F(VirtualMLAKVCacheMemoryRegistryTest,
+       IncompleteLogicalPagesDoNotChangeExistingMappings) {
+  ASSERT_GT(blocks_per_page(), 1);
+  auto [keys, values] =
+      create_mla_model("mla", 2 * blocks_per_page() - 1, /*num_layers=*/1);
+  auto& pool = PhysicalPagePool::get_instance();
+  const offset_t partial_offset = static_cast<offset_t>(page_size_);
+  EXPECT_FALSE(registry_.map("mla", {0, partial_offset}));
+  EXPECT_EQ(pool.num_available(), pool_pages());
+  ASSERT_TRUE(registry_.map("mla", {0}));
+  fill_block_pattern(keys.front(), /*block_id=*/0, /*pattern=*/51);
+  fill_block_pattern(values.front(), /*block_id=*/0, /*pattern=*/151);
+  EXPECT_FALSE(registry_.map("mla", {partial_offset}));
+  EXPECT_FALSE(registry_.unmap("mla", {0, partial_offset}));
+  EXPECT_EQ(pool.num_available(), 9);
+  expect_block_pattern(keys.front(), /*block_id=*/0, /*pattern=*/51);
+  expect_block_pattern(values.front(), /*block_id=*/0, /*pattern=*/151);
 }
 
 }  // namespace
