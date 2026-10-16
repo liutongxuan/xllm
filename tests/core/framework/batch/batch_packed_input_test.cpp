@@ -597,6 +597,57 @@ TEST(BatchPackedInputTest, PackedProtoLazyUnpackPreservesLinearStateCacheOps) {
       unpacked_input.input_params.linear_state_cache_ops[1], direct_read_op);
 }
 
+namespace {
+
+template <typename Input>
+void expect_repeated_unpack_replaces_multi_block_tables() {
+  ScopedContiguousInputBuffer contiguous_input_buffer(/*enabled=*/false);
+  Input source;
+  source.input_params.multi_block_tables = {
+      torch::tensor({{3, 7}}, torch::kInt32),
+      torch::tensor({{11, 13}}, torch::kInt32)};
+  proto::PackedForwardInput packed_input;
+  ASSERT_TRUE(source.to_packed_proto(&packed_input));
+  Input lazy_input;
+  ASSERT_TRUE(lazy_input.from_packed_proto(packed_input));
+  Input first_input;
+  ASSERT_TRUE(detail::unpack_from_input_host_buffer(
+      lazy_input,
+      torch::Device(torch::kCPU),
+      torch::kFloat32,
+      first_input,
+      /*materialize_device_buffer=*/false));
+  ASSERT_EQ(first_input.input_params.multi_block_tables.size(), 2u);
+  Input second_input;
+  ASSERT_TRUE(detail::unpack_from_input_host_buffer(
+      first_input,
+      torch::Device(torch::kCPU),
+      torch::kFloat32,
+      second_input,
+      /*materialize_device_buffer=*/false));
+  ASSERT_EQ(second_input.input_params.multi_block_tables.size(), 2u);
+  for (size_t index = 0; index < 2; ++index) {
+    EXPECT_TRUE(
+        torch::equal(second_input.input_params.multi_block_tables[index],
+                     source.input_params.multi_block_tables[index]));
+    EXPECT_NE(second_input.input_params.multi_block_tables[index].data_ptr(),
+              first_input.input_params.multi_block_tables[index].data_ptr());
+  }
+  first_input.input_params.multi_block_tables[0].fill_(99);
+  EXPECT_TRUE(torch::equal(second_input.input_params.multi_block_tables[0],
+                           source.input_params.multi_block_tables[0]));
+}
+
+}  // namespace
+
+TEST(BatchPackedInputTest, RepeatedLlmUnpackReplacesMultiBlockTables) {
+  expect_repeated_unpack_replaces_multi_block_tables<LlmForwardInput>();
+}
+
+TEST(BatchPackedInputTest, RepeatedVlmUnpackReplacesMultiBlockTables) {
+  expect_repeated_unpack_replaces_multi_block_tables<VlmForwardInput>();
+}
+
 TEST(BatchPackedInputTest, PackedProtoLazyUnpackRestoresSampleIdxes) {
   RequestSamplingParam sampling_param;
   sampling_param.logprobs = true;
