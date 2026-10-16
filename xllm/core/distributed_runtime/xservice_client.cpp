@@ -422,33 +422,29 @@ std::vector<bool> XServiceClient::generations(
 std::vector<bool> XServiceClient::send_generations(
     std::span<const RequestOutput> outputs) {
   std::vector<bool> results(outputs.size(), false);
+  if (outputs.empty()) {
+    return results;
+  }
   std::string master_addr;
   {
     std::shared_lock<std::shared_mutex> lock(mutex_);
     master_addr = master_xservice_addr_;
   }
 
-  // group requests by target xllm_service
-  std::unordered_map<std::string, std::vector<size_t>> service_outputs_map;
-  std::unordered_map<std::string, proto::DisaggStreamGenerations>
-      service_requests_map;
-
-  auto mark_service_failed = [&](const std::string& service_addr) {
-    auto index_it = service_outputs_map.find(service_addr);
-    if (index_it == service_outputs_map.end()) {
-      return;
-    }
-    for (size_t idx : index_it->second) {
-      results[idx] = false;
-    }
+  struct ServiceBatch {
+    std::vector<size_t> output_indices;
+    proto::DisaggStreamGenerations gens;
   };
+
+  // Group requests by target xllm_service. Keeping the indices and protobuf
+  // request together avoids a second address-keyed map and a later lookup.
+  std::unordered_map<std::string, ServiceBatch> service_batches;
 
   for (size_t i = 0; i < outputs.size(); ++i) {
     const auto& output = outputs[i];
-    std::string target_service = master_addr;
-    if (!output.target_xservice_addr.empty()) {
-      target_service = output.target_xservice_addr;
-    }
+    const std::string& target_service = output.target_xservice_addr.empty()
+                                            ? master_addr
+                                            : output.target_xservice_addr;
 
     if (target_service.empty()) {
       LOG(ERROR) << "No target xservice address available for request_id: "
@@ -456,10 +452,11 @@ std::vector<bool> XServiceClient::send_generations(
       continue;
     }
 
-    service_outputs_map[target_service].push_back(i);
+    auto& batch = service_batches[target_service];
+    batch.output_indices.push_back(i);
 
     // construct the request to corresponding service
-    auto& gens = service_requests_map[target_service];
+    auto& gens = batch.gens;
     proto::DisaggStreamGeneration* req = gens.mutable_gens()->Add();
     req->set_req_id(output.request_id);
     req->set_service_req_id(output.service_request_id);
@@ -542,40 +539,37 @@ std::vector<bool> XServiceClient::send_generations(
   // thread via butex_wait, avoiding the deadlock that occurs when
   // folly::SemiFuture::wait() blocks all brpc workers with a pthread futex.
   struct AsyncCallContext {
-    std::string service_addr;
+    const std::string* service_addr = nullptr;
+    const ServiceBatch* batch = nullptr;
     brpc::Controller cntl;
     proto::StatusSet resp;
-    proto::DisaggStreamGenerations gens;
     bool issued = false;
   };
 
-  const size_t num_services = service_requests_map.size();
+  const size_t num_services = service_batches.size();
   std::vector<AsyncCallContext> contexts(num_services);
-  std::vector<std::string> service_order;
-  service_order.reserve(num_services);
 
   // Fire all RPCs asynchronously
   size_t idx = 0;
-  for (auto& pair : service_requests_map) {
+  for (auto& pair : service_batches) {
     auto& ctx = contexts[idx++];
-    ctx.service_addr = pair.first;
-    ctx.gens = std::move(pair.second);
-    service_order.push_back(ctx.service_addr);
+    ctx.service_addr = &pair.first;
+    ctx.batch = &pair.second;
 
-    if (!connect_to_xservice(ctx.service_addr)) {
-      LOG(ERROR) << "Failed to connect target xservice: " << ctx.service_addr;
+    if (!connect_to_xservice(*ctx.service_addr)) {
+      LOG(ERROR) << "Failed to connect target xservice: " << *ctx.service_addr;
       continue;
     }
 
     std::shared_lock<std::shared_mutex> lock(mutex_);
-    auto* service_stub = find_stub_locked(ctx.service_addr);
+    auto* service_stub = find_stub_locked(*ctx.service_addr);
     if (service_stub == nullptr) {
-      LOG(ERROR) << "No stub available for xservice: " << ctx.service_addr;
+      LOG(ERROR) << "No stub available for xservice: " << *ctx.service_addr;
       continue;
     }
     ctx.issued = true;
     service_stub->Generations(
-        &ctx.cntl, &ctx.gens, &ctx.resp, brpc::DoNothing());
+        &ctx.cntl, &pair.second.gens, &ctx.resp, brpc::DoNothing());
   }
 
   // Wait for all RPCs — bthread-aware, yields brpc worker properly
@@ -586,20 +580,17 @@ std::vector<bool> XServiceClient::send_generations(
   }
 
   // Process results
-  for (size_t i = 0; i < contexts.size(); ++i) {
-    const std::string& service_addr = service_order[i];
-    auto& ctx = contexts[i];
-    auto index_it = service_outputs_map.find(service_addr);
-    CHECK(index_it != service_outputs_map.end())
-        << "No output index found for service: " << service_addr;
-    const auto& indices = index_it->second;
+  for (auto& ctx : contexts) {
+    CHECK(ctx.service_addr != nullptr);
+    CHECK(ctx.batch != nullptr);
+    const std::string& service_addr = *ctx.service_addr;
+    const auto& indices = ctx.batch->output_indices;
 
     if (!ctx.issued || ctx.cntl.Failed()) {
       if (ctx.cntl.Failed()) {
         LOG(ERROR) << "Fail to response tokens to xservice server "
                    << service_addr << ", error text: " << ctx.cntl.ErrorText();
       }
-      mark_service_failed(service_addr);
       continue;
     }
 
