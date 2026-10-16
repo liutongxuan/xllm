@@ -41,7 +41,8 @@ DisaggPDServiceImpl::DisaggPDServiceImpl(DisaggPDScheduler* scheduler,
                                          int32_t kv_cache_block_tokens)
     : scheduler_(scheduler),
       engine_(engine),
-      kv_cache_block_tokens_(kv_cache_block_tokens) {
+      kv_cache_block_tokens_(kv_cache_block_tokens),
+      block_manager_(engine->block_manager_pool()) {
   xservice_client_ = XServiceClient::get_instance();
   if (!xservice_client_->initialize_done()) {
     LOG(FATAL) << "XServiceClient not init.";
@@ -164,15 +165,14 @@ void DisaggPDServiceImpl::append_virtual_kv_cache_offsets(
     const std::string& request_id,
     const std::vector<int32_t>& block_ids,
     proto::DisaggResponse* response) {
-  const auto* block_manager = engine_->block_manager_pool();
-  if (block_manager == nullptr ||
-      !block_manager->options().enable_virtual_memory() || block_ids.empty()) {
+  if (block_manager_ == nullptr ||
+      !block_manager_->options().enable_virtual_memory() || block_ids.empty()) {
     return;
   }
 
   std::vector<std::pair<std::vector<uint64_t>, std::vector<uint64_t>>>
       layer_offsets;
-  const auto& block_options = block_manager->options();
+  const auto& block_options = block_manager_->options();
   CHECK_GT(kv_cache_block_tokens_, 0);
   // KV split enlarges the manager's logical block length; offsets use
   // the physical cache block length configured by the engine.
@@ -249,14 +249,13 @@ void DisaggPDServiceImpl::decode_recv_new_requests(
     }
 
     resp->set_dp_rank(sequence->dp_rank());
-    const auto* block_manager = engine_->block_manager_pool();
     std::vector<int32_t> virtual_memory_block_ids;
     append_disagg_kv_transfer_groups(
         sequence->kv_state(),
         has_linear_attention_layers(engine_->model_args()),
         resp,
-        block_manager != nullptr &&
-                block_manager->options().enable_virtual_memory()
+        block_manager_ != nullptr &&
+                block_manager_->options().enable_virtual_memory()
             ? &virtual_memory_block_ids
             : nullptr);
     append_virtual_kv_cache_offsets(

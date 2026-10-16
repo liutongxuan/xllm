@@ -199,3 +199,16 @@ cc_test(
     brpc
     glog::glog
 )
+
+cc_test(
+  NO_NPU_RUNTIME
+  NAME
+    worker_memory_rpc_client_test
+  SRCS
+    worker_memory_rpc_client_test.cpp
+  DEPS
+    :worker_memory_rpc
+    GTest::gtest_main
+    brpc
+    glog::glog
+)
