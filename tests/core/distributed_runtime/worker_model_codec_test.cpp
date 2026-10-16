@@ -287,9 +287,12 @@ TYPED_TEST(WorkerModelTokenCodecTest,
   EXPECT_TRUE(decoded.outputs.empty());
 }
 
-TEST(WorkerModelDitCodecTest, TensorAndTextOnlyResultsReplacePreviousPayloads) {
+TEST(WorkerModelDitCodecTest,
+     TensorAudioAndTextResultsReplacePreviousPayloads) {
   ForwardOutput source;
   source.dit_forward_output.tensors = {torch::tensor({5.0f, 6.0f})};
+  source.dit_forward_output.audio_tensors = {
+      torch::tensor({{0.25f, 0.5f}, {0.75f, 1.0f}})};
   source.dit_forward_output.text_output = {"generated"};
   // Diffusion domains do not serialize token output.
   source.sample_output.next_tokens = torch::tensor({7.0f});
@@ -301,22 +304,37 @@ TEST(WorkerModelDitCodecTest, TensorAndTextOnlyResultsReplacePreviousPayloads) {
   ASSERT_EQ(decoded.dit_forward_output.tensors.size(), 1);
   EXPECT_TRUE(torch::equal(decoded.dit_forward_output.tensors[0],
                            source.dit_forward_output.tensors[0]));
+  ASSERT_EQ(decoded.dit_forward_output.audio_tensors.size(), 1);
+  EXPECT_TRUE(torch::equal(decoded.dit_forward_output.audio_tensors[0],
+                           source.dit_forward_output.audio_tensors[0]));
   EXPECT_EQ(decoded.dit_forward_output.text_output,
             (std::vector<std::string>{"generated"}));
   EXPECT_TRUE(decoded.outputs.empty());
   EXPECT_TRUE(decoded.json_object_errors.empty());
 
   source.dit_forward_output.tensors.clear();
+  source.dit_forward_output.text_output.clear();
+  ASSERT_TRUE(encode_dit_output(source, &encoded));
+  ASSERT_TRUE(decode_dit_output(encoded, decoded));
+  EXPECT_TRUE(decoded.dit_forward_output.tensors.empty());
+  EXPECT_TRUE(decoded.dit_forward_output.text_output.empty());
+  ASSERT_EQ(decoded.dit_forward_output.audio_tensors.size(), 1);
+  EXPECT_TRUE(torch::equal(decoded.dit_forward_output.audio_tensors[0],
+                           source.dit_forward_output.audio_tensors[0]));
+
+  source.dit_forward_output.audio_tensors.clear();
   source.dit_forward_output.text_output = {"text only"};
   ASSERT_TRUE(encode_dit_output(source, &encoded));
   ASSERT_TRUE(decode_dit_output(encoded, decoded));
   EXPECT_TRUE(decoded.dit_forward_output.tensors.empty());
+  EXPECT_TRUE(decoded.dit_forward_output.audio_tensors.empty());
   EXPECT_EQ(decoded.dit_forward_output.text_output,
             (std::vector<std::string>{"text only"}));
 
   ASSERT_TRUE(encode_dit_output(ForwardOutput{}, &encoded));
   ASSERT_TRUE(decode_dit_output(encoded, decoded));
   EXPECT_TRUE(decoded.dit_forward_output.tensors.empty());
+  EXPECT_TRUE(decoded.dit_forward_output.audio_tensors.empty());
   EXPECT_TRUE(decoded.dit_forward_output.text_output.empty());
 }
 
@@ -341,6 +359,41 @@ TEST(WorkerModelDitCodecTest, InvalidTensorDecodePreservesDestination) {
   RawForwardOutput destination = original_output();
   EXPECT_FALSE(decode_dit_output(source, destination));
   expect_original_output(destination);
+}
+
+TEST(WorkerModelDitCodecTest, InvalidAudioTensorEncodePreservesDestination) {
+  ForwardOutput source;
+  source.dit_forward_output.tensors = {torch::tensor({5.0f, 6.0f})};
+  source.dit_forward_output.audio_tensors = {torch::tensor({0.25f, 0.5f})};
+  proto::DITForwardResponse destination;
+  ASSERT_TRUE(encode_dit_output(source, &destination));
+  const std::string original = destination.SerializeAsString();
+
+  source.dit_forward_output.audio_tensors = {torch::Tensor()};
+  EXPECT_FALSE(encode_dit_output(source, &destination));
+  EXPECT_EQ(destination.SerializeAsString(), original);
+  source.dit_forward_output.audio_tensors = {
+      torch::tensor({{0.25f, 0.5f}, {0.75f, 1.0f}}).transpose(0, 1)};
+  EXPECT_FALSE(encode_dit_output(source, &destination));
+  EXPECT_EQ(destination.SerializeAsString(), original);
+}
+
+TEST(WorkerModelDitCodecTest, InvalidAudioTensorDecodePreservesDestination) {
+  ForwardOutput source;
+  source.dit_forward_output.tensors = {torch::tensor({5.0f, 6.0f})};
+  source.dit_forward_output.audio_tensors = {torch::tensor({0.25f, 0.5f})};
+  proto::DITForwardResponse encoded;
+  ASSERT_TRUE(encode_dit_output(source, &encoded));
+  encoded.mutable_dit_forward_output()->mutable_audio_tensors()->add_tensors();
+
+  RawForwardOutput destination = original_output();
+  const torch::Tensor original_audio = torch::tensor({0.75f, 1.0f});
+  destination.dit_forward_output.audio_tensors = {original_audio};
+  EXPECT_FALSE(decode_dit_output(encoded, destination));
+  expect_original_output(destination);
+  ASSERT_EQ(destination.dit_forward_output.audio_tensors.size(), 1);
+  EXPECT_TRUE(torch::equal(destination.dit_forward_output.audio_tensors[0],
+                           original_audio));
 }
 
 }  // namespace

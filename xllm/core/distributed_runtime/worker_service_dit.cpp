@@ -48,6 +48,12 @@ void WorkerService::step_dit_model(const DiTForwardInput& input,
   for (const torch::Tensor& tensor : output.tensors) {
     tensors.emplace_back(safe_to(tensor, torch::kCPU, /*non_blocking=*/true));
   }
+  auto& audio_tensors = cpu_output.dit_forward_output.audio_tensors;
+  audio_tensors.reserve(output.audio_tensors.size());
+  for (const torch::Tensor& tensor : output.audio_tensors) {
+    audio_tensors.emplace_back(
+        safe_to(tensor, torch::kCPU, /*non_blocking=*/true));
+  }
   cpu_output.dit_forward_output.text_output = output.text_output;
   stream_->synchronize();
 }

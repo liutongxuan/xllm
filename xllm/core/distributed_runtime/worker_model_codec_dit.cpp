@@ -43,6 +43,18 @@ bool encode_dit_output(const ForwardOutput& output,
       return false;
     }
   }
+  auto* encoded_audio_tensors =
+      encoded_output->mutable_audio_tensors()->mutable_tensors();
+  encoded_audio_tensors->Reserve(
+      static_cast<int32_t>(output.dit_forward_output.audio_tensors.size()));
+  for (const torch::Tensor& tensor : output.dit_forward_output.audio_tensors) {
+    if (!tensor.defined() || !tensor.device().is_cpu() ||
+        !tensor.is_contiguous() ||
+        !util::torch_to_proto(tensor, encoded_audio_tensors->Add())) {
+      LOG(ERROR) << "Failed to serialize DiT audio output tensor";
+      return false;
+    }
+  }
   encoded_output->mutable_text_output()->Add(
       output.dit_forward_output.text_output.begin(),
       output.dit_forward_output.text_output.end());
@@ -66,6 +78,18 @@ bool decode_dit_output(const proto::DITForwardResponse& response,
       return false;
     }
     decoded_output.dit_forward_output.tensors.emplace_back(std::move(tensor));
+  }
+  decoded_output.dit_forward_output.audio_tensors.reserve(
+      encoded_output.audio_tensors().tensors_size());
+  for (const proto::Tensor& encoded_tensor :
+       encoded_output.audio_tensors().tensors()) {
+    torch::Tensor tensor = util::proto_to_torch(encoded_tensor);
+    if (!tensor.defined()) {
+      LOG(ERROR) << "Failed to deserialize DiT audio output tensor";
+      return false;
+    }
+    decoded_output.dit_forward_output.audio_tensors.emplace_back(
+        std::move(tensor));
   }
   decoded_output.dit_forward_output.text_output.assign(
       encoded_output.text_output().begin(), encoded_output.text_output().end());
