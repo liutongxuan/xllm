@@ -2547,23 +2547,31 @@ inline void initialize_device_buffer_session(ReadContext& context,
 #endif
 
   auto& session = *context.device_session;
-  // POSIX shared-memory pages are not pinned merely because TensorOptions says
-  // so. Own a genuinely pinned staging copy and keep it alive with
-  // LlmForwardInput until the asynchronous H2D has completed.
-  forward_input.runtime.input_host_buffer =
-      torch::empty({static_cast<int64_t>(payload_size)},
-                   torch::TensorOptions()
-                       .dtype(torch::kUInt8)
-                       .device(torch::kCPU)
-                       .pinned_memory(/*pinned_memory=*/true));
-  std::memcpy(forward_input.runtime.input_host_buffer.data_ptr(),
-              payload_base,
-              payload_size);
-  const torch::Tensor& host_input_buffer =
-      forward_input.runtime.input_host_buffer;
-  context.tensor_cursor =
-      static_cast<const char*>(host_input_buffer.data_ptr()) +
-      tensor_arena_offset;
+  const uint64_t descriptor_offset = context.descriptor_cursor - payload_base;
+  auto& host_input_buffer = forward_input.runtime.input_host_buffer;
+  const bool reuse_pinned_owner =
+      host_input_buffer.defined() && host_input_buffer.device().is_cpu() &&
+      host_input_buffer.scalar_type() == torch::kUInt8 &&
+      host_input_buffer.dim() == 1 && host_input_buffer.is_contiguous() &&
+      static_cast<uint64_t>(host_input_buffer.numel()) == payload_size &&
+      host_input_buffer.data_ptr() == payload_base &&
+      host_input_buffer.is_pinned();
+  if (!reuse_pinned_owner) {
+    // Raw SHM and unpinned storage still need an owned pinned staging copy.
+    // Keep the previous owner alive until the payload copy finishes.
+    torch::Tensor staging_buffer =
+        torch::empty({static_cast<int64_t>(payload_size)},
+                     torch::TensorOptions()
+                         .dtype(torch::kUInt8)
+                         .device(torch::kCPU)
+                         .pinned_memory(/*pinned_memory=*/true));
+    std::memcpy(staging_buffer.data_ptr(), payload_base, payload_size);
+    host_input_buffer = std::move(staging_buffer);
+  }
+  const char* host_payload =
+      static_cast<const char*>(host_input_buffer.data_ptr());
+  context.descriptor_cursor = host_payload + descriptor_offset;
+  context.tensor_cursor = host_payload + tensor_arena_offset;
 
   auto device_options =
       torch::TensorOptions().dtype(torch::kUInt8).device(device);
@@ -2648,6 +2656,7 @@ inline void deserialize_forward_input_payload(
                                    layout.tensor_arena_offset,
                                    stream,
                                    materialize_device_buffer);
+  descriptor_base = context.descriptor_cursor;
   const char* tensor_arena_read_base = context.tensor_cursor;
 
   read_tensor_and_host(

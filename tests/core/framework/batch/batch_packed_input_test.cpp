@@ -389,6 +389,60 @@ TEST(BatchPackedInputTest, PackedCopyKeepsStagingAliveAfterSourceRelease) {
 }
 
 #if defined(USE_NPU)
+namespace {
+
+template <typename Input>
+void expect_preparation_reuses_only_pinned_payload() {
+  ScopedContiguousInputBuffer contiguous_input_buffer(/*enabled=*/true);
+  const torch::Device device(torch::kPrivateUse1, 0);
+  Input source;
+  source.token_ids = torch::tensor({11, 23}, torch::kInt32);
+  source.positions = torch::tensor({0, 1}, torch::kInt32);
+  source.input_params.multi_block_tables = {
+      torch::tensor({{3, 7}}, torch::kInt32)};
+  proto::PackedForwardInput packed_input;
+  ASSERT_TRUE(source.to_packed_proto(&packed_input));
+  Input lazy_input;
+  ASSERT_TRUE(lazy_input.from_packed_proto(packed_input));
+  ASSERT_TRUE(lazy_input.runtime.input_host_buffer.is_pinned());
+  const void* pinned_data = lazy_input.runtime.input_host_buffer.data_ptr();
+  Input prepared = lazy_input.to(device, torch::kFloat32);
+  EXPECT_EQ(prepared.runtime.input_host_buffer.data_ptr(), pinned_data);
+  lazy_input = Input();
+  EXPECT_TRUE(torch::equal(prepared.token_ids.cpu(), source.token_ids));
+  EXPECT_TRUE(torch::equal(prepared.positions_host, source.positions));
+
+  Input unpinned_input;
+  ASSERT_TRUE(unpinned_input.from_packed_proto(packed_input));
+  torch::Tensor unpinned_buffer =
+      torch::empty(unpinned_input.runtime.input_host_buffer.sizes(),
+                   torch::TensorOptions().dtype(torch::kUInt8));
+  unpinned_buffer.copy_(unpinned_input.runtime.input_host_buffer);
+  ASSERT_FALSE(unpinned_buffer.is_pinned());
+  unpinned_input.runtime.input_host_buffer = std::move(unpinned_buffer);
+  const void* unpinned_data =
+      unpinned_input.runtime.input_host_buffer.data_ptr();
+  Input staged = unpinned_input.to(device, torch::kFloat32);
+  EXPECT_NE(staged.runtime.input_host_buffer.data_ptr(), unpinned_data);
+  EXPECT_TRUE(staged.runtime.input_host_buffer.is_pinned());
+  unpinned_input = Input();
+  EXPECT_TRUE(torch::equal(staged.token_ids.cpu(), source.token_ids));
+  EXPECT_TRUE(torch::equal(staged.positions_host, source.positions));
+  ASSERT_EQ(staged.input_params.multi_block_tables.size(), 1u);
+  EXPECT_TRUE(torch::equal(staged.input_params.multi_block_tables[0],
+                           source.input_params.multi_block_tables[0]));
+}
+
+}  // namespace
+
+TEST(BatchPackedInputTest, LlmPreparationReusesOnlyPinnedPayload) {
+  expect_preparation_reuses_only_pinned_payload<LlmForwardInput>();
+}
+
+TEST(BatchPackedInputTest, VlmPreparationReusesOnlyPinnedPayload) {
+  expect_preparation_reuses_only_pinned_payload<VlmForwardInput>();
+}
+
 TEST(BatchPackedInputTest, MaterializedShmReadRebindsTaggedTensorArena) {
   ScopedContiguousInputBuffer contiguous_input_buffer(/*enabled=*/true);
   const torch::Device device(torch::kPrivateUse1, 0);
