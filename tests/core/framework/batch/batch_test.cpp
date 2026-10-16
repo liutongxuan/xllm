@@ -30,6 +30,7 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "core/distributed_runtime/worker_model_codec.h"
 #include "core/framework/batch/forward_input_builder.h"
 #include "core/framework/config/model_config.h"
 #include "core/framework/config/scheduler_config.h"
@@ -1779,10 +1780,10 @@ TEST(BatchTest, ReorderedMtpAcceptedRowsCommitToOwningSequences) {
 
   ForwardOutput forward_output;
   forward_output.sample_output.next_tokens = accepted_output.next_tokens;
-  proto::ForwardOutput proto_output;
-  ASSERT_TRUE(forward_output.to_proto(/*stats=*/{}, &proto_output));
+  proto::LLMForwardResponse proto_output;
+  ASSERT_TRUE(encode_llm_output(forward_output, /*stats=*/{}, &proto_output));
   RawForwardOutput raw_output;
-  ASSERT_TRUE(raw_output.from_proto(proto_output));
+  ASSERT_TRUE(decode_llm_output(proto_output, raw_output));
   ASSERT_EQ(raw_output.outputs.size(), 2u);
   EXPECT_EQ(raw_output.outputs[0].tokens.size(), 6u);
   EXPECT_EQ(raw_output.outputs[0].tokens.back().id, 15);
@@ -2249,11 +2250,12 @@ TEST(BatchTest, ForwardOutputProtoRoundTripPreservesJsonObjectErrors) {
   ForwardOutput forward_output;
   forward_output.sample_output.next_tokens = next_tokens;
   forward_output.json_object_errors = errors;
-  proto::ForwardOutput proto_output;
-  ASSERT_TRUE(forward_output.to_proto(speculative_token_stats, &proto_output));
+  proto::LLMForwardResponse proto_output;
+  ASSERT_TRUE(encode_llm_output(
+      forward_output, speculative_token_stats, &proto_output));
 
   RawForwardOutput round_trip;
-  ASSERT_TRUE(round_trip.from_proto(proto_output));
+  ASSERT_TRUE(decode_llm_output(proto_output, round_trip));
 
   ASSERT_EQ(round_trip.outputs.size(), 2u);
   EXPECT_EQ(round_trip.outputs[0].speculative_token_stats.accepted_tokens, 2);

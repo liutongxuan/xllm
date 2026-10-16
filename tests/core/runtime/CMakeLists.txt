@@ -17,7 +17,7 @@ target_link_options(forward_shared_memory_output_test PRIVATE
 cc_test(
   NAME transport_codec_test
   SRCS transport_codec_test.cpp
-  DEPS :runtime GTest::gtest_main
+  DEPS :runtime :worker_model_codec GTest::gtest_main
 )
 if(USE_NPU)
   target_link_libraries(transport_codec_test PRIVATE nnopbase)

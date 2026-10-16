@@ -362,10 +362,6 @@ message PackedForwardInput {
   bytes payload = 1;
 }
 
-message ForwardInput {
-  PackedForwardInput packed_input = 100;
-}
-
 message LLMForwardRequest {
   PackedForwardInput packed_input = 1;
 }
@@ -381,10 +377,6 @@ message RECForwardRequest {
 message DITForwardRequest {
   PackedForwardInput packed_input = 1;
 }
-
- message BatchedForwardInputs {
-   repeated ForwardInput micro_inputs = 1;
- }
 
 message Embeddings {
   repeated float vals = 1;
@@ -415,17 +407,6 @@ message SquenceOutput {
 message JsonObjectOutputError {
   string sample_sequence_id = 1;
   string message = 2;
-}
-
-message ForwardOutput {
-  repeated SquenceOutput outputs = 2;
-  repeated int64 expert_load_data = 3;
-  int64 prepared_token = 4;
-  repeated int32 src_seq_idxes = 5;
-  repeated int32 out_tokens = 6;
-  repeated float out_logprobs = 7;
-  DiTForwardOutput dit_forward_output = 8;
-  repeated JsonObjectOutputError json_object_errors = 9;
 }
 
 message LLMForwardResponse {
