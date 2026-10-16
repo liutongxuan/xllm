@@ -17,11 +17,13 @@ limitations under the License.
 #include <torch/torch.h>
 #include <unistd.h>
 
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <limits>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "core/framework/config/eplb_config.h"
@@ -30,6 +32,14 @@ limitations under the License.
 
 namespace xllm {
 namespace {
+
+constexpr std::array kTokenOutputMethods = {
+    std::pair{&ForwardSharedMemoryManager::llm_output_write,
+              &ForwardSharedMemoryManager::llm_output_read},
+    std::pair{&ForwardSharedMemoryManager::vlm_output_write,
+              &ForwardSharedMemoryManager::vlm_output_read},
+    std::pair{&ForwardSharedMemoryManager::rec_output_write,
+              &ForwardSharedMemoryManager::rec_output_read}};
 
 class ForwardSharedMemoryOutputTest : public ::testing::Test {
  protected:
@@ -141,6 +151,129 @@ TEST_F(ForwardSharedMemoryOutputTest, RecPreservesBeamOutput) {
   EXPECT_EQ(output.out_logprobs, (std::vector<float>{-0.2f, -0.3f}));
   ASSERT_EQ(output.outputs.size(), 2);
   EXPECT_EQ(output.outputs[1].tokens[0].id, 8);
+}
+
+TEST_F(ForwardSharedMemoryOutputTest,
+       TokenDomainsPreserveCombinedOutputAfterSourceMutation) {
+  EPLBConfig::get_instance().enable_eplb(true);
+  for (const auto& [write, read] : kTokenOutputMethods) {
+    ForwardOutput source;
+    source.sample_output.next_tokens =
+        torch::tensor({{10, -1, 99}, {20, 21, 22}}, torch::kInt64);
+    source.sample_output.logprobs =
+        torch::tensor({{-0.1f, -0.2f, -0.3f}, {-0.4f, -0.5f, -0.6f}});
+    source.sample_output.top_tokens =
+        torch::arange(12, torch::kInt64).reshape({2, 3, 2});
+    source.sample_output.top_logprobs =
+        torch::arange(12, torch::kFloat32).reshape({2, 3, 2}) * -0.1f;
+    source.sample_output.embeddings =
+        torch::arange(18, torch::kFloat32).reshape({2, 3, 3});
+    source.sample_output.mm_embeddings = {
+        {torch::tensor({1.0f, 2.0f}), torch::empty({0, 3})}};
+    source.expert_load_data = torch::tensor({{1, 2}, {3, 4}}, torch::kInt64);
+    source.beam_search_output.src_seq_idxes =
+        torch::tensor({1, 0}, torch::kInt32);
+    source.beam_search_output.out_tokens = torch::tensor({8, 7}, torch::kInt32);
+    source.beam_search_output.out_logprobs = torch::tensor({-0.2f, -0.3f});
+    source.json_object_errors = {{"request#0", "invalid prior token"}};
+    source.prepared_token = 45;
+    ASSERT_TRUE((writer_.get()->*write)(source, {{0, 3}, {2, 3}}));
+
+    source.sample_output.next_tokens.fill_(-1);
+    source.sample_output.top_tokens.zero_();
+    source.sample_output.top_logprobs.zero_();
+    source.sample_output.embeddings.zero_();
+    source.sample_output.mm_embeddings.clear();
+    source.expert_load_data.zero_();
+    source.beam_search_output.out_tokens.zero_();
+    source.json_object_errors.clear();
+
+    RawForwardOutput output;
+    ASSERT_TRUE((reader_.get()->*read)(output));
+    ASSERT_EQ(output.outputs.size(), 2);
+    ASSERT_EQ(output.outputs[0].tokens.size(), 1);
+    EXPECT_EQ(output.outputs[0].tokens[0].id, 10);
+    ASSERT_EQ(output.outputs[1].tokens.size(), 3);
+    const RawToken& token = output.outputs[1].tokens[1];
+    EXPECT_EQ(token.id, 21);
+    EXPECT_FLOAT_EQ(token.logprob.value(), -0.5f);
+    EXPECT_EQ(token.top_tokens, (std::vector<int64_t>{8, 9}));
+    ASSERT_EQ(token.top_logprobs.size(), 2);
+    EXPECT_FLOAT_EQ(token.top_logprobs[0], -0.8f);
+    EXPECT_FLOAT_EQ(token.top_logprobs[1], -0.9f);
+    EXPECT_EQ(token.embeddings, (std::vector<float>{12.0f, 13.0f, 14.0f}));
+    ASSERT_EQ(output.outputs[0].mm_embeddings.size(), 2);
+    EXPECT_TRUE(torch::equal(output.outputs[0].mm_embeddings[0],
+                             torch::tensor({1.0f, 2.0f})));
+    EXPECT_EQ(output.outputs[0].mm_embeddings[1].sizes().vec(),
+              (std::vector<int64_t>{0, 3}));
+    EXPECT_TRUE(output.outputs[1].mm_embeddings.empty());
+    EXPECT_EQ(output.outputs[1].speculative_token_stats.accepted_tokens, 2);
+    EXPECT_EQ(output.outputs[1].speculative_token_stats.proposed_tokens, 3);
+    EXPECT_EQ(output.expert_load_data, (std::vector<int64_t>{1, 2, 3, 4}));
+    EXPECT_EQ(output.src_seq_idxes, (std::vector<int32_t>{1, 0}));
+    EXPECT_EQ(output.out_tokens, (std::vector<int32_t>{8, 7}));
+    EXPECT_EQ(output.out_logprobs, (std::vector<float>{-0.2f, -0.3f}));
+    ASSERT_EQ(output.json_object_errors.size(), 1);
+    EXPECT_EQ(output.json_object_errors[0].message, "invalid prior token");
+    EXPECT_EQ(output.prepared_token, 45);
+  }
+}
+
+TEST_F(ForwardSharedMemoryOutputTest,
+       OversizedTokenFieldsPreserveEveryPublishedPayloadByte) {
+  EPLBConfig::get_instance().enable_eplb(true);
+  ForwardOutput source;
+  source.sample_output.next_tokens = torch::tensor({7}, torch::kInt32);
+  ASSERT_TRUE(writer_->llm_output_write(source, {}));
+  const std::string published(static_cast<const char*>(writer_->base_address()),
+                              kSegmentBytes);
+  for (const auto& methods : kTokenOutputMethods) {
+    const auto write = methods.first;
+    ForwardOutput overflow;
+    overflow.sample_output.embeddings =
+        torch::ones({1, static_cast<int64_t>(kSegmentBytes)}, torch::kFloat32);
+    EXPECT_FALSE((writer_.get()->*write)(overflow, {}));
+    EXPECT_EQ(
+        std::memcmp(writer_->base_address(), published.data(), kSegmentBytes),
+        0);
+
+    overflow = ForwardOutput();
+    overflow.sample_output.next_tokens = torch::tensor({7}, torch::kInt32);
+    overflow.sample_output.logprobs = torch::tensor({-0.5f});
+    overflow.sample_output.top_tokens =
+        torch::zeros({1, static_cast<int64_t>(kSegmentBytes)}, torch::kInt64);
+    overflow.sample_output.top_logprobs =
+        torch::zeros({1, static_cast<int64_t>(kSegmentBytes)}, torch::kFloat32);
+    EXPECT_FALSE((writer_.get()->*write)(overflow, {}));
+    EXPECT_EQ(
+        std::memcmp(writer_->base_address(), published.data(), kSegmentBytes),
+        0);
+
+    overflow = ForwardOutput();
+    overflow.expert_load_data =
+        torch::ones({static_cast<int64_t>(kSegmentBytes)}, torch::kInt64);
+    EXPECT_FALSE((writer_.get()->*write)(overflow, {}));
+    EXPECT_EQ(
+        std::memcmp(writer_->base_address(), published.data(), kSegmentBytes),
+        0);
+
+    overflow = ForwardOutput();
+    overflow.beam_search_output.src_seq_idxes =
+        torch::zeros({static_cast<int64_t>(kSegmentBytes)}, torch::kInt32);
+    overflow.beam_search_output.out_tokens =
+        torch::zeros({static_cast<int64_t>(kSegmentBytes)}, torch::kInt32);
+    overflow.beam_search_output.out_logprobs =
+        torch::zeros({static_cast<int64_t>(kSegmentBytes)}, torch::kFloat32);
+    EXPECT_FALSE((writer_.get()->*write)(overflow, {}));
+    EXPECT_EQ(
+        std::memcmp(writer_->base_address(), published.data(), kSegmentBytes),
+        0);
+  }
+  RawForwardOutput output;
+  ASSERT_TRUE(reader_->llm_output_read(output));
+  ASSERT_EQ(output.outputs.size(), 1);
+  EXPECT_EQ(output.outputs[0].tokens[0].id, 7);
 }
 
 TEST_F(ForwardSharedMemoryOutputTest,

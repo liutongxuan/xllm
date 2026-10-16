@@ -2917,33 +2917,6 @@ bool packed_proto_to_forward_input_impl(
   return true;
 }
 
-size_t calculate_raw_token_size(const RawToken& token) {
-  size_t size = type_size<int64_t>;  // id
-
-  size += type_size<bool>;
-  if (token.logprob.has_value()) {
-    size += type_size<float>;
-  }
-
-  size += type_size<uint64_t> + token.top_tokens.size() * type_size<int64_t>;
-  size += type_size<uint64_t> + token.top_logprobs.size() * type_size<float>;
-  size += type_size<uint64_t> + token.embeddings.size() * type_size<float>;
-
-  return size;
-}
-
-size_t calculate_raw_sample_output_size(const RawSampleOutput& sample) {
-  size_t size = type_size<uint64_t>;
-  for (const auto& token : sample.tokens) {
-    size += calculate_raw_token_size(token);
-  }
-  size += get_vector_tensor_size(sample.mm_embeddings);
-  size += get_embedding_output_metadata_size(sample.mm_embeddings_metadata);
-  size += type_size<int64_t>;  // accepted speculative tokens
-  size += type_size<int64_t>;  // proposed speculative tokens
-  return size;
-}
-
 size_t calculate_json_object_errors_size(
     const std::vector<JsonObjectOutputError>& errors) {
   size_t size = type_size<uint64_t>;
@@ -2954,28 +2927,14 @@ size_t calculate_json_object_errors_size(
   return size;
 }
 
-void write_raw_token(char*& buffer, const RawToken& token) {
-  write_data(buffer, token.id);
-
-  write_data(buffer, token.logprob.has_value());
-  if (token.logprob.has_value()) {
-    write_data(buffer, token.logprob.value());
+template <typename Value>
+void write_output_values(char*& buffer, const Value* values, uint64_t count) {
+  write_data(buffer, count);
+  if (count > 0) {
+    const uint64_t bytes = count * sizeof(Value);
+    std::memcpy(buffer, values, bytes);
+    buffer += bytes;
   }
-
-  write_vector(buffer, token.top_tokens);
-  write_vector(buffer, token.top_logprobs);
-  write_vector(buffer, token.embeddings);
-}
-
-void write_raw_sample_output(char*& buffer, const RawSampleOutput& sample) {
-  write_data(buffer, static_cast<uint64_t>(sample.tokens.size()));
-  for (const auto& token : sample.tokens) {
-    write_raw_token(buffer, token);
-  }
-  write_vector_tensor(buffer, sample.mm_embeddings);
-  write_embedding_output_metadata(buffer, sample.mm_embeddings_metadata);
-  write_data(buffer, sample.speculative_token_stats.accepted_tokens);
-  write_data(buffer, sample.speculative_token_stats.proposed_tokens);
 }
 
 void write_json_object_errors(
@@ -3987,93 +3946,145 @@ bool ForwardSharedMemoryManager::llm_output_write(
     return false;
   }
 
-  RawForwardOutput encoded;
-  encoded.prepared_token = output.prepared_token;
-  encoded.json_object_errors = output.json_object_errors;
-  if (output.expert_load_data.defined() &&
-      output.expert_load_data.numel() > 0 &&
-      ::xllm::EPLBConfig::get_instance().enable_eplb()) {
-    const int64_t* values = output.expert_load_data.const_data_ptr<int64_t>();
-    encoded.expert_load_data.assign(values,
-                                    values + output.expert_load_data.numel());
-  }
-  if (beam_count > 0) {
-    const int32_t* indices = beam.src_seq_idxes.const_data_ptr<int32_t>();
-    encoded.src_seq_idxes.assign(indices, indices + beam_count);
-    const int32_t* beam_tokens = beam.out_tokens.const_data_ptr<int32_t>();
-    encoded.out_tokens.assign(beam_tokens, beam_tokens + beam_count);
-    const float* probabilities = beam.out_logprobs.const_data_ptr<float>();
-    encoded.out_logprobs.assign(probabilities, probabilities + beam_count);
-  }
-  encoded.outputs.reserve(row_count);
+  const bool speculative = tokens.defined() && tokens.dim() == 2;
+  const int64_t token_columns = speculative ? tokens.size(1) : 1;
+  const bool has_tokens = tokens.defined() && tokens.numel() > 0;
+  const int32_t* token_ids_i32 =
+      has_tokens && tokens.scalar_type() == torch::kInt32
+          ? tokens.const_data_ptr<int32_t>()
+          : nullptr;
+  const int64_t* token_ids_i64 =
+      has_tokens && tokens.scalar_type() == torch::kInt64
+          ? tokens.const_data_ptr<int64_t>()
+          : nullptr;
+  const auto token_id_at = [token_ids_i32,
+                            token_ids_i64](int64_t offset) -> int64_t {
+    if (token_ids_i32 != nullptr) {
+      return token_ids_i32[offset];
+    }
+    return token_ids_i64 != nullptr ? token_ids_i64[offset] : -1;
+  };
+  const bool has_logprobs = has_tokens && sampled.logprobs.defined();
+  const uint64_t top_count =
+      has_tokens && sampled.top_tokens.defined()
+          ? static_cast<uint64_t>(sampled.top_tokens.size(-1))
+          : 0;
+  const uint64_t embedding_count =
+      embeddings.defined() ? static_cast<uint64_t>(embeddings.size(-1)) : 0;
+  const uint64_t expert_count =
+      output.expert_load_data.defined() &&
+              ::xllm::EPLBConfig::get_instance().enable_eplb()
+          ? static_cast<uint64_t>(output.expert_load_data.numel())
+          : 0;
+  const uint64_t token_bytes =
+      sizeof(int64_t) + sizeof(bool) + (has_logprobs ? sizeof(float) : 0) +
+      3 * sizeof(uint64_t) + top_count * (sizeof(int64_t) + sizeof(float)) +
+      embedding_count * sizeof(float);
+  uint64_t payload_bytes = sizeof(uint64_t);
   for (int64_t row_index = 0; row_index < row_count; ++row_index) {
-    RawSampleOutput row;
-    const torch::Tensor row_embeddings =
-        embeddings.defined() ? embeddings[row_index] : torch::Tensor();
-    const int64_t token_count =
-        tokens.defined() && tokens.dim() == 2 ? tokens.size(1) : 1;
-    row.tokens.reserve(token_count);
-    for (int64_t token_index = 0; token_index < token_count; ++token_index) {
-      Token token(-1);
-      if (tokens.defined() && tokens.numel() > 0) {
-        token = tokens.dim() == 2 ? sampled.token_at(row_index, token_index)
-                                  : sampled.token_at(row_index);
-      }
-      if (tokens.defined() && tokens.dim() == 2 && token.id == -1) {
+    int64_t serialized_tokens = 0;
+    for (; serialized_tokens < token_columns; ++serialized_tokens) {
+      if (speculative &&
+          token_id_at(row_index * token_columns + serialized_tokens) == -1) {
         break;
       }
-      RawToken raw_token;
-      raw_token.id = token.id;
-      raw_token.logprob = token.logprob;
-      raw_token.top_tokens = token.top_tokens;
-      raw_token.top_logprobs = token.top_logprobs;
-      const torch::Tensor token_embeddings =
-          row_embeddings.defined() && tokens.defined() && tokens.dim() == 2
-              ? row_embeddings[token_index]
-              : row_embeddings;
-      if (token_embeddings.defined() && token_embeddings.numel() > 0) {
-        const float* values = token_embeddings.const_data_ptr<float>();
-        raw_token.embeddings.assign(values, values + token_embeddings.numel());
-      }
-      row.tokens.emplace_back(std::move(raw_token));
     }
-    if (row_index < static_cast<int64_t>(sampled.mm_embeddings.size())) {
-      row.mm_embeddings = sampled.mm_embeddings[row_index];
-    }
-    if (!speculative_token_stats.empty()) {
-      row.speculative_token_stats = speculative_token_stats[row_index];
-    }
-    encoded.outputs.emplace_back(std::move(row));
+    payload_bytes += sizeof(uint64_t) +
+                     static_cast<uint64_t>(serialized_tokens) * token_bytes;
+    payload_bytes +=
+        row_index < static_cast<int64_t>(sampled.mm_embeddings.size())
+            ? get_vector_tensor_size(sampled.mm_embeddings[row_index])
+            : sizeof(int32_t);
+    payload_bytes += 2 * sizeof(int64_t);
   }
-
-  uint64_t payload_bytes = sizeof(uint64_t);
-  for (const RawSampleOutput& row : encoded.outputs) {
-    payload_bytes += calculate_raw_sample_output_size(row);
-  }
+  payload_bytes += calculate_json_object_errors_size(output.json_object_errors);
   payload_bytes +=
-      calculate_json_object_errors_size(encoded.json_object_errors);
-  payload_bytes += get_vector_size(encoded.expert_load_data);
-  payload_bytes += get_vector_size(encoded.src_seq_idxes);
-  payload_bytes += get_vector_size(encoded.out_tokens);
-  payload_bytes += get_vector_size(encoded.out_logprobs);
+      4 * sizeof(uint64_t) + expert_count * sizeof(int64_t) +
+      static_cast<uint64_t>(beam_count) * (2 * sizeof(int32_t) + sizeof(float));
   payload_bytes += sizeof(int64_t) + sizeof(bool);
   if (size() < static_cast<int64_t>(sizeof(ControlMetadata)) ||
       payload_bytes > static_cast<uint64_t>(size()) - sizeof(ControlMetadata)) {
     LOG(ERROR) << "LLM shared-memory output size exceeds segment capacity";
     return false;
   }
+
+  const float* logprob_values =
+      has_logprobs ? sampled.logprobs.const_data_ptr<float>() : nullptr;
+  const int64_t* top_token_values =
+      top_count > 0 ? sampled.top_tokens.const_data_ptr<int64_t>() : nullptr;
+  const float* top_logprob_values =
+      top_count > 0 ? sampled.top_logprobs.const_data_ptr<float>() : nullptr;
+  const float* embedding_values =
+      embedding_count > 0 ? embeddings.const_data_ptr<float>() : nullptr;
   char* cursor = static_cast<char*>(base_address()) + sizeof(ControlMetadata);
-  write_data(cursor, static_cast<uint64_t>(encoded.outputs.size()));
-  for (const RawSampleOutput& row : encoded.outputs) {
-    write_raw_sample_output(cursor, row);
+  const char* payload_begin = cursor;
+  write_data(cursor, static_cast<uint64_t>(row_count));
+  for (int64_t row_index = 0; row_index < row_count; ++row_index) {
+    // Fill the row count after its sentinel-trimmed tokens, without a temporary
+    // vector or a third traversal of the token IDs.
+    char* row_count_cursor = cursor;
+    uint64_t serialized_tokens = 0;
+    write_data(cursor, serialized_tokens);
+    for (int64_t token_index = 0; token_index < token_columns; ++token_index) {
+      const int64_t offset = row_index * token_columns + token_index;
+      const int64_t token_id = token_id_at(offset);
+      if (speculative && token_id == -1) {
+        break;
+      }
+      write_data(cursor, token_id);
+      write_data(cursor, has_logprobs);
+      if (has_logprobs) {
+        write_data(cursor, logprob_values[offset]);
+      }
+      write_output_values(
+          cursor,
+          top_count > 0 ? top_token_values + offset * top_count : nullptr,
+          top_count);
+      write_output_values(
+          cursor,
+          top_count > 0 ? top_logprob_values + offset * top_count : nullptr,
+          top_count);
+      write_output_values(cursor,
+                          embedding_count > 0
+                              ? embedding_values + offset * embedding_count
+                              : nullptr,
+                          embedding_count);
+      ++serialized_tokens;
+    }
+    std::memcpy(
+        row_count_cursor, &serialized_tokens, sizeof(serialized_tokens));
+    if (row_index < static_cast<int64_t>(sampled.mm_embeddings.size())) {
+      write_vector_tensor(cursor, sampled.mm_embeddings[row_index]);
+    } else {
+      write_data(cursor, int32_t{0});
+    }
+    const SpeculativeTokenStats stats =
+        speculative_token_stats.empty() ? SpeculativeTokenStats()
+                                        : speculative_token_stats[row_index];
+    write_data(cursor, stats.accepted_tokens);
+    write_data(cursor, stats.proposed_tokens);
   }
-  write_json_object_errors(cursor, encoded.json_object_errors);
-  write_vector(cursor, encoded.expert_load_data);
-  write_vector(cursor, encoded.src_seq_idxes);
-  write_vector(cursor, encoded.out_tokens);
-  write_vector(cursor, encoded.out_logprobs);
-  write_data(cursor, encoded.prepared_token);
+  write_json_object_errors(cursor, output.json_object_errors);
+  write_output_values(cursor,
+                      expert_count > 0
+                          ? output.expert_load_data.const_data_ptr<int64_t>()
+                          : nullptr,
+                      expert_count);
+  write_output_values(
+      cursor,
+      beam_count > 0 ? beam.src_seq_idxes.const_data_ptr<int32_t>() : nullptr,
+      static_cast<uint64_t>(beam_count));
+  write_output_values(
+      cursor,
+      beam_count > 0 ? beam.out_tokens.const_data_ptr<int32_t>() : nullptr,
+      static_cast<uint64_t>(beam_count));
+  write_output_values(
+      cursor,
+      beam_count > 0 ? beam.out_logprobs.const_data_ptr<float>() : nullptr,
+      static_cast<uint64_t>(beam_count));
+  write_data(cursor, output.prepared_token);
   write_data(cursor, /*has_dit_output=*/false);
+  CHECK_EQ(static_cast<uint64_t>(cursor - payload_begin), payload_bytes);
   std::atomic_thread_fence(std::memory_order_release);
   control_ptr_->version = ++last_version_;
   return true;
@@ -4202,93 +4213,145 @@ bool ForwardSharedMemoryManager::vlm_output_write(
     return false;
   }
 
-  RawForwardOutput encoded;
-  encoded.prepared_token = output.prepared_token;
-  encoded.json_object_errors = output.json_object_errors;
-  if (output.expert_load_data.defined() &&
-      output.expert_load_data.numel() > 0 &&
-      ::xllm::EPLBConfig::get_instance().enable_eplb()) {
-    const int64_t* values = output.expert_load_data.const_data_ptr<int64_t>();
-    encoded.expert_load_data.assign(values,
-                                    values + output.expert_load_data.numel());
-  }
-  if (beam_count > 0) {
-    const int32_t* indices = beam.src_seq_idxes.const_data_ptr<int32_t>();
-    encoded.src_seq_idxes.assign(indices, indices + beam_count);
-    const int32_t* beam_tokens = beam.out_tokens.const_data_ptr<int32_t>();
-    encoded.out_tokens.assign(beam_tokens, beam_tokens + beam_count);
-    const float* probabilities = beam.out_logprobs.const_data_ptr<float>();
-    encoded.out_logprobs.assign(probabilities, probabilities + beam_count);
-  }
-  encoded.outputs.reserve(row_count);
+  const bool speculative = tokens.defined() && tokens.dim() == 2;
+  const int64_t token_columns = speculative ? tokens.size(1) : 1;
+  const bool has_tokens = tokens.defined() && tokens.numel() > 0;
+  const int32_t* token_ids_i32 =
+      has_tokens && tokens.scalar_type() == torch::kInt32
+          ? tokens.const_data_ptr<int32_t>()
+          : nullptr;
+  const int64_t* token_ids_i64 =
+      has_tokens && tokens.scalar_type() == torch::kInt64
+          ? tokens.const_data_ptr<int64_t>()
+          : nullptr;
+  const auto token_id_at = [token_ids_i32,
+                            token_ids_i64](int64_t offset) -> int64_t {
+    if (token_ids_i32 != nullptr) {
+      return token_ids_i32[offset];
+    }
+    return token_ids_i64 != nullptr ? token_ids_i64[offset] : -1;
+  };
+  const bool has_logprobs = has_tokens && sampled.logprobs.defined();
+  const uint64_t top_count =
+      has_tokens && sampled.top_tokens.defined()
+          ? static_cast<uint64_t>(sampled.top_tokens.size(-1))
+          : 0;
+  const uint64_t embedding_count =
+      embeddings.defined() ? static_cast<uint64_t>(embeddings.size(-1)) : 0;
+  const uint64_t expert_count =
+      output.expert_load_data.defined() &&
+              ::xllm::EPLBConfig::get_instance().enable_eplb()
+          ? static_cast<uint64_t>(output.expert_load_data.numel())
+          : 0;
+  const uint64_t token_bytes =
+      sizeof(int64_t) + sizeof(bool) + (has_logprobs ? sizeof(float) : 0) +
+      3 * sizeof(uint64_t) + top_count * (sizeof(int64_t) + sizeof(float)) +
+      embedding_count * sizeof(float);
+  uint64_t payload_bytes = sizeof(uint64_t);
   for (int64_t row_index = 0; row_index < row_count; ++row_index) {
-    RawSampleOutput row;
-    const torch::Tensor row_embeddings =
-        embeddings.defined() ? embeddings[row_index] : torch::Tensor();
-    const int64_t token_count =
-        tokens.defined() && tokens.dim() == 2 ? tokens.size(1) : 1;
-    row.tokens.reserve(token_count);
-    for (int64_t token_index = 0; token_index < token_count; ++token_index) {
-      Token token(-1);
-      if (tokens.defined() && tokens.numel() > 0) {
-        token = tokens.dim() == 2 ? sampled.token_at(row_index, token_index)
-                                  : sampled.token_at(row_index);
-      }
-      if (tokens.defined() && tokens.dim() == 2 && token.id == -1) {
+    int64_t serialized_tokens = 0;
+    for (; serialized_tokens < token_columns; ++serialized_tokens) {
+      if (speculative &&
+          token_id_at(row_index * token_columns + serialized_tokens) == -1) {
         break;
       }
-      RawToken raw_token;
-      raw_token.id = token.id;
-      raw_token.logprob = token.logprob;
-      raw_token.top_tokens = token.top_tokens;
-      raw_token.top_logprobs = token.top_logprobs;
-      const torch::Tensor token_embeddings =
-          row_embeddings.defined() && tokens.defined() && tokens.dim() == 2
-              ? row_embeddings[token_index]
-              : row_embeddings;
-      if (token_embeddings.defined() && token_embeddings.numel() > 0) {
-        const float* values = token_embeddings.const_data_ptr<float>();
-        raw_token.embeddings.assign(values, values + token_embeddings.numel());
-      }
-      row.tokens.emplace_back(std::move(raw_token));
     }
-    if (row_index < static_cast<int64_t>(sampled.mm_embeddings.size())) {
-      row.mm_embeddings = sampled.mm_embeddings[row_index];
-    }
-    if (!speculative_token_stats.empty()) {
-      row.speculative_token_stats = speculative_token_stats[row_index];
-    }
-    encoded.outputs.emplace_back(std::move(row));
+    payload_bytes += sizeof(uint64_t) +
+                     static_cast<uint64_t>(serialized_tokens) * token_bytes;
+    payload_bytes +=
+        row_index < static_cast<int64_t>(sampled.mm_embeddings.size())
+            ? get_vector_tensor_size(sampled.mm_embeddings[row_index])
+            : sizeof(int32_t);
+    payload_bytes += 2 * sizeof(int64_t);
   }
-
-  uint64_t payload_bytes = sizeof(uint64_t);
-  for (const RawSampleOutput& row : encoded.outputs) {
-    payload_bytes += calculate_raw_sample_output_size(row);
-  }
+  payload_bytes += calculate_json_object_errors_size(output.json_object_errors);
   payload_bytes +=
-      calculate_json_object_errors_size(encoded.json_object_errors);
-  payload_bytes += get_vector_size(encoded.expert_load_data);
-  payload_bytes += get_vector_size(encoded.src_seq_idxes);
-  payload_bytes += get_vector_size(encoded.out_tokens);
-  payload_bytes += get_vector_size(encoded.out_logprobs);
+      4 * sizeof(uint64_t) + expert_count * sizeof(int64_t) +
+      static_cast<uint64_t>(beam_count) * (2 * sizeof(int32_t) + sizeof(float));
   payload_bytes += sizeof(int64_t) + sizeof(bool);
   if (size() < static_cast<int64_t>(sizeof(ControlMetadata)) ||
       payload_bytes > static_cast<uint64_t>(size()) - sizeof(ControlMetadata)) {
     LOG(ERROR) << "VLM shared-memory output size exceeds segment capacity";
     return false;
   }
+
+  const float* logprob_values =
+      has_logprobs ? sampled.logprobs.const_data_ptr<float>() : nullptr;
+  const int64_t* top_token_values =
+      top_count > 0 ? sampled.top_tokens.const_data_ptr<int64_t>() : nullptr;
+  const float* top_logprob_values =
+      top_count > 0 ? sampled.top_logprobs.const_data_ptr<float>() : nullptr;
+  const float* embedding_values =
+      embedding_count > 0 ? embeddings.const_data_ptr<float>() : nullptr;
   char* cursor = static_cast<char*>(base_address()) + sizeof(ControlMetadata);
-  write_data(cursor, static_cast<uint64_t>(encoded.outputs.size()));
-  for (const RawSampleOutput& row : encoded.outputs) {
-    write_raw_sample_output(cursor, row);
+  const char* payload_begin = cursor;
+  write_data(cursor, static_cast<uint64_t>(row_count));
+  for (int64_t row_index = 0; row_index < row_count; ++row_index) {
+    // Fill the row count after its sentinel-trimmed tokens, without a temporary
+    // vector or a third traversal of the token IDs.
+    char* row_count_cursor = cursor;
+    uint64_t serialized_tokens = 0;
+    write_data(cursor, serialized_tokens);
+    for (int64_t token_index = 0; token_index < token_columns; ++token_index) {
+      const int64_t offset = row_index * token_columns + token_index;
+      const int64_t token_id = token_id_at(offset);
+      if (speculative && token_id == -1) {
+        break;
+      }
+      write_data(cursor, token_id);
+      write_data(cursor, has_logprobs);
+      if (has_logprobs) {
+        write_data(cursor, logprob_values[offset]);
+      }
+      write_output_values(
+          cursor,
+          top_count > 0 ? top_token_values + offset * top_count : nullptr,
+          top_count);
+      write_output_values(
+          cursor,
+          top_count > 0 ? top_logprob_values + offset * top_count : nullptr,
+          top_count);
+      write_output_values(cursor,
+                          embedding_count > 0
+                              ? embedding_values + offset * embedding_count
+                              : nullptr,
+                          embedding_count);
+      ++serialized_tokens;
+    }
+    std::memcpy(
+        row_count_cursor, &serialized_tokens, sizeof(serialized_tokens));
+    if (row_index < static_cast<int64_t>(sampled.mm_embeddings.size())) {
+      write_vector_tensor(cursor, sampled.mm_embeddings[row_index]);
+    } else {
+      write_data(cursor, int32_t{0});
+    }
+    const SpeculativeTokenStats stats =
+        speculative_token_stats.empty() ? SpeculativeTokenStats()
+                                        : speculative_token_stats[row_index];
+    write_data(cursor, stats.accepted_tokens);
+    write_data(cursor, stats.proposed_tokens);
   }
-  write_json_object_errors(cursor, encoded.json_object_errors);
-  write_vector(cursor, encoded.expert_load_data);
-  write_vector(cursor, encoded.src_seq_idxes);
-  write_vector(cursor, encoded.out_tokens);
-  write_vector(cursor, encoded.out_logprobs);
-  write_data(cursor, encoded.prepared_token);
+  write_json_object_errors(cursor, output.json_object_errors);
+  write_output_values(cursor,
+                      expert_count > 0
+                          ? output.expert_load_data.const_data_ptr<int64_t>()
+                          : nullptr,
+                      expert_count);
+  write_output_values(
+      cursor,
+      beam_count > 0 ? beam.src_seq_idxes.const_data_ptr<int32_t>() : nullptr,
+      static_cast<uint64_t>(beam_count));
+  write_output_values(
+      cursor,
+      beam_count > 0 ? beam.out_tokens.const_data_ptr<int32_t>() : nullptr,
+      static_cast<uint64_t>(beam_count));
+  write_output_values(
+      cursor,
+      beam_count > 0 ? beam.out_logprobs.const_data_ptr<float>() : nullptr,
+      static_cast<uint64_t>(beam_count));
+  write_data(cursor, output.prepared_token);
   write_data(cursor, /*has_dit_output=*/false);
+  CHECK_EQ(static_cast<uint64_t>(cursor - payload_begin), payload_bytes);
   std::atomic_thread_fence(std::memory_order_release);
   control_ptr_->version = ++last_version_;
   return true;
@@ -4417,93 +4480,145 @@ bool ForwardSharedMemoryManager::rec_output_write(
     return false;
   }
 
-  RawForwardOutput encoded;
-  encoded.prepared_token = output.prepared_token;
-  encoded.json_object_errors = output.json_object_errors;
-  if (output.expert_load_data.defined() &&
-      output.expert_load_data.numel() > 0 &&
-      ::xllm::EPLBConfig::get_instance().enable_eplb()) {
-    const int64_t* values = output.expert_load_data.const_data_ptr<int64_t>();
-    encoded.expert_load_data.assign(values,
-                                    values + output.expert_load_data.numel());
-  }
-  if (beam_count > 0) {
-    const int32_t* indices = beam.src_seq_idxes.const_data_ptr<int32_t>();
-    encoded.src_seq_idxes.assign(indices, indices + beam_count);
-    const int32_t* beam_tokens = beam.out_tokens.const_data_ptr<int32_t>();
-    encoded.out_tokens.assign(beam_tokens, beam_tokens + beam_count);
-    const float* probabilities = beam.out_logprobs.const_data_ptr<float>();
-    encoded.out_logprobs.assign(probabilities, probabilities + beam_count);
-  }
-  encoded.outputs.reserve(row_count);
+  const bool speculative = tokens.defined() && tokens.dim() == 2;
+  const int64_t token_columns = speculative ? tokens.size(1) : 1;
+  const bool has_tokens = tokens.defined() && tokens.numel() > 0;
+  const int32_t* token_ids_i32 =
+      has_tokens && tokens.scalar_type() == torch::kInt32
+          ? tokens.const_data_ptr<int32_t>()
+          : nullptr;
+  const int64_t* token_ids_i64 =
+      has_tokens && tokens.scalar_type() == torch::kInt64
+          ? tokens.const_data_ptr<int64_t>()
+          : nullptr;
+  const auto token_id_at = [token_ids_i32,
+                            token_ids_i64](int64_t offset) -> int64_t {
+    if (token_ids_i32 != nullptr) {
+      return token_ids_i32[offset];
+    }
+    return token_ids_i64 != nullptr ? token_ids_i64[offset] : -1;
+  };
+  const bool has_logprobs = has_tokens && sampled.logprobs.defined();
+  const uint64_t top_count =
+      has_tokens && sampled.top_tokens.defined()
+          ? static_cast<uint64_t>(sampled.top_tokens.size(-1))
+          : 0;
+  const uint64_t embedding_count =
+      embeddings.defined() ? static_cast<uint64_t>(embeddings.size(-1)) : 0;
+  const uint64_t expert_count =
+      output.expert_load_data.defined() &&
+              ::xllm::EPLBConfig::get_instance().enable_eplb()
+          ? static_cast<uint64_t>(output.expert_load_data.numel())
+          : 0;
+  const uint64_t token_bytes =
+      sizeof(int64_t) + sizeof(bool) + (has_logprobs ? sizeof(float) : 0) +
+      3 * sizeof(uint64_t) + top_count * (sizeof(int64_t) + sizeof(float)) +
+      embedding_count * sizeof(float);
+  uint64_t payload_bytes = sizeof(uint64_t);
   for (int64_t row_index = 0; row_index < row_count; ++row_index) {
-    RawSampleOutput row;
-    const torch::Tensor row_embeddings =
-        embeddings.defined() ? embeddings[row_index] : torch::Tensor();
-    const int64_t token_count =
-        tokens.defined() && tokens.dim() == 2 ? tokens.size(1) : 1;
-    row.tokens.reserve(token_count);
-    for (int64_t token_index = 0; token_index < token_count; ++token_index) {
-      Token token(-1);
-      if (tokens.defined() && tokens.numel() > 0) {
-        token = tokens.dim() == 2 ? sampled.token_at(row_index, token_index)
-                                  : sampled.token_at(row_index);
-      }
-      if (tokens.defined() && tokens.dim() == 2 && token.id == -1) {
+    int64_t serialized_tokens = 0;
+    for (; serialized_tokens < token_columns; ++serialized_tokens) {
+      if (speculative &&
+          token_id_at(row_index * token_columns + serialized_tokens) == -1) {
         break;
       }
-      RawToken raw_token;
-      raw_token.id = token.id;
-      raw_token.logprob = token.logprob;
-      raw_token.top_tokens = token.top_tokens;
-      raw_token.top_logprobs = token.top_logprobs;
-      const torch::Tensor token_embeddings =
-          row_embeddings.defined() && tokens.defined() && tokens.dim() == 2
-              ? row_embeddings[token_index]
-              : row_embeddings;
-      if (token_embeddings.defined() && token_embeddings.numel() > 0) {
-        const float* values = token_embeddings.const_data_ptr<float>();
-        raw_token.embeddings.assign(values, values + token_embeddings.numel());
-      }
-      row.tokens.emplace_back(std::move(raw_token));
     }
-    if (row_index < static_cast<int64_t>(sampled.mm_embeddings.size())) {
-      row.mm_embeddings = sampled.mm_embeddings[row_index];
-    }
-    if (!speculative_token_stats.empty()) {
-      row.speculative_token_stats = speculative_token_stats[row_index];
-    }
-    encoded.outputs.emplace_back(std::move(row));
+    payload_bytes += sizeof(uint64_t) +
+                     static_cast<uint64_t>(serialized_tokens) * token_bytes;
+    payload_bytes +=
+        row_index < static_cast<int64_t>(sampled.mm_embeddings.size())
+            ? get_vector_tensor_size(sampled.mm_embeddings[row_index])
+            : sizeof(int32_t);
+    payload_bytes += 2 * sizeof(int64_t);
   }
-
-  uint64_t payload_bytes = sizeof(uint64_t);
-  for (const RawSampleOutput& row : encoded.outputs) {
-    payload_bytes += calculate_raw_sample_output_size(row);
-  }
+  payload_bytes += calculate_json_object_errors_size(output.json_object_errors);
   payload_bytes +=
-      calculate_json_object_errors_size(encoded.json_object_errors);
-  payload_bytes += get_vector_size(encoded.expert_load_data);
-  payload_bytes += get_vector_size(encoded.src_seq_idxes);
-  payload_bytes += get_vector_size(encoded.out_tokens);
-  payload_bytes += get_vector_size(encoded.out_logprobs);
+      4 * sizeof(uint64_t) + expert_count * sizeof(int64_t) +
+      static_cast<uint64_t>(beam_count) * (2 * sizeof(int32_t) + sizeof(float));
   payload_bytes += sizeof(int64_t) + sizeof(bool);
   if (size() < static_cast<int64_t>(sizeof(ControlMetadata)) ||
       payload_bytes > static_cast<uint64_t>(size()) - sizeof(ControlMetadata)) {
     LOG(ERROR) << "REC shared-memory output size exceeds segment capacity";
     return false;
   }
+
+  const float* logprob_values =
+      has_logprobs ? sampled.logprobs.const_data_ptr<float>() : nullptr;
+  const int64_t* top_token_values =
+      top_count > 0 ? sampled.top_tokens.const_data_ptr<int64_t>() : nullptr;
+  const float* top_logprob_values =
+      top_count > 0 ? sampled.top_logprobs.const_data_ptr<float>() : nullptr;
+  const float* embedding_values =
+      embedding_count > 0 ? embeddings.const_data_ptr<float>() : nullptr;
   char* cursor = static_cast<char*>(base_address()) + sizeof(ControlMetadata);
-  write_data(cursor, static_cast<uint64_t>(encoded.outputs.size()));
-  for (const RawSampleOutput& row : encoded.outputs) {
-    write_raw_sample_output(cursor, row);
+  const char* payload_begin = cursor;
+  write_data(cursor, static_cast<uint64_t>(row_count));
+  for (int64_t row_index = 0; row_index < row_count; ++row_index) {
+    // Fill the row count after its sentinel-trimmed tokens, without a temporary
+    // vector or a third traversal of the token IDs.
+    char* row_count_cursor = cursor;
+    uint64_t serialized_tokens = 0;
+    write_data(cursor, serialized_tokens);
+    for (int64_t token_index = 0; token_index < token_columns; ++token_index) {
+      const int64_t offset = row_index * token_columns + token_index;
+      const int64_t token_id = token_id_at(offset);
+      if (speculative && token_id == -1) {
+        break;
+      }
+      write_data(cursor, token_id);
+      write_data(cursor, has_logprobs);
+      if (has_logprobs) {
+        write_data(cursor, logprob_values[offset]);
+      }
+      write_output_values(
+          cursor,
+          top_count > 0 ? top_token_values + offset * top_count : nullptr,
+          top_count);
+      write_output_values(
+          cursor,
+          top_count > 0 ? top_logprob_values + offset * top_count : nullptr,
+          top_count);
+      write_output_values(cursor,
+                          embedding_count > 0
+                              ? embedding_values + offset * embedding_count
+                              : nullptr,
+                          embedding_count);
+      ++serialized_tokens;
+    }
+    std::memcpy(
+        row_count_cursor, &serialized_tokens, sizeof(serialized_tokens));
+    if (row_index < static_cast<int64_t>(sampled.mm_embeddings.size())) {
+      write_vector_tensor(cursor, sampled.mm_embeddings[row_index]);
+    } else {
+      write_data(cursor, int32_t{0});
+    }
+    const SpeculativeTokenStats stats =
+        speculative_token_stats.empty() ? SpeculativeTokenStats()
+                                        : speculative_token_stats[row_index];
+    write_data(cursor, stats.accepted_tokens);
+    write_data(cursor, stats.proposed_tokens);
   }
-  write_json_object_errors(cursor, encoded.json_object_errors);
-  write_vector(cursor, encoded.expert_load_data);
-  write_vector(cursor, encoded.src_seq_idxes);
-  write_vector(cursor, encoded.out_tokens);
-  write_vector(cursor, encoded.out_logprobs);
-  write_data(cursor, encoded.prepared_token);
+  write_json_object_errors(cursor, output.json_object_errors);
+  write_output_values(cursor,
+                      expert_count > 0
+                          ? output.expert_load_data.const_data_ptr<int64_t>()
+                          : nullptr,
+                      expert_count);
+  write_output_values(
+      cursor,
+      beam_count > 0 ? beam.src_seq_idxes.const_data_ptr<int32_t>() : nullptr,
+      static_cast<uint64_t>(beam_count));
+  write_output_values(
+      cursor,
+      beam_count > 0 ? beam.out_tokens.const_data_ptr<int32_t>() : nullptr,
+      static_cast<uint64_t>(beam_count));
+  write_output_values(
+      cursor,
+      beam_count > 0 ? beam.out_logprobs.const_data_ptr<float>() : nullptr,
+      static_cast<uint64_t>(beam_count));
+  write_data(cursor, output.prepared_token);
   write_data(cursor, /*has_dit_output=*/false);
+  CHECK_EQ(static_cast<uint64_t>(cursor - payload_begin), payload_bytes);
   std::atomic_thread_fence(std::memory_order_release);
   control_ptr_->version = ++last_version_;
   return true;
