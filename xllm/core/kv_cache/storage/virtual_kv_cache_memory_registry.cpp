@@ -57,6 +57,19 @@ std::vector<torch::Tensor> VirtualKVCacheMemoryRegistry::create_v_tensors(
       dims, dtype, num_layers, device_, page_size_);
 }
 
+std::vector<torch::Tensor> VirtualKVCacheMemoryRegistry::create_index_tensors(
+    const std::string& model_id,
+    const std::vector<int64_t>& dims,
+    torch::ScalarType dtype,
+    int64_t num_layers,
+    const std::vector<bool>& layer_owned) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  CHECK(initialized_) << "KV cache registry is not initialized";
+  CHECK(!model_id.empty());
+  return regions_[model_id].create_index_tensors(
+      dims, dtype, num_layers, device_, page_size_, layer_owned);
+}
+
 bool VirtualKVCacheMemoryRegistry::map(const std::string& model_id,
                                        const std::vector<offset_t>& offsets) {
   std::lock_guard<std::mutex> lock(mutex_);
