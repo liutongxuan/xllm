@@ -188,10 +188,11 @@ KVCacheTensors create_kv_cache_tensors(
         !use_npu_nz_kv_cache_layout(create_options.model_type()))
       << "Virtual memory does not support the NPU NZ KV cache layout.";
   const bool mla_packed_c8 = create_options.mla_packed_c8();
+  // The factory rejects NZ + virtual memory before any tensor is created.
+  // Keep the model-selected descriptor here so non-VM DeepSeek caches retain
+  // FRACTAL_NZ, while supported virtual-memory caches select ND naturally.
   const aclFormat npu_format_type =
-      create_options.enable_virtual_memory()
-          ? ACL_FORMAT_ND
-          : get_npu_kv_cache_format(create_options.model_type());
+      get_npu_kv_cache_format(create_options.model_type());
   auto allocate = [&](KVCacheTensorRole role,
                       const std::vector<int64_t>& shape,
                       torch::ScalarType dtype) -> torch::Tensor {
@@ -276,10 +277,10 @@ IndexedKVCacheTensors create_indexed_kv_cache_tensors(
   const torch::ScalarType index_dtype =
       create_options.enable_indexer_cache_quant() ? torch::kChar
                                                   : create_options.dtype();
+  // Keep INDEX's descriptor consistent with the main KV tensors. NZ + virtual
+  // memory is rejected before reaching this allocation path.
   const aclFormat npu_format_type =
-      create_options.enable_virtual_memory()
-          ? ACL_FORMAT_ND
-          : get_npu_kv_cache_format(create_options.model_type());
+      get_npu_kv_cache_format(create_options.model_type());
   if (create_options.tensor_allocator() != nullptr) {
     tensors.index_cache = at_npu::native::npu_format_cast(
         alloc_cache_tensor(KVCacheTensorRole::INDEX,
