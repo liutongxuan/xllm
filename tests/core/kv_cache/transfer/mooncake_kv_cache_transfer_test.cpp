@@ -1158,7 +1158,7 @@ TEST_F(MooncakeVirtualKVCachePullTest,
 }
 
 TEST_F(MooncakeVirtualKVCachePullTest,
-       CloseSessionCleansLocalStateWhenRemoteUnlinkFails) {
+       CloseSessionErasesLocalStateWhenRemoteUnlinkFails) {
   ASSERT_NO_FATAL_FAILURE(enable_protocol_queries());
   WorkerCacheLayoutManifest manifest;
   std::vector<VirtualKVCacheLayerGlobalOffsets> offsets;
@@ -1168,13 +1168,12 @@ TEST_F(MooncakeVirtualKVCachePullTest,
   engine_->failed_absent_peer = "source";
   EXPECT_FALSE(engine_->close_session(kSourceClusterId, "source"));
   EXPECT_EQ(engine_->closed_sessions, std::vector<std::string>({"source"}));
+  EXPECT_FALSE(engine_->get_remote_virtual_offsets(
+      kSourceClusterId, "source", mapping_.remote_ids, &manifest, &offsets));
 
   engine_->failed_absent_peer.clear();
   EXPECT_TRUE(engine_->close_session(kSourceClusterId, "source"));
-  EXPECT_EQ(engine_->closed_sessions,
-            (std::vector<std::string>{"source", "source"}));
-  EXPECT_FALSE(engine_->get_remote_virtual_offsets(
-      kSourceClusterId, "source", mapping_.remote_ids, &manifest, &offsets));
+  EXPECT_EQ(engine_->closed_sessions, std::vector<std::string>{"source"});
 }
 
 TEST_F(MooncakeVirtualKVCachePullTest,
