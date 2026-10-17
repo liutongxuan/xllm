@@ -39,7 +39,7 @@ namespace xllm {
 
 namespace {
 constexpr size_t kRequestQueueSize = 100;
-constexpr absl::Duration kSchedulerWakeupInterval = absl::Milliseconds(1);
+constexpr absl::Duration kSchedulerWakeupInterval = absl::Milliseconds(10);
 
 bool prompt_audio_allows_batching(const DiTInputParams& lhs,
                                   const DiTInputParams& rhs) {
