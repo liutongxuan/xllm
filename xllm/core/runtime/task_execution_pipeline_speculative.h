@@ -91,7 +91,7 @@ struct TaskExecutionPipeline::SpeculativeSlot {
     torch::Tensor next_hidden;
     torch::Tensor next_topk;
     ModelOutput output;
-    torch::Tensor logits;
+    LogitsOutput logits_output;
     SampleOutput sampled;
   };
 
@@ -143,7 +143,7 @@ struct TaskExecutionPipeline::SpeculativeSlot {
   torch::Tensor block_gumbel;
   torch::Tensor host_hidden;
   ModelOutput target_output;
-  torch::Tensor target_logits;
+  LogitsOutput target_logits_output;
 };
 
 }  // namespace xllm

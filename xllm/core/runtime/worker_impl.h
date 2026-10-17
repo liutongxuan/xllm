@@ -37,8 +37,6 @@ limitations under the License.
 #include "framework/model_context/model_context.h"
 #include "framework/parallel_state/parallel_args.h"
 #include "framework/parallel_state/parallel_state.h"
-#include "framework/sampling/beam_searcher.h"
-#include "framework/sampling/sampler.h"
 #include "framework/state_dict/state_dict.h"
 #include "framework/tokenizer/tokenizer.h"
 #include "options.h"
@@ -394,11 +392,6 @@ class WorkerImpl {
       const VlmForwardInput& input);
   virtual VlmForwardInput update_input_by_last_step_output_for_schedule_overlap(
       VlmForwardInput& input);
-  // Map shard-local selections to the rows consumed by the LM head.
-  torch::Tensor remap_selected_token_idxes_for_lm_head(
-      const torch::Tensor& selected_token_idxes,
-      const ParallelInput& parallel_input,
-      const torch::Tensor& hidden_states) const;
   // Restore on the caller's current stream only when this worker owns recurrent
   // caches. Overlap callers must use compute_stream_ after the preceding
   // forward.
@@ -580,8 +573,6 @@ class WorkerImpl {
   mutable std::mutex json_object_grammar_mutex_;
 
   std::unique_ptr<Executor> model_executor_;
-
-  std::unique_ptr<Sampler> sampler_;
 
   std::unique_ptr<EplbExecutor> eplb_executor_;
 

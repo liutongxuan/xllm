@@ -746,14 +746,14 @@ void TaskExecutionPipeline::launch(uint32_t slot_id) {
   auto& params = slot.sampling;
   if (params.selected_token_idxes.defined() &&
       params.selected_token_idxes.numel() != 0) {
-    slot.logits = model_.logits(slot.model_output.hidden_states,
-                                params.selected_token_idxes);
+    slot.logits_output = executor_.compute_logits(
+        slot.model_output.hidden_states, params.selected_token_idxes);
     // Native top-k/top-p consumes top-p in the logits dtype. Retain the
     // conversion through Consume so asynchronous sampler reads stay valid.
     if (params.top_k.defined() && params.top_p.defined()) {
-      params.top_p = params.top_p.to(slot.logits.scalar_type());
+      params.top_p = params.top_p.to(slot.logits_output.logits.scalar_type());
     }
-    slot.sample_output = sampler_.forward(slot.logits, params);
+    slot.sample_output = executor_.sample(slot.logits_output.logits, params);
     const auto& result = slot.buffer->device_result();
     result.tokens.copy_(slot.sample_output.next_tokens);
     if (result.logprobs.defined()) {
@@ -847,7 +847,7 @@ void TaskExecutionPipeline::discard(uint32_t slot_id) {
 void TaskExecutionPipeline::release_outputs(Slot& slot) {
   slot.buffer->model_params().parallel.layer_synchronizer.reset();
   slot.transfer_kv_infos.clear();
-  slot.logits = torch::Tensor();
+  slot.logits_output = LogitsOutput();
   slot.model_output = ModelOutput();
   slot.sample_output = SampleOutput();
   slot.sampling = SamplingParameters();

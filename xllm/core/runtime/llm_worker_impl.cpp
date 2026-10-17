@@ -122,8 +122,11 @@ bool LLMWorkerImpl::init_model(ModelContext& context) {
 
   // Dont find model in causal models
   CHECK(model_ != nullptr) << "Failed to create model.";
-  model_executor_ = std::make_unique<Executor>(
-      model_.get(), context.get_model_args(), device_, options_);
+  model_executor_ = std::make_unique<Executor>(model_.get(),
+                                               context.get_model_args(),
+                                               device_,
+                                               options_,
+                                               &context.get_parallel_args());
 
   // MTP draft workers execute a separate one-layer model and must not consume
   // the target model's EPLB prepare/update commands. Only the target reports
@@ -132,9 +135,6 @@ bool LLMWorkerImpl::init_model(ModelContext& context) {
     eplb_executor_ = std::make_unique<EplbExecutor>(*model_, device_);
   }
 
-  if (::xllm::BeamSearchConfig::get_instance().enable_beam_search_kernel()) {
-    beam_searcher_ = std::make_unique<BeamSearcher>();
-  }
   return true;
 }
 
@@ -286,48 +286,16 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_internal(
     return std::nullopt;
   }
 
-  torch::Tensor logits;
-  torch::Tensor lm_head_selected_token_idxes;
-  torch::Tensor selected_hidden;
+  LogitsOutput logits_output;
   if (sampling_params.selected_token_idxes.defined()) {
-    torch::Tensor selected_token_idxes = remap_selected_token_idxes_for_lm_head(
-        sampling_params.selected_token_idxes,
-        execution_params.parallel,
-        model_output.hidden_states);
-    if (model_output.hidden_states.defined() &&
-        selected_token_idxes.device() != model_output.hidden_states.device()) {
-      selected_token_idxes = selected_token_idxes
-                                 .to(model_output.hidden_states.device(),
-                                     /*non_blocking=*/false)
-                                 .contiguous();
-    }
-    lm_head_selected_token_idxes = selected_token_idxes;
     const bool need_selected_hidden =
         input.return_selected_hidden ||
         (options_.cp_size() > 1 && options_.enable_speculative_decode());
-    if (need_selected_hidden) {
-      // Emit both selected hidden and logits from a single lm_head pass so the
-      // ConfidenceHead and CP speculative paths can consume hidden without a
-      // second projection.
-      logits = model_->logits(
-          model_output.hidden_states, selected_token_idxes, selected_hidden);
-      if (!selected_hidden.defined() && model_output.hidden_states.defined()) {
-        // ATB lm_head backend does not expose a second output tensor
-        // (LmHeadParam::outputHidden is false), so we surface the hidden here.
-        // selected_hidden must align row-for-row with `logits`, which is
-        // produced in selected_token_idxes order. index_select reproduces that
-        // order for any selection. We deliberately do NOT alias the full
-        // hidden_states on a numel match: equal row count does not imply the
-        // idxes are the identity permutation, and a full-but-reordered
-        // selection would silently misalign hidden against logits. The gather
-        // is one [num_selected, hidden] copy per decode step (not per layer),
-        // negligible next to the forward.
-        selected_hidden = model_output.hidden_states.index_select(
-            /*dim=*/0, selected_token_idxes.to(torch::kLong));
-      }
-    } else {
-      logits = model_->logits(model_output.hidden_states, selected_token_idxes);
-    }
+    logits_output =
+        model_executor_->compute_logits(model_output.hidden_states,
+                                        sampling_params.selected_token_idxes,
+                                        need_selected_hidden,
+                                        &execution_params.parallel);
   }
 
   ForwardOutput output;
@@ -341,6 +309,9 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_internal(
       !options_.enable_speculative_decode()) {
     MULTI_MODEL_STEP_UNLOCK();
     if (sync_policy == ForwardSyncPolicy::NO_SYNC) {
+      // This rank returns no output owner for projection temporaries.
+      CHECK_EQ(device_.current_stream()->synchronize(), 0)
+          << "synchronize current stream failed";
       wait_kv_push();
       return std::nullopt;
     }
@@ -355,26 +326,20 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_internal(
 
   // driver prepare model output
   if (sampling_params.selected_token_idxes.defined()) {
-    output.logits = logits;
-    output.selected_hidden = selected_hidden;
+    output.logits = logits_output.logits;
+    output.selected_hidden = logits_output.selected_hidden;
     output.do_sample = sampling_params.do_sample;
     output.logprobs = sampling_params.logprobs;
     output.max_top_logprobs = sampling_params.max_top_logprobs;
     if (!input.skip_sampling_for_logits_only) {
-      auto sample_output = sampler_->forward(logits, sampling_params);
+      auto sample_output =
+          model_executor_->sample(logits_output.logits, sampling_params);
       output.filter_bitmask_applied_to_logits =
           sampling_params.filter_bitmask.defined();
 
       // beam search kernel
-      BeamSearchOutput beam_search_output;
-      if (sampling_params.use_beam_search &&
-          sampling_params.acc_logprob.defined() &&
-          sampling_params.acc_logprob.numel() > 0) {
-        beam_search_output =
-            beam_searcher_->forward(sampling_params.acc_logprob,
-                                    sample_output.top_tokens,
-                                    sample_output.top_logprobs);
-      }
+      auto beam_search_output =
+          model_executor_->beam_search(sampling_params, sample_output);
 
       // set sample output to output
       output.sample_output = sample_output;
@@ -390,8 +355,8 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_internal(
     output_spec_hidden_states(output.sample_output,
                               model_output.hidden_states,
                               model_output.aux_hidden_states,
-                              lm_head_selected_token_idxes,
-                              selected_hidden,
+                              logits_output.selected_token_idxes,
+                              logits_output.selected_hidden,
                               is_target_prefill,
                               /*cp_enabled=*/options_.cp_size() > 1);
   }
@@ -406,6 +371,8 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_internal(
     wait_kv_push();
     output.retained_inputs.emplace_back(
         std::make_shared<LlmForwardInput>(input.clone()));
+    output.retained_inputs.emplace_back(
+        std::make_shared<LogitsOutput>(std::move(logits_output)));
     if (enable_schedule_overlap() && record_ready_event) {
       output.ready_event = device_.current_stream()->record_event_or_sync();
     }
@@ -414,6 +381,11 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_internal(
   if (should_sync_default_stream) {
     int ret = device_.synchronize_default_stream();
     CHECK_EQ(ret, 0) << "synchronize_default_stream failed";
+  } else {
+    // Graph decode returns before the LM head finishes consuming its indices.
+    output.retained_inputs.emplace_back(
+        std::make_shared<LogitsOutput>(std::move(logits_output)));
+    output.ready_event = device_.current_stream()->record_event_or_sync();
   }
 
   wait_kv_push();

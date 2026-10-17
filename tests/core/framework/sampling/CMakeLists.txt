@@ -38,7 +38,7 @@ add_dependencies(sampler_test brpc-static)
 cc_test(
   NAME sampler_controls_test
   NO_NPU_RUNTIME
-  SRCS logits_utils_test.cpp sampler_controls_test.cpp
+  SRCS logits_utils_test.cpp sampler_controls_test.cpp rec_sampler_test.cpp
   DEPS absl::strings GTest::gtest_main :config :sampler glog::glog :state_dict
 )
 target_link_libraries(sampler_controls_test PRIVATE

@@ -31,9 +31,7 @@ limitations under the License.
 
 namespace xllm {
 
-class RecSampler;
 class RecConstrainedDecoding;
-struct RecConstraintTables;
 
 class RecWorkerImpl : public LLMWorkerImpl {
   friend class RecWorkPipeline;
@@ -116,9 +114,7 @@ class RecWorkerImpl : public LLMWorkerImpl {
 
   class OneRecWorkPipeline : public RecWorkPipeline {
    public:
-    explicit OneRecWorkPipeline(
-        RecPipelineRuntime& runtime,
-        RecPipelineType pipeline_type = RecPipelineType::kOneRecDefault);
+    explicit OneRecWorkPipeline(RecPipelineRuntime& runtime);
 
     void prepare_work_before_execute(
         const RecForwardInput& inputs,
@@ -130,7 +126,6 @@ class RecWorkerImpl : public LLMWorkerImpl {
     folly::SemiFuture<torch::Tensor> prepare_filter_mask_async(
         const std::vector<std::vector<int32_t>>& generated_tokens);
 
-    std::unique_ptr<RecSampler> rec_sampler_;
     std::unique_ptr<RecConstrainedDecoding> constrained_decoding_;
     std::unique_ptr<ThreadPool> filter_mask_threadpool_;
   };
@@ -146,33 +141,8 @@ class RecWorkerImpl : public LLMWorkerImpl {
     std::optional<ForwardOutput> step(const RecForwardInput& input) override;
 
    private:
-    struct RecConstraintDeviceTensors {
-      torch::Tensor first_token_ids;
-      torch::Tensor prefix1_offsets;
-      torch::Tensor prefix1_values;
-      torch::Tensor prefix1_pair_keys;
-      torch::Tensor prefix2_value_offsets;
-      torch::Tensor prefix2_values;
-      int64_t max_prefix1_degree = 0;
-      int64_t max_prefix2_degree = 0;
-      bool initialized = false;
-    };
-
     folly::SemiFuture<torch::Tensor> prepare_filter_mask_async(
         const std::vector<std::vector<int32_t>>& generated_tokens);
-
-    void initialize_constraint_device_tensors(
-        const RecConstraintTables& tables);
-
-    bool can_use_device_constraints(const SamplingParameters& sampling_params,
-                                    int32_t current_step,
-                                    int32_t beam_width) const;
-
-    SampleOutput sample_with_device_constraints(
-        torch::Tensor& logits,
-        const SamplingParameters& sampling_params,
-        const torch::Tensor& sequence_group,
-        int32_t current_step) const;
 
     void allocate_unshared_kv_caches();
 
@@ -188,10 +158,8 @@ class RecWorkerImpl : public LLMWorkerImpl {
                               int32_t beam_width,
                               int32_t num_layers);
 
-    std::unique_ptr<RecSampler> rec_sampler_;
     std::unique_ptr<RecConstrainedDecoding> constrained_decoding_;
     std::unique_ptr<ThreadPool> filter_mask_threadpool_;
-    RecConstraintDeviceTensors constraint_device_tensors_;
     std::vector<torch::Tensor> cached_unshared_k_caches_;
     std::vector<torch::Tensor> cached_unshared_v_caches_;
     int32_t max_seqs_per_batch_ = 0;
@@ -341,8 +309,6 @@ class RecWorkerImpl : public LLMWorkerImpl {
     torch::Tensor cached_two_stage_paged_kv_indices_expanded_;
     torch::Tensor cached_two_stage_paged_kv_last_page_len_expanded_;
     torch::Tensor cached_beam_width_tensor_;
-
-    std::unique_ptr<RecSampler> rec_sampler_;
 
     // for async scheduler
     ThreadPool threadpool_{/*num_threads=*/1,

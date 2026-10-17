@@ -24,7 +24,6 @@ limitations under the License.
 
 #include "core/framework/model/causal_lm.h"
 #include "core/framework/sampling/draft_sampling_mode.h"
-#include "core/framework/sampling/sampler.h"
 #include "core/platform/device.h"
 #include "core/runtime/executor.h"
 #include "core/runtime/forward_params.h"
@@ -244,7 +243,7 @@ class TaskExecutionPipeline final {
     SamplingParameters sampling;
     SampleOutput sample_output;
     ModelOutput model_output;
-    torch::Tensor logits;
+    LogitsOutput logits_output;
     // Used only by the WorkerImpl-owned execution mode. These values stay in
     // the normal task slot until the completed FIFO retires it.
     LlmForwardInput worker_input;
@@ -288,7 +287,9 @@ class TaskExecutionPipeline final {
   void discard_speculative(uint32_t slot_id);
   uint64_t speculative_pinned_bytes() const;
   uint64_t speculative_device_bytes() const;
-  const SampleOutput& sample(Sampling& sampling, torch::Tensor& logits);
+  const SampleOutput& sample(Executor& executor,
+                             Sampling& sampling,
+                             torch::Tensor& logits);
   Status validate_input(SpeculativeSlot& slot, const LlmForwardInput& input);
   Status plan_sampling(SpeculativeSlot& slot, const LlmForwardInput& input);
   Status validate_bootstrap(const LlmForwardInput& input) const;
@@ -331,7 +332,6 @@ class TaskExecutionPipeline final {
   Stream prepare_stream_;
   Stream task_stream_;
   Stream result_stream_;
-  Sampler sampler_;
   // Device reads/writes use only task_stream_. Consume never changes this.
   torch::Tensor previous_tokens_;
   // Prepare and Launch have separate thread-owned descriptors. IDs advance

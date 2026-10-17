@@ -21,19 +21,33 @@ limitations under the License.
 #include "framework/model/causal_lm.h"
 #include "framework/model/model_input_params.h"
 #include "framework/model/model_output.h"
+#include "framework/sampling/beam_searcher.h"
+#include "framework/sampling/rec_sampler.h"
+#include "framework/sampling/sampler.h"
 #include "runtime/executor_impl.h"
 #include "runtime/options.h"
 
 namespace xllm {
 
 class PyExecutorImpl;
+struct ParallelArgs;
+struct RecConstraintTables;
+
+// Keep invocation-owned tensors alive until the caller's completion fence.
+struct LogitsOutput {
+  torch::Tensor logits;
+  torch::Tensor selected_hidden;
+  torch::Tensor selected_token_idxes;
+  torch::Tensor gather_idxes;
+};
 
 class Executor final {
  public:
   Executor(CausalLM* model,
            const ModelArgs& args,
            const torch::Device& device,
-           const runtime::Options& options);
+           const runtime::Options& options,
+           const ParallelArgs* parallel_args = nullptr);
 
   virtual ~Executor() = default;
 
@@ -54,6 +68,30 @@ class Executor final {
                       std::vector<KVCache>& kv_caches,
                       const ModelInputParams& params);
 
+  // Separate projection from sampling so logits-only calls do not advance RNG.
+  LogitsOutput compute_logits(const torch::Tensor& hidden_states,
+                              const torch::Tensor& selected_token_idxes,
+                              bool return_selected_hidden = false,
+                              const ParallelInput* parallel_input = nullptr);
+
+  // Sampling preserves in-place logits transforms and raw logprob semantics.
+  SampleOutput sample(torch::Tensor& logits,
+                      const SamplingParameters& params,
+                      const torch::Tensor& filter_mask = torch::Tensor());
+  BeamSearchOutput beam_search(const SamplingParameters& params,
+                               const SampleOutput& sample_output);
+
+  void configure_rec_sampling(RecPipelineType pipeline_type);
+  SampleOutput sample_rec(torch::Tensor& logits,
+                          const SamplingParameters& params,
+                          const torch::Tensor& filter_mask = torch::Tensor(),
+                          const RecSamplingContext* context = nullptr);
+  void initialize_rec_constraints(const RecConstraintTables& tables,
+                                  const torch::Device& device);
+  bool can_use_rec_device_constraints(const SamplingParameters& params,
+                                      int32_t current_step,
+                                      int32_t beam_width) const;
+
   void prepare_graph_input(const torch::Tensor& tokens,
                            const torch::Tensor& positions,
                            std::vector<KVCache>& kv_caches,
@@ -69,6 +107,18 @@ class Executor final {
   PyExecutorImpl* python_impl();
 
  private:
+  torch::Tensor remap_selected_token_idxes(
+      const torch::Tensor& selected_token_idxes,
+      const ParallelInput& parallel_input,
+      const torch::Tensor& hidden_states) const;
+
+  // The owning worker destroys this executor before its model.
+  CausalLM& model_;
+  int64_t attention_dp_rank_ = -1;
+  bool beam_search_enabled_ = false;
+  Sampler sampler_;
+  BeamSearcher beam_searcher_;
+  std::unique_ptr<RecSampler> rec_sampler_;
   std::unique_ptr<ExecutorImpl> impl_;
 };
 

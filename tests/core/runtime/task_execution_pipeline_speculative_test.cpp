@@ -743,16 +743,20 @@ TEST_F(SpeculativePipelineTest, PrefillDecodeAndSlotReuseKeepAcceptedContext) {
                            torch::tensor({3}, torch::kInt64)));
   EXPECT_TRUE(
       torch::equal(prefill.sample_output.embeddings, torch::tensor({{2.0f}})));
+  EXPECT_EQ(target_->logits_calls.load(), 1);
   EXPECT_EQ(draft_->logits_calls.load(), 0);
   const auto decoded = execute(input(true));
   ASSERT_TRUE(decoded.sample_output.next_tokens.defined());
   EXPECT_TRUE(torch::equal(decoded.sample_output.next_tokens,
                            torch::tensor({{4, 5, 6}}, torch::kInt64)));
+  EXPECT_EQ(target_->logits_calls.load(), 2);
   EXPECT_EQ(draft_->logits_calls.load(), 2);
   const auto reused = execute(input(true, 6, 5));
   ASSERT_TRUE(reused.sample_output.next_tokens.defined());
   EXPECT_TRUE(torch::equal(reused.sample_output.next_tokens,
                            torch::tensor({{7, 8, 9}}, torch::kInt64)));
+  EXPECT_EQ(target_->logits_calls.load(), 3);
+  EXPECT_EQ(draft_->logits_calls.load(), 4);
   EXPECT_EQ(decoded.sample_output.next_tokens[0][2].item<int64_t>(), 6);
   EXPECT_TRUE(decoded.sample_output.next_tokens.device().is_cpu());
   EXPECT_EQ(decoded.ready_event, nullptr);

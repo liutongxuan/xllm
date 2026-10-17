@@ -28,6 +28,11 @@ limitations under the License.
 #include "core/framework/config/rec_config.h"
 #include "core/framework/sampling/logits_utils.h"
 #include "core/framework/sampling/sampler.h"
+#include "core/framework/state_dict/rec_vocab_dict.h"
+#include "util/tensor_helper.h"
+#if defined(USE_NPU)
+#include "kernels/npu/npu_ops_api.h"
+#endif
 #if defined(USE_CUDA)
 #include "kernels/cuda/cuda_ops_api.h"
 #endif
@@ -132,15 +137,135 @@ static inline void sample_top_candidates(const torch::Tensor& probs,
 }  // namespace
 
 RecSampler::RecSampler(RecPipelineType pipeline_type)
-    : sampler_(std::make_unique<Sampler>()),
+    : pipeline_type_(pipeline_type),
+      sampler_(std::make_unique<Sampler>()),
       strategy_(create_sampling_strategy(pipeline_type, *sampler_)) {
   LOG(INFO) << "RecSampler initialized with Sampler delegate.";
+}
+
+RecSampler::~RecSampler() = default;
+
+void RecSampler::initialize_device_constraints(
+    const RecConstraintTables& tables,
+    const torch::Device& device) {
+#if defined(USE_NPU)
+  CHECK_GT(tables.vocab_size, 0);
+  CHECK(!tables.first_token_ids.empty())
+      << "OneRec constrained decoding requires non-empty first token table.";
+  CHECK_EQ(tables.prefix1_pair_keys.size(), tables.prefix1_values.size());
+  CHECK_EQ(tables.prefix2_value_offsets.size(),
+           tables.prefix1_values.size() + 1);
+
+  constraint_device_tensors_.first_token_ids =
+      async_h2d_tensor(tables.first_token_ids, device);
+  constraint_device_tensors_.prefix1_offsets =
+      async_h2d_tensor(tables.prefix1_offsets, device);
+  constraint_device_tensors_.prefix1_values =
+      async_h2d_tensor(tables.prefix1_values, device);
+  constraint_device_tensors_.prefix1_pair_keys =
+      async_h2d_tensor(tables.prefix1_pair_keys, device);
+  constraint_device_tensors_.prefix2_value_offsets =
+      async_h2d_tensor(tables.prefix2_value_offsets, device);
+  constraint_device_tensors_.prefix2_values =
+      async_h2d_tensor(tables.prefix2_values, device);
+  constraint_device_tensors_.max_prefix1_degree = tables.max_prefix1_degree;
+  constraint_device_tensors_.max_prefix2_degree = tables.max_prefix2_degree;
+  constraint_device_tensors_.initialized = true;
+
+  LOG(INFO) << "Build OneRec xattention constraint device tables, "
+            << "first_tokens=" << tables.first_token_ids.size()
+            << ", prefix1_edges=" << tables.prefix1_values.size()
+            << ", prefix2_edges=" << tables.prefix2_values.size()
+            << ", max_prefix1_degree=" << tables.max_prefix1_degree
+            << ", max_prefix2_degree=" << tables.max_prefix2_degree;
+#else
+  UNUSED_PARAMETER(tables);
+  UNUSED_PARAMETER(device);
+#endif
+}
+
+bool RecSampler::can_use_device_constraints(
+    const SamplingParameters& sampling_params,
+    int32_t current_step,
+    int32_t beam_width) const {
+#if defined(USE_NPU)
+  return ::xllm::RecConfig::get_instance().enable_constrained_decoding() &&
+         constraint_device_tensors_.initialized && current_step >= 0 &&
+         current_step < REC_TOKEN_SIZE && beam_width > 0 &&
+         sampling_params.selected_token_idxes.defined() &&
+         sampling_params.sample_idxes.defined() &&
+         sampling_params.selected_token_idxes.numel() ==
+             sampling_params.sample_idxes.numel() &&
+         sampling_params.do_sample.defined() &&
+         sampling_params.all_greedy_sample &&
+         !sampling_params.all_random_sample &&
+         sampling_params.use_beam_search && sampling_params.logprobs &&
+         sampling_params.max_top_logprobs > 0 &&
+         sampling_params.max_top_logprobs == beam_width &&
+         !sampling_params.frequency_penalties.defined() &&
+         !sampling_params.presence_penalties.defined() &&
+         !sampling_params.repetition_penalties.defined() &&
+         !sampling_params.top_k.defined() && !sampling_params.top_p.defined();
+#else
+  UNUSED_PARAMETER(sampling_params);
+  UNUSED_PARAMETER(current_step);
+  UNUSED_PARAMETER(beam_width);
+  return false;
+#endif
+}
+
+SampleOutput RecSampler::sample_with_device_constraints(
+    torch::Tensor& logits,
+    const SamplingParameters& sampling_params,
+    const torch::Tensor& sequence_group,
+    int32_t current_step) const {
+  SampleOutput output;
+#if defined(USE_NPU)
+  std::tie(output.top_tokens, output.top_logprobs) =
+      xllm::kernel::npu::rec_constrained_topk(
+          logits,
+          sequence_group,
+          constraint_device_tensors_.first_token_ids,
+          constraint_device_tensors_.prefix1_offsets,
+          constraint_device_tensors_.prefix1_values,
+          constraint_device_tensors_.prefix1_pair_keys,
+          constraint_device_tensors_.prefix2_value_offsets,
+          constraint_device_tensors_.prefix2_values,
+          sampling_params.temperatures,
+          static_cast<int64_t>(current_step),
+          sampling_params.max_top_logprobs,
+          constraint_device_tensors_.max_prefix1_degree,
+          constraint_device_tensors_.max_prefix2_degree);
+  output.next_tokens =
+      output.top_tokens.select(/*dim=*/1, /*index=*/0).to(torch::kLong);
+  output.logprobs =
+      output.top_logprobs.select(/*dim=*/1, /*index=*/0).contiguous();
+  return output;
+#else
+  UNUSED_PARAMETER(logits);
+  UNUSED_PARAMETER(sampling_params);
+  UNUSED_PARAMETER(sequence_group);
+  UNUSED_PARAMETER(current_step);
+  LOG(FATAL) << "OneRec xattention device constraints require USE_NPU.";
+  return output;
+#endif
 }
 
 SampleOutput RecSampler::forward(torch::Tensor& logits,
                                  const SamplingParameters& params,
                                  const torch::Tensor& filter_mask,
                                  const RecSamplingContext* context) const {
+  const bool onerec_pipeline =
+      pipeline_type_ == RecPipelineType::kOneRecDefault ||
+      pipeline_type_ == RecPipelineType::kOneRecXAttentionPipeline;
+  if (onerec_pipeline && context != nullptr &&
+      context->use_device_constraints && !params.filter_mask.defined() &&
+      !params.min_p.defined() &&
+      can_use_device_constraints(
+          params, context->current_step, context->beam_width)) {
+    return sample_with_device_constraints(
+        logits, params, context->sequence_group, context->current_step);
+  }
   return strategy_->forward(logits, params, filter_mask, context);
 }
 
@@ -190,17 +315,7 @@ SampleOutput RecSampler::OneRecConstrainedSamplingStrategy::forward(
     const SamplingParameters& params,
     const torch::Tensor& filter_mask,
     const RecSamplingContext* context) const {
-  if (context != nullptr && context->device_constrained_sampler &&
-      !params.filter_mask.defined() && !params.min_p.defined()) {
-    auto sampled = context->device_constrained_sampler(logits,
-                                                       params,
-                                                       context->sequence_group,
-                                                       context->current_step,
-                                                       context->beam_width);
-    if (sampled.has_value()) {
-      return sampled.value();
-    }
-  }
+  UNUSED_PARAMETER(context);
 
   if (!(params.use_beam_search && params.all_random_sample && params.logprobs &&
         params.max_top_logprobs > 0)) {

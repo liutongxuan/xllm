@@ -103,9 +103,6 @@ class LLMWorkerImpl : public WorkerImpl {
                                     kv_caches_,
                                     execution_params);
   }
-
- protected:
-  std::unique_ptr<BeamSearcher> beam_searcher_;
 };
 
 }  // namespace xllm
