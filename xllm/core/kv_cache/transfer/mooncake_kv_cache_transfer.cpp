@@ -855,6 +855,9 @@ void MooncakeVirtualKVCacheTransfer::register_kv_cache(
   register_kv_cache_impl();
   if (registration_context.has_value()) {
     publish_cache_layout(tensor_manifests, *registration_context);
+    const Status provider_status =
+        mooncake_te_->set_virtual_memory_provider(model_id_, memory_provider_);
+    CHECK(provider_status.ok()) << provider_status.message();
     pending_registration_context_.reset();
   }
 }
@@ -885,12 +888,79 @@ bool MooncakeVirtualKVCacheTransfer::pull_kv_blocks(
     const uint64_t src_cluster_id,
     const std::string& src_addr,
     const std::vector<KVTransferMapping>& mappings) {
-  (void)src_cluster_id;
-  (void)src_addr;
-  (void)mappings;
-  // A local block ID cannot identify a remote physical page mapping.
-  LOG(ERROR) << "VirtualMemory PULL requires remote source offsets; use PUSH";
-  return false;
+  if (model_id_.empty() || mappings.size() != 1 ||
+      mappings[0].group_id != cache_group_id(BlockType::KV) ||
+      mappings[0].local_ids.size() != mappings[0].remote_ids.size()) {
+    LOG(ERROR) << "Invalid VirtualMemory PULL model or KV mapping";
+    return false;
+  }
+  const KVTransferMapping& mapping = mappings[0];
+  if (mapping.local_ids.empty()) {
+    return true;
+  }
+
+  // Each source worker resolves its own physical mapping. Matching logical
+  // block IDs on the two instances do not imply matching physical pages.
+  WorkerCacheLayoutManifest source_manifest;
+  std::vector<VirtualKVCacheLayerGlobalOffsets> source_offsets;
+  if (!mooncake_te_->get_remote_virtual_offsets(src_cluster_id,
+                                                src_addr,
+                                                mapping.remote_ids,
+                                                &source_manifest,
+                                                &source_offsets) ||
+      num_layers_ <= 0 ||
+      source_offsets.size() != static_cast<size_t>(num_layers_)) {
+    LOG(ERROR) << "Failed to resolve VirtualMemory PULL source offsets";
+    return false;
+  }
+
+  ReshardPlanTemplate plan;
+  const Status plan_status = ReshardPlanner().build_native_pull_plan(
+      local_cache_layout_, source_manifest, &plan);
+  if (!plan_status.ok()) {
+    LOG(ERROR) << "Invalid VirtualMemory PULL layout: "
+               << plan_status.message();
+    return false;
+  }
+
+  // Validate all layers before writing any destination cache data.
+  std::vector<std::vector<ByteRegion>> layer_regions;
+  layer_regions.resize(static_cast<size_t>(num_layers_));
+  RequestRegionBinder binder;
+  for (int64_t layer_id = 0; layer_id < num_layers_; ++layer_id) {
+    const size_t layer_index = static_cast<size_t>(layer_id);
+    std::vector<ExplicitResourceMapping> explicit_mappings;
+    if (!build_explicit_mappings(mapping,
+                                 source_offsets[layer_index],
+                                 layer_id,
+                                 &explicit_mappings)) {
+      return false;
+    }
+    const Status bind_status =
+        binder.bind_explicit(plan,
+                             explicit_mappings,
+                             CacheNamespace::MAIN,
+                             layer_id,
+                             &layer_regions[layer_index]);
+    if (!bind_status.ok() || layer_regions[layer_index].empty()) {
+      LOG(ERROR) << "Bind VirtualMemory PULL regions failed, layer=" << layer_id
+                 << ": " << bind_status.message();
+      return false;
+    }
+  }
+
+  for (const std::vector<ByteRegion>& regions : layer_regions) {
+    if (!mooncake_te_->move_memory_regions(
+            src_addr, regions, MooncakeTransferEngine::MoveOpcode::READ)) {
+      LOG(ERROR) << "VirtualMemory PULL transfer failed, source=" << src_addr;
+      return false;
+    }
+  }
+  VLOG(1) << "[Mooncake][PDTransfer] direction=pull, virtual_memory=true, "
+             "cluster_id="
+          << src_cluster_id << ", remote=" << src_addr
+          << ", blocks=" << mapping.local_ids.size() << ", success=true";
+  return true;
 }
 
 bool MooncakeVirtualKVCacheTransfer::push_kv_blocks(
@@ -906,14 +976,14 @@ bool MooncakeVirtualKVCacheTransfer::push_kv_blocks(
 
 bool MooncakeVirtualKVCacheTransfer::build_explicit_mappings(
     const KVTransferMapping& mapping,
-    const VirtualKVCacheLayerGlobalOffsets& destination,
+    const VirtualKVCacheLayerGlobalOffsets& remote_offsets,
     int64_t layer_id,
     std::vector<ExplicitResourceMapping>* explicit_mappings) const {
-  if (destination.k_offsets.size() != mapping.local_ids.size() ||
-      destination.v_offsets.size() != mapping.local_ids.size() ||
-      (!destination.index_offsets.empty() &&
-       destination.index_offsets.size() != mapping.local_ids.size())) {
-    LOG(ERROR) << "VirtualMemory destination offset count mismatch, layer="
+  if (remote_offsets.k_offsets.size() != mapping.local_ids.size() ||
+      remote_offsets.v_offsets.size() != mapping.local_ids.size() ||
+      (!remote_offsets.index_offsets.empty() &&
+       remote_offsets.index_offsets.size() != mapping.local_ids.size())) {
+    LOG(ERROR) << "VirtualMemory remote offset count mismatch, layer="
                << layer_id;
     return false;
   }
@@ -936,25 +1006,27 @@ bool MooncakeVirtualKVCacheTransfer::build_explicit_mappings(
     explicit_mapping.local_offsets.reserve(mapping.local_ids.size());
     explicit_mappings->emplace_back(std::move(explicit_mapping));
   };
-  append_mapping(KVCacheTensorRole::KEY, destination.k_offsets);
-  append_mapping(KVCacheTensorRole::VALUE, destination.v_offsets);
-  if (!destination.index_offsets.empty()) {
-    append_mapping(KVCacheTensorRole::INDEX, destination.index_offsets);
+  append_mapping(KVCacheTensorRole::KEY, remote_offsets.k_offsets);
+  append_mapping(KVCacheTensorRole::VALUE, remote_offsets.v_offsets);
+  if (!remote_offsets.index_offsets.empty()) {
+    append_mapping(KVCacheTensorRole::INDEX, remote_offsets.index_offsets);
   }
   for (uint64_t block_id : mapping.local_ids) {
-    const auto source = memory_provider_->get_global_offsets_for_block(
+    const auto local_offsets = memory_provider_->get_global_offsets_for_block(
         model_id_, layer_id, block_id);
-    if (!source.has_value() || source->index_offset.has_value() !=
-                                   !destination.index_offsets.empty()) {
-      LOG(ERROR) << "Invalid VirtualMemory source mapping or INDEX ownership, "
+    if (!local_offsets.has_value() ||
+        local_offsets->index_offset.has_value() !=
+            !remote_offsets.index_offsets.empty()) {
+      LOG(ERROR) << "Invalid VirtualMemory local mapping or INDEX ownership, "
                     "layer="
                  << layer_id << ", block=" << block_id;
       return false;
     }
-    (*explicit_mappings)[0].local_offsets.emplace_back(source->k_offset);
-    (*explicit_mappings)[1].local_offsets.emplace_back(source->v_offset);
-    if (source->index_offset.has_value()) {
-      (*explicit_mappings)[2].local_offsets.emplace_back(*source->index_offset);
+    (*explicit_mappings)[0].local_offsets.emplace_back(local_offsets->k_offset);
+    (*explicit_mappings)[1].local_offsets.emplace_back(local_offsets->v_offset);
+    if (local_offsets->index_offset.has_value()) {
+      (*explicit_mappings)[2].local_offsets.emplace_back(
+          *local_offsets->index_offset);
     }
   }
 

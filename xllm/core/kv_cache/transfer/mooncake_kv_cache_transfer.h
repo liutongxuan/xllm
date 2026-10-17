@@ -187,7 +187,7 @@ class MooncakeVirtualKVCacheTransfer final
 
   bool build_explicit_mappings(
       const KVTransferMapping& mapping,
-      const VirtualKVCacheLayerGlobalOffsets& destination,
+      const VirtualKVCacheLayerGlobalOffsets& remote_offsets,
       int64_t layer_id,
       std::vector<ExplicitResourceMapping>* explicit_mappings) const;
 
@@ -198,7 +198,7 @@ class MooncakeVirtualKVCacheTransfer final
       int32_t kv_split_size);
 
   std::string model_id_;
-  std::unique_ptr<VirtualKVCacheTransferMemoryProvider> memory_provider_;
+  std::shared_ptr<VirtualKVCacheTransferMemoryProvider> memory_provider_;
 };
 
 }  // namespace xllm

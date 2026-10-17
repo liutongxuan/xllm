@@ -164,6 +164,12 @@ class RecordingMooncakeTransferEngine final
     MoveOpcode opcode;
   };
 
+  struct VirtualOffsetQuery {
+    uint64_t cluster_id;
+    std::string remote_addr;
+    std::vector<uint64_t> block_ids;
+  };
+
   RecordingMooncakeTransferEngine(uint16_t listen_port,
                                   const torch::Device& device)
       : MooncakeKVCacheTransferEngine(listen_port, device) {}
@@ -209,6 +215,35 @@ class RecordingMooncakeTransferEngine final
     return true;
   }
 
+  bool get_remote_virtual_offsets(
+      uint64_t src_cluster_id,
+      const std::string& src_addr,
+      const std::vector<uint64_t>& block_ids,
+      WorkerCacheLayoutManifest* manifest,
+      std::vector<VirtualKVCacheLayerGlobalOffsets>* layer_offsets) override {
+    virtual_offset_queries.emplace_back(
+        VirtualOffsetQuery{src_cluster_id, src_addr, block_ids});
+    if (use_native_virtual_offsets) {
+      return MooncakeKVCacheTransferEngine::get_remote_virtual_offsets(
+          src_cluster_id, src_addr, block_ids, manifest, layer_offsets);
+    }
+    if (!virtual_offset_query_result) {
+      return false;
+    }
+    *manifest = virtual_offset_manifest;
+    *layer_offsets = virtual_layer_offsets;
+    return true;
+  }
+
+  bool fetch_virtual_offsets(
+      uint64_t /*cluster_id*/,
+      const proto::VirtualKVCacheOffsetsRequest& request,
+      proto::VirtualKVCacheOffsetsResponse* response) override {
+    virtual_wire_requests.emplace_back(request);
+    *response = virtual_wire_response;
+    return virtual_wire_result;
+  }
+
   bool set_remote_peer(uint64_t /*cluster_id*/,
                        const std::string& remote_addr,
                        const WorkerCacheLayoutManifest& /*manifest*/,
@@ -228,6 +263,14 @@ class RecordingMooncakeTransferEngine final
   }
 
   bool move_result = true;
+  bool use_native_virtual_offsets = false;
+  bool virtual_wire_result = true;
+  proto::VirtualKVCacheOffsetsResponse virtual_wire_response;
+  std::vector<proto::VirtualKVCacheOffsetsRequest> virtual_wire_requests;
+  bool virtual_offset_query_result = true;
+  WorkerCacheLayoutManifest virtual_offset_manifest;
+  std::vector<VirtualKVCacheLayerGlobalOffsets> virtual_layer_offsets;
+  std::vector<VirtualOffsetQuery> virtual_offset_queries;
   std::unordered_set<std::string> planned_addrs;
   std::unordered_map<std::string, WorkerCacheLayoutManifest> remote_layouts;
   std::string failed_peer;
@@ -255,6 +298,10 @@ struct SharedTransferMemoryState {
   std::unordered_map<uint64_t, std::pair<uint64_t, uint64_t>> block_offsets;
   std::vector<MemoryProviderOffsetQuery> offset_queries;
   std::unordered_map<uint64_t, VirtualKVCacheBlockGlobalOffsets> role_offsets;
+  std::unordered_map<
+      int64_t,
+      std::unordered_map<uint64_t, VirtualKVCacheBlockGlobalOffsets>>
+      layer_role_offsets;
 };
 
 class RecordingVirtualKVCacheTransferMemoryProvider final
@@ -277,6 +324,14 @@ class RecordingVirtualKVCacheTransferMemoryProvider final
       uint64_t block_id) const override {
     state_->offset_queries.emplace_back(
         MemoryProviderOffsetQuery{model_id, layer_id, block_id, 0});
+    const auto layer_it = state_->layer_role_offsets.find(layer_id);
+    if (layer_it != state_->layer_role_offsets.end()) {
+      const auto block_it = layer_it->second.find(block_id);
+      return block_it != layer_it->second.end()
+                 ? std::optional<VirtualKVCacheBlockGlobalOffsets>(
+                       block_it->second)
+                 : std::nullopt;
+    }
     const auto it = state_->role_offsets.find(block_id);
     if (it == state_->role_offsets.end()) {
       return std::nullopt;
@@ -389,6 +444,7 @@ TEST(MooncakeVirtualKVCacheTransferTest,
   RecordingMooncakeTransferEngine* engine_observer = engine.get();
   transfer.mooncake_te_ = std::move(engine);
   transfer.addr_ = "virtual-mla";
+  transfer.set_model_id("glm-test");
 
   ModelArgs model_args;
   model_args.model_type("glm_moe_dsa")
@@ -493,27 +549,660 @@ TEST(MooncakeVirtualKVCacheTransferTest,
   EXPECT_TRUE(state->offset_queries.empty());
 }
 
-TEST(MooncakeVirtualKVCacheTransferTest,
-     PullRejectsMissingRemoteMappingProtocol) {
-  auto state = std::make_shared<SharedTransferMemoryState>();
-  MooncakeVirtualKVCacheTransfer transfer(
-      /*device_id=*/0,
-      /*listen_port=*/0,
-      torch::Device(torch::kCPU),
-      std::make_unique<RecordingVirtualKVCacheTransferMemoryProvider>(state));
-  auto engine = std::make_unique<RecordingMooncakeTransferEngine>(
-      /*listen_port=*/0, torch::Device(torch::kCPU));
-  RecordingMooncakeTransferEngine* observer = engine.get();
-  transfer.mooncake_te_ = std::move(engine);
-  KVTransferMapping mapping;
-  mapping.group_id = cache_group_id(BlockType::KV);
-  mapping.local_ids = {3};
-  mapping.remote_ids = {2};
-  EXPECT_FALSE(
-      transfer.pull_kv_blocks(/*src_cluster_id=*/1, "source", {mapping}));
-  EXPECT_TRUE(state->offset_queries.empty());
-  EXPECT_TRUE(observer->region_move_calls.empty());
-  EXPECT_TRUE(observer->move_calls.empty());
+class MooncakeVirtualKVCachePullTest : public testing::Test {
+ protected:
+  static constexpr uint64_t kSourceClusterId = 17;
+  static constexpr uint64_t kPageBytes = 2 * 1024 * 1024;
+  static constexpr int64_t kBlockTokens = 128;
+
+  void SetUp() override {
+    state_ = std::make_shared<SharedTransferMemoryState>();
+    state_->page_size = kPageBytes;
+    state_->backing.resize(10 * kPageBytes);
+    transfer_ = std::make_unique<MooncakeVirtualKVCacheTransfer>(
+        /*device_id=*/0,
+        /*listen_port=*/0,
+        torch::Device(torch::kCPU),
+        std::make_unique<RecordingVirtualKVCacheTransferMemoryProvider>(
+            state_));
+    auto engine = std::make_unique<RecordingMooncakeTransferEngine>(
+        /*listen_port=*/0, torch::Device(torch::kCPU));
+    engine_ = engine.get();
+    transfer_->mooncake_te_ = std::move(engine);
+    transfer_->set_model_id("glm-pull");
+    transfer_->addr_ = "destination";
+
+    ModelArgs model_args;
+    model_args.model_type("glm_moe_dsa")
+        .n_layers(3)
+        .n_heads(64)
+        .n_kv_heads(64)
+        .head_dim(128)
+        .enable_mla(true)
+        .kv_lora_rank(512)
+        .qk_rope_head_dim(64)
+        .index_n_heads(32)
+        .index_head_dim(128);
+    KVCacheCapacity capacity;
+    capacity.n_blocks(4).block_size(kBlockTokens);
+    const KVCacheShape shape(capacity, model_args, /*world_size=*/2);
+    std::vector<KVCache> caches;
+    caches.reserve(3);
+    for (int64_t layer_id = 0; layer_id < 3; ++layer_id) {
+      KVCacheTensors kv_tensors{
+          torch::zeros(shape.key_cache_shape(), torch::kBFloat16),
+          torch::zeros(shape.value_cache_shape(), torch::kBFloat16)};
+      if (layer_id == 1) {
+        caches.emplace_back(std::move(kv_tensors));
+        continue;
+      }
+      IndexedKVCacheTensors indexed_tensors;
+      indexed_tensors.kv_cache_tensors = std::move(kv_tensors);
+      indexed_tensors.index_cache =
+          torch::zeros(shape.index_cache_shape(), torch::kBFloat16);
+      caches.emplace_back(std::move(indexed_tensors));
+    }
+    transfer_->configure_cache_layout(make_args(/*rank=*/1,
+                                                /*world_size=*/2,
+                                                /*dp_size=*/1),
+                                      model_args,
+                                      kBlockTokens,
+                                      /*is_spec_draft=*/false);
+    transfer_->register_kv_cache(caches, shape, torch::kBFloat16);
+
+    mapping_.group_id = cache_group_id(BlockType::KV);
+    mapping_.local_ids = {1, 3};
+    mapping_.remote_ids = {0, 2};
+    engine_->virtual_offset_manifest = transfer_->local_cache_layout_;
+    engine_->virtual_offset_manifest.cluster_id = kSourceClusterId;
+    engine_->virtual_offset_manifest.addr = "source";
+    engine_->virtual_offset_manifest.incarnation_id = "source-incarnation";
+    engine_->virtual_layer_offsets.resize(3);
+    for (int64_t layer_id = 0; layer_id < 3; ++layer_id) {
+      auto& local_layer = state_->layer_role_offsets[layer_id];
+      auto& remote_layer =
+          engine_->virtual_layer_offsets[static_cast<size_t>(layer_id)];
+      remote_layer.k_offsets.reserve(mapping_.remote_ids.size());
+      remote_layer.v_offsets.reserve(mapping_.remote_ids.size());
+      remote_layer.index_offsets.reserve(mapping_.remote_ids.size());
+      for (size_t index = 0; index < mapping_.local_ids.size(); ++index) {
+        const uint64_t local_id = mapping_.local_ids[index];
+        const uint64_t remote_id = mapping_.remote_ids[index];
+        VirtualKVCacheBlockGlobalOffsets local_offsets;
+        local_offsets.k_offset =
+            static_cast<uint64_t>(layer_id * 3) * kPageBytes +
+            local_id * 128 * 1024;
+        local_offsets.v_offset =
+            static_cast<uint64_t>(layer_id * 3 + 1) * kPageBytes +
+            local_id * 16 * 1024;
+        remote_layer.k_offsets.emplace_back(
+            static_cast<uint64_t>(8 - layer_id * 3) * kPageBytes +
+            remote_id * 128 * 1024);
+        remote_layer.v_offsets.emplace_back(
+            static_cast<uint64_t>(7 - layer_id * 3) * kPageBytes +
+            remote_id * 16 * 1024);
+        if (layer_id != 1) {
+          local_offsets.index_offset =
+              static_cast<uint64_t>(layer_id * 3 + 2) * kPageBytes +
+              local_id * 32 * 1024;
+          remote_layer.index_offsets.emplace_back(
+              static_cast<uint64_t>(6 - layer_id * 3) * kPageBytes +
+              remote_id * 32 * 1024);
+        }
+        local_layer.emplace(local_id, std::move(local_offsets));
+      }
+    }
+  }
+
+  bool pull() {
+    return transfer_->pull_kv_blocks(kSourceClusterId, "source", {mapping_});
+  }
+
+  void expect_no_move() const {
+    EXPECT_TRUE(engine_->region_move_calls.empty());
+    EXPECT_TRUE(engine_->move_calls.empty());
+  }
+
+  void enable_protocol_queries() {
+    engine_->use_native_virtual_offsets = true;
+    engine_->remote_layouts.emplace("source", engine_->virtual_offset_manifest);
+    WorkerCacheLayoutManifest owner = engine_->virtual_offset_manifest;
+    owner.addr = "owner-source";
+    owner.cluster_id = kSourceClusterId - 1;
+    owner.incarnation_id = "owner-source-incarnation";
+    owner.coordinates.tp_rank = 0;
+    engine_->remote_layouts.emplace("owner-source", std::move(owner));
+    ASSERT_TRUE(engine_->link_sessions({kSourceClusterId - 1, kSourceClusterId},
+                                       {"owner-source", "source"}));
+    auto& response = engine_->virtual_wire_response;
+    response.set_ok(true);
+    response.set_incarnation_id(
+        engine_->virtual_offset_manifest.incarnation_id);
+    response.set_layout_generation(
+        engine_->virtual_offset_manifest.layout_generation);
+    response.set_physical_page_size_bytes(kPageBytes);
+    for (size_t layer_id = 0; layer_id < 3; ++layer_id) {
+      auto* layer = response.add_layer_offsets();
+      layer->set_layer_id(static_cast<int64_t>(layer_id));
+      const auto& offsets = engine_->virtual_layer_offsets[layer_id];
+      layer->mutable_k_offsets()->Assign(offsets.k_offsets.begin(),
+                                         offsets.k_offsets.end());
+      layer->mutable_v_offsets()->Assign(offsets.v_offsets.begin(),
+                                         offsets.v_offsets.end());
+      layer->mutable_index_offsets()->Assign(offsets.index_offsets.begin(),
+                                             offsets.index_offsets.end());
+    }
+  }
+
+  void TearDown() override {
+    if (engine_->use_native_virtual_offsets) {
+      EXPECT_TRUE(engine_->close_session(kSourceClusterId - 1, "owner-source"));
+      EXPECT_TRUE(engine_->close_session(kSourceClusterId, "source"));
+    }
+  }
+
+  std::shared_ptr<SharedTransferMemoryState> state_;
+  std::unique_ptr<MooncakeVirtualKVCacheTransfer> transfer_;
+  RecordingMooncakeTransferEngine* engine_ = nullptr;
+  KVTransferMapping mapping_;
+};
+
+TEST_F(MooncakeVirtualKVCachePullTest,
+       ReadsUnequalMlaRolesWithSparseIndexAndIndependentPhysicalOffsets) {
+  ASSERT_EQ(transfer_->local_cache_layout_.coordinates.tp_rank, 1);
+  for (const CacheTensorManifest& tensor :
+       transfer_->local_cache_layout_.tensors) {
+    ASSERT_EQ(tensor.shard.kind, LogicalShardKind::REPLICATED);
+    ASSERT_EQ(tensor.shard.spans[0].owner_tp_rank, 0);
+  }
+  ASSERT_TRUE(pull());
+  ASSERT_EQ(engine_->virtual_offset_queries.size(), 1U);
+  EXPECT_EQ(engine_->virtual_offset_queries[0].cluster_id, kSourceClusterId);
+  EXPECT_EQ(engine_->virtual_offset_queries[0].remote_addr, "source");
+  EXPECT_EQ(engine_->virtual_offset_queries[0].block_ids, mapping_.remote_ids);
+
+  std::vector<ByteRegion> regions;
+  regions.reserve(16);
+  for (const auto& call : engine_->region_move_calls) {
+    EXPECT_EQ(call.remote_addr, "source");
+    EXPECT_EQ(call.opcode, MooncakeTransferEngine::MoveOpcode::READ);
+    regions.insert(regions.end(), call.regions.begin(), call.regions.end());
+  }
+  ASSERT_EQ(regions.size(), 16U);
+  for (int64_t layer_id = 0; layer_id < 3; ++layer_id) {
+    const auto& remote_layer =
+        engine_->virtual_layer_offsets[static_cast<size_t>(layer_id)];
+    for (size_t index = 0; index < mapping_.local_ids.size(); ++index) {
+      const auto& local =
+          state_->layer_role_offsets.at(layer_id).at(mapping_.local_ids[index]);
+      const auto expect_region = [&](uint64_t local_offset,
+                                     uint64_t remote_offset,
+                                     uint64_t length) {
+        SCOPED_TRACE(testing::Message() << "layer=" << layer_id << ", block="
+                                        << index << ", bytes=" << length);
+        EXPECT_NE(local_offset, remote_offset);
+        EXPECT_EQ(std::count_if(regions.begin(),
+                                regions.end(),
+                                [=](const ByteRegion& region) {
+                                  return region.local_buffer_id == 0 &&
+                                         region.remote_buffer_id == 0 &&
+                                         region.local_offset == local_offset &&
+                                         region.remote_offset ==
+                                             remote_offset &&
+                                         region.length == length;
+                                }),
+                  1);
+      };
+      expect_region(local.k_offset, remote_layer.k_offsets[index], 128 * 1024);
+      expect_region(local.v_offset, remote_layer.v_offsets[index], 16 * 1024);
+      if (local.index_offset.has_value()) {
+        expect_region(
+            *local.index_offset, remote_layer.index_offsets[index], 32 * 1024);
+      }
+    }
+  }
+  EXPECT_TRUE(engine_->move_calls.empty());
+  ASSERT_EQ(state_->offset_queries.size(), 6U);
+  for (const auto& query : state_->offset_queries) {
+    EXPECT_EQ(query.model_id, "glm-pull");
+    EXPECT_TRUE(query.block_id == 1 || query.block_id == 3);
+  }
+}
+
+TEST_F(MooncakeVirtualKVCachePullTest,
+       MissingModelIdentityRejectsBeforeRemoteQuery) {
+  transfer_->set_model_id("");
+  EXPECT_FALSE(pull());
+  EXPECT_TRUE(engine_->virtual_offset_queries.empty());
+  EXPECT_TRUE(state_->offset_queries.empty());
+  expect_no_move();
+}
+
+TEST_F(MooncakeVirtualKVCachePullTest, FailedRemoteQueryDoesNotReadMemory) {
+  engine_->virtual_offset_query_result = false;
+  EXPECT_FALSE(pull());
+  ASSERT_EQ(engine_->virtual_offset_queries.size(), 1U);
+  EXPECT_TRUE(state_->offset_queries.empty());
+  expect_no_move();
+}
+
+TEST_F(MooncakeVirtualKVCachePullTest,
+       MissingLastLayerLocalMappingRejectsBeforeAnyRead) {
+  state_->layer_role_offsets[2].erase(mapping_.local_ids.back());
+  EXPECT_FALSE(pull());
+  expect_no_move();
+}
+
+TEST_F(MooncakeVirtualKVCachePullTest,
+       MissingLastLayerLocalIndexRejectsBeforeAnyRead) {
+  state_->layer_role_offsets[2]
+      .at(mapping_.local_ids.back())
+      .index_offset.reset();
+  EXPECT_FALSE(pull());
+  expect_no_move();
+}
+
+TEST_F(MooncakeVirtualKVCachePullTest,
+       MissingOrExtraRemoteIndexRejectsBeforeAnyRead) {
+  const auto original = engine_->virtual_layer_offsets;
+  engine_->virtual_layer_offsets[2].index_offsets.clear();
+  EXPECT_FALSE(pull());
+  expect_no_move();
+  engine_->virtual_layer_offsets = original;
+  engine_->virtual_layer_offsets[1].index_offsets = {0, 32 * 1024};
+  EXPECT_FALSE(pull());
+  expect_no_move();
+}
+
+TEST_F(MooncakeVirtualKVCachePullTest,
+       MalformedRemoteLayerAndRoleCountsRejectBeforeAnyRead) {
+  const auto original = engine_->virtual_layer_offsets;
+  engine_->virtual_layer_offsets.pop_back();
+  EXPECT_FALSE(pull());
+  expect_no_move();
+  engine_->virtual_layer_offsets = original;
+  engine_->virtual_layer_offsets.emplace_back(original.back());
+  EXPECT_FALSE(pull());
+  expect_no_move();
+  engine_->virtual_layer_offsets = original;
+  engine_->virtual_layer_offsets[2].v_offsets.pop_back();
+  EXPECT_FALSE(pull());
+  expect_no_move();
+  engine_->virtual_layer_offsets = original;
+  engine_->virtual_layer_offsets[2].index_offsets.pop_back();
+  EXPECT_FALSE(pull());
+  expect_no_move();
+}
+
+TEST_F(MooncakeVirtualKVCachePullTest,
+       IncompatibleRemoteLayoutRejectsBeforeAnyRead) {
+  engine_->virtual_offset_manifest.fingerprint = "different-model";
+  EXPECT_FALSE(pull());
+  EXPECT_TRUE(state_->offset_queries.empty());
+  expect_no_move();
+}
+
+TEST_F(MooncakeVirtualKVCachePullTest,
+       OutOfBoundsRemotePhysicalOffsetRejectsBeforeAnyRead) {
+  engine_->virtual_layer_offsets[2].k_offsets.back() = state_->backing.size();
+  EXPECT_FALSE(pull());
+  expect_no_move();
+}
+
+TEST_F(MooncakeVirtualKVCachePullTest,
+       OutOfBoundsLocalPhysicalOffsetRejectsBeforeAnyRead) {
+  state_->layer_role_offsets[2].at(mapping_.local_ids.back()).v_offset =
+      state_->backing.size();
+  EXPECT_FALSE(pull());
+  expect_no_move();
+}
+
+TEST_F(MooncakeVirtualKVCachePullTest, ReadFailureIsReported) {
+  engine_->move_result = false;
+  EXPECT_FALSE(pull());
+  ASSERT_FALSE(engine_->region_move_calls.empty());
+  EXPECT_EQ(engine_->region_move_calls[0].opcode,
+            MooncakeTransferEngine::MoveOpcode::READ);
+  EXPECT_TRUE(engine_->move_calls.empty());
+}
+
+TEST_F(MooncakeVirtualKVCachePullTest,
+       MalformedMappingsRejectWithoutReadingMemory) {
+  EXPECT_FALSE(transfer_->pull_kv_blocks(kSourceClusterId, "source", {}));
+  expect_no_move();
+  EXPECT_FALSE(transfer_->pull_kv_blocks(
+      kSourceClusterId, "source", {mapping_, mapping_}));
+  expect_no_move();
+  mapping_.remote_ids.pop_back();
+  EXPECT_FALSE(pull());
+  expect_no_move();
+  mapping_.remote_ids = {0, 2};
+  mapping_.group_id = cache_group_id(BlockType::LINEAR);
+  EXPECT_FALSE(pull());
+  expect_no_move();
+  mapping_.group_id = cache_group_id(BlockType::KV);
+  mapping_.local_ids = {1, 4};
+  EXPECT_FALSE(pull());
+  expect_no_move();
+  mapping_.local_ids = {1, 3};
+  mapping_.remote_ids = {0, 4};
+  EXPECT_FALSE(pull());
+  expect_no_move();
+}
+
+TEST_F(MooncakeVirtualKVCachePullTest,
+       SourceServiceReturnsPerLayerPhysicalOffsetsAndSparseIndex) {
+  MooncakeKVCacheTransferService service;
+  proto::VirtualKVCacheOffsetsRequest request;
+  request.set_incarnation_id(transfer_->local_cache_layout_.incarnation_id);
+  request.set_layout_generation(
+      transfer_->local_cache_layout_.layout_generation);
+  for (uint64_t block_id : mapping_.local_ids) {
+    request.add_block_ids(block_id);
+  }
+  proto::VirtualKVCacheOffsetsResponse response;
+  brpc::Controller controller;
+
+  service.GetVirtualKVCacheOffsets(&controller, &request, &response, nullptr);
+
+  ASSERT_TRUE(response.ok());
+  EXPECT_EQ(response.incarnation_id(), request.incarnation_id());
+  EXPECT_EQ(response.layout_generation(), request.layout_generation());
+  EXPECT_EQ(response.physical_page_size_bytes(), kPageBytes);
+  ASSERT_EQ(response.layer_offsets_size(), 3);
+  for (int32_t layer_id = 0; layer_id < 3; ++layer_id) {
+    const auto& offsets = response.layer_offsets(layer_id);
+    EXPECT_EQ(offsets.layer_id(), layer_id);
+    ASSERT_EQ(offsets.k_offsets_size(), 2);
+    ASSERT_EQ(offsets.v_offsets_size(), 2);
+    EXPECT_EQ(offsets.index_offsets_size(), layer_id == 1 ? 0 : 2);
+    for (int32_t index = 0; index < 2; ++index) {
+      const auto& local = state_->layer_role_offsets.at(layer_id).at(
+          mapping_.local_ids[static_cast<size_t>(index)]);
+      EXPECT_EQ(offsets.k_offsets(index), local.k_offset);
+      EXPECT_EQ(offsets.v_offsets(index), local.v_offset);
+      if (local.index_offset.has_value()) {
+        EXPECT_EQ(offsets.index_offsets(index), *local.index_offset);
+      }
+    }
+  }
+  expect_no_move();
+}
+
+TEST_F(MooncakeVirtualKVCachePullTest,
+       SourceServiceRejectsStaleIdentityWithoutOffsetPayload) {
+  MooncakeKVCacheTransferService service;
+  proto::VirtualKVCacheOffsetsRequest request;
+  request.set_incarnation_id("stale-incarnation");
+  request.set_layout_generation(
+      transfer_->local_cache_layout_.layout_generation);
+  request.add_block_ids(mapping_.local_ids.front());
+  proto::VirtualKVCacheOffsetsResponse response;
+  brpc::Controller controller;
+  service.GetVirtualKVCacheOffsets(&controller, &request, &response, nullptr);
+  EXPECT_FALSE(response.ok());
+  EXPECT_TRUE(response.incarnation_id().empty());
+  EXPECT_EQ(response.layer_offsets_size(), 0);
+  EXPECT_EQ(response.physical_page_size_bytes(), 0U);
+  EXPECT_TRUE(state_->offset_queries.empty());
+
+  request.set_incarnation_id(transfer_->local_cache_layout_.incarnation_id);
+  request.set_layout_generation(
+      transfer_->local_cache_layout_.layout_generation + 1);
+  service.GetVirtualKVCacheOffsets(&controller, &request, &response, nullptr);
+  EXPECT_FALSE(response.ok());
+  EXPECT_TRUE(response.incarnation_id().empty());
+  EXPECT_EQ(response.layer_offsets_size(), 0);
+  EXPECT_EQ(response.physical_page_size_bytes(), 0U);
+  EXPECT_TRUE(state_->offset_queries.empty());
+  expect_no_move();
+}
+
+TEST_F(MooncakeVirtualKVCachePullTest,
+       SourceServiceRejectsInvalidBlocksWithoutPartialOffsetPayload) {
+  MooncakeKVCacheTransferService service;
+  proto::VirtualKVCacheOffsetsRequest request;
+  request.set_incarnation_id(transfer_->local_cache_layout_.incarnation_id);
+  request.set_layout_generation(
+      transfer_->local_cache_layout_.layout_generation);
+  request.add_block_ids(mapping_.local_ids.front());
+  request.add_block_ids(mapping_.local_ids.back());
+  state_->layer_role_offsets[2].erase(mapping_.local_ids.back());
+  proto::VirtualKVCacheOffsetsResponse response;
+  brpc::Controller controller;
+  service.GetVirtualKVCacheOffsets(&controller, &request, &response, nullptr);
+  EXPECT_FALSE(response.ok());
+  EXPECT_TRUE(response.incarnation_id().empty());
+  EXPECT_EQ(response.layer_offsets_size(), 0);
+  EXPECT_EQ(response.physical_page_size_bytes(), 0U);
+
+  request.clear_block_ids();
+  request.add_block_ids(4);
+  service.GetVirtualKVCacheOffsets(&controller, &request, &response, nullptr);
+  EXPECT_FALSE(response.ok());
+  EXPECT_EQ(response.layer_offsets_size(), 0);
+  request.clear_block_ids();
+  service.GetVirtualKVCacheOffsets(&controller, &request, &response, nullptr);
+  EXPECT_FALSE(response.ok());
+  EXPECT_EQ(response.layer_offsets_size(), 0);
+  expect_no_move();
+}
+
+TEST_F(MooncakeVirtualKVCachePullTest,
+       ProtocolQueriesBindSourceIdentityAndRetainPlanOnlySession) {
+  ASSERT_NO_FATAL_FAILURE(enable_protocol_queries());
+  ASSERT_EQ(engine_->opened_sessions,
+            (std::vector<std::string>{"owner-source"}));
+  WorkerCacheLayoutManifest manifest;
+  std::vector<VirtualKVCacheLayerGlobalOffsets> offsets;
+  ASSERT_TRUE(engine_->get_remote_virtual_offsets(
+      kSourceClusterId, "source", mapping_.remote_ids, &manifest, &offsets));
+  ASSERT_EQ(engine_->virtual_wire_requests.size(), 1U);
+  const auto& request = engine_->virtual_wire_requests[0];
+  EXPECT_EQ(request.incarnation_id(), manifest.incarnation_id);
+  EXPECT_EQ(request.layout_generation(), manifest.layout_generation);
+  EXPECT_EQ((std::vector<uint64_t>(request.block_ids().begin(),
+                                   request.block_ids().end())),
+            mapping_.remote_ids);
+  ASSERT_EQ(offsets.size(), 3U);
+  for (size_t layer_id = 0; layer_id < offsets.size(); ++layer_id) {
+    EXPECT_EQ(offsets[layer_id].k_offsets,
+              engine_->virtual_layer_offsets[layer_id].k_offsets);
+    EXPECT_EQ(offsets[layer_id].v_offsets,
+              engine_->virtual_layer_offsets[layer_id].v_offsets);
+    EXPECT_EQ(offsets[layer_id].index_offsets,
+              engine_->virtual_layer_offsets[layer_id].index_offsets);
+  }
+  EXPECT_EQ(engine_->opened_sessions,
+            (std::vector<std::string>{"owner-source", "source"}));
+  ASSERT_TRUE(engine_->get_remote_virtual_offsets(
+      kSourceClusterId, "source", mapping_.remote_ids, &manifest, &offsets));
+  EXPECT_EQ(engine_->opened_sessions.size(), 2U);
+  expect_no_move();
+}
+
+TEST_F(MooncakeVirtualKVCachePullTest,
+       RepeatedLinkPreservesPlanOnlyPullSessionUntilSingleUnlink) {
+  ASSERT_NO_FATAL_FAILURE(enable_protocol_queries());
+  WorkerCacheLayoutManifest manifest;
+  std::vector<VirtualKVCacheLayerGlobalOffsets> offsets;
+  ASSERT_TRUE(engine_->get_remote_virtual_offsets(
+      kSourceClusterId, "source", mapping_.remote_ids, &manifest, &offsets));
+  ASSERT_EQ(engine_->opened_sessions,
+            (std::vector<std::string>{"owner-source", "source"}));
+  const size_t linked_peer_calls = engine_->peer_calls.size();
+
+  ASSERT_TRUE(engine_->link_sessions({kSourceClusterId - 1, kSourceClusterId},
+                                     {"owner-source", "source"}));
+  EXPECT_EQ(engine_->peer_calls.size(), linked_peer_calls);
+  EXPECT_EQ(engine_->opened_sessions.size(), 2U);
+  WorkerCacheLayoutManifest changed_destination =
+      transfer_->local_cache_layout_;
+  ++changed_destination.layout_generation;
+  EXPECT_FALSE(engine_->set_local_cache_layout(changed_destination).ok());
+  ASSERT_TRUE(engine_->get_remote_virtual_offsets(
+      kSourceClusterId, "source", mapping_.remote_ids, &manifest, &offsets));
+  EXPECT_EQ(engine_->opened_sessions.size(), 2U);
+
+  ASSERT_TRUE(engine_->close_session(kSourceClusterId, "source"));
+  EXPECT_EQ(engine_->closed_sessions, (std::vector<std::string>{"source"}));
+  ASSERT_EQ(engine_->peer_calls.size(), linked_peer_calls + 1);
+  EXPECT_EQ(engine_->peer_calls.back().remote_addr, "source");
+  EXPECT_EQ(engine_->peer_calls.back().mode, CachePeerMode::ABSENT);
+  ASSERT_TRUE(engine_->close_session(kSourceClusterId, "source"));
+  EXPECT_EQ(engine_->closed_sessions.size(), 1U);
+  EXPECT_EQ(engine_->peer_calls.size(), linked_peer_calls + 1);
+  EXPECT_FALSE(engine_->get_remote_virtual_offsets(
+      kSourceClusterId, "source", mapping_.remote_ids, &manifest, &offsets));
+  EXPECT_TRUE(manifest.incarnation_id.empty());
+  EXPECT_TRUE(offsets.empty());
+  EXPECT_EQ(engine_->opened_sessions.size(), 2U);
+  expect_no_move();
+}
+
+TEST_F(MooncakeVirtualKVCachePullTest,
+       RepeatedLinkRejectsChangedSourceBeforeMutatingRetainedSession) {
+  ASSERT_NO_FATAL_FAILURE(enable_protocol_queries());
+  WorkerCacheLayoutManifest manifest;
+  std::vector<VirtualKVCacheLayerGlobalOffsets> offsets;
+  ASSERT_TRUE(engine_->get_remote_virtual_offsets(
+      kSourceClusterId, "source", mapping_.remote_ids, &manifest, &offsets));
+  const size_t linked_peer_calls = engine_->peer_calls.size();
+  engine_->remote_layouts.at("source").incarnation_id =
+      "new-source-incarnation";
+
+  EXPECT_FALSE(engine_->link_sessions({kSourceClusterId - 1, kSourceClusterId},
+                                      {"owner-source", "source"}));
+  EXPECT_EQ(engine_->peer_calls.size(), linked_peer_calls);
+  EXPECT_EQ(engine_->opened_sessions.size(), 2U);
+  EXPECT_TRUE(engine_->closed_sessions.empty());
+
+  engine_->remote_layouts.at("source").incarnation_id =
+      engine_->virtual_offset_manifest.incarnation_id;
+  ASSERT_TRUE(engine_->get_remote_virtual_offsets(
+      kSourceClusterId, "source", mapping_.remote_ids, &manifest, &offsets));
+  EXPECT_EQ(engine_->opened_sessions.size(), 2U);
+  ASSERT_TRUE(engine_->close_session(kSourceClusterId, "source"));
+  EXPECT_EQ(engine_->closed_sessions, (std::vector<std::string>{"source"}));
+  expect_no_move();
+}
+
+TEST_F(MooncakeVirtualKVCachePullTest,
+       NewPeerLinkFailurePreservesExistingPlanOnlyPullSession) {
+  ASSERT_NO_FATAL_FAILURE(enable_protocol_queries());
+  WorkerCacheLayoutManifest manifest;
+  std::vector<VirtualKVCacheLayerGlobalOffsets> offsets;
+  ASSERT_TRUE(engine_->get_remote_virtual_offsets(
+      kSourceClusterId, "source", mapping_.remote_ids, &manifest, &offsets));
+  WorkerCacheLayoutManifest new_owner =
+      engine_->remote_layouts.at("owner-source");
+  new_owner.addr = "new-owner-source";
+  new_owner.cluster_id = kSourceClusterId + 1;
+  new_owner.incarnation_id = "new-owner-incarnation";
+  engine_->remote_layouts.emplace("new-owner-source", std::move(new_owner));
+  engine_->failed_peer = "new-owner-source";
+  const size_t linked_peer_calls = engine_->peer_calls.size();
+
+  EXPECT_FALSE(engine_->link_sessions({kSourceClusterId + 1, kSourceClusterId},
+                                      {"new-owner-source", "source"}));
+  ASSERT_EQ(engine_->peer_calls.size(), linked_peer_calls + 2);
+  EXPECT_EQ(engine_->peer_calls[linked_peer_calls].remote_addr,
+            "new-owner-source");
+  EXPECT_EQ(engine_->peer_calls[linked_peer_calls].mode, CachePeerMode::ACTIVE);
+  EXPECT_EQ(engine_->peer_calls.back().remote_addr, "new-owner-source");
+  EXPECT_EQ(engine_->peer_calls.back().mode, CachePeerMode::ABSENT);
+  EXPECT_EQ(engine_->opened_sessions.size(), 2U);
+  EXPECT_TRUE(engine_->closed_sessions.empty());
+
+  ASSERT_TRUE(engine_->get_remote_virtual_offsets(
+      kSourceClusterId, "source", mapping_.remote_ids, &manifest, &offsets));
+  EXPECT_EQ(engine_->opened_sessions.size(), 2U);
+  ASSERT_TRUE(engine_->close_session(kSourceClusterId, "source"));
+  EXPECT_EQ(engine_->closed_sessions, (std::vector<std::string>{"source"}));
+  expect_no_move();
+}
+
+TEST_F(MooncakeVirtualKVCachePullTest,
+       ProtocolRejectsStaleIdentityAndFailedQueryWithoutPublishingOffsets) {
+  ASSERT_NO_FATAL_FAILURE(enable_protocol_queries());
+  const auto original = engine_->virtual_wire_response;
+  const auto expect_rejected = [&]() {
+    WorkerCacheLayoutManifest manifest = engine_->virtual_offset_manifest;
+    auto offsets = engine_->virtual_layer_offsets;
+    EXPECT_FALSE(engine_->get_remote_virtual_offsets(
+        kSourceClusterId, "source", mapping_.remote_ids, &manifest, &offsets));
+    EXPECT_TRUE(manifest.incarnation_id.empty());
+    EXPECT_TRUE(offsets.empty());
+    EXPECT_EQ(engine_->opened_sessions,
+              (std::vector<std::string>{"owner-source"}));
+  };
+  engine_->virtual_wire_response.set_incarnation_id("stale-incarnation");
+  expect_rejected();
+  engine_->virtual_wire_response = original;
+  engine_->virtual_wire_response.set_layout_generation(
+      original.layout_generation() + 1);
+  expect_rejected();
+  engine_->virtual_wire_response = original;
+  engine_->virtual_wire_response.set_ok(false);
+  expect_rejected();
+  engine_->virtual_wire_response = original;
+  engine_->virtual_wire_result = false;
+  expect_rejected();
+  engine_->virtual_wire_result = true;
+  engine_->remote_layouts["source"].incarnation_id = "restarted-source";
+  expect_rejected();
+  expect_no_move();
+}
+
+TEST_F(MooncakeVirtualKVCachePullTest,
+       ProtocolRejectsMalformedLayerRolesAndPhysicalGeometry) {
+  ASSERT_NO_FATAL_FAILURE(enable_protocol_queries());
+  const auto original = engine_->virtual_wire_response;
+  const auto expect_rejected = [&]() {
+    WorkerCacheLayoutManifest manifest;
+    std::vector<VirtualKVCacheLayerGlobalOffsets> offsets;
+    EXPECT_FALSE(engine_->get_remote_virtual_offsets(
+        kSourceClusterId, "source", mapping_.remote_ids, &manifest, &offsets));
+    EXPECT_TRUE(manifest.incarnation_id.empty());
+    EXPECT_TRUE(offsets.empty());
+    EXPECT_EQ(engine_->opened_sessions,
+              (std::vector<std::string>{"owner-source"}));
+  };
+  engine_->virtual_wire_response.mutable_layer_offsets(2)->set_layer_id(0);
+  expect_rejected();
+  engine_->virtual_wire_response = original;
+  engine_->virtual_wire_response.mutable_layer_offsets(2)->set_layer_id(-1);
+  expect_rejected();
+  engine_->virtual_wire_response = original;
+  engine_->virtual_wire_response.mutable_layer_offsets(2)->set_layer_id(3);
+  expect_rejected();
+  engine_->virtual_wire_response = original;
+  engine_->virtual_wire_response.mutable_layer_offsets()->RemoveLast();
+  expect_rejected();
+  engine_->virtual_wire_response = original;
+  engine_->virtual_wire_response.mutable_layer_offsets(1)->add_index_offsets(0);
+  expect_rejected();
+  engine_->virtual_wire_response = original;
+  engine_->virtual_wire_response.mutable_layer_offsets(2)
+      ->mutable_index_offsets()
+      ->RemoveLast();
+  expect_rejected();
+  engine_->virtual_wire_response = original;
+  engine_->virtual_wire_response.mutable_layer_offsets(2)
+      ->mutable_k_offsets()
+      ->RemoveLast();
+  expect_rejected();
+  engine_->virtual_wire_response = original;
+  engine_->virtual_wire_response.set_physical_page_size_bytes(0);
+  expect_rejected();
+  engine_->virtual_wire_response = original;
+  engine_->virtual_wire_response.mutable_layer_offsets(2)->set_k_offsets(
+      0, state_->backing.size());
+  expect_rejected();
+  engine_->virtual_wire_response = original;
+  engine_->virtual_wire_response.mutable_layer_offsets(2)->set_v_offsets(0, 1);
+  expect_rejected();
+  expect_no_move();
 }
 
 TEST(MooncakeVirtualKVCacheTransferTest,
@@ -673,6 +1362,10 @@ TEST(MooncakeKVCacheTransferEngineTest, LinksAllPcpSourcesWithOneActiveOwner) {
   }
   EXPECT_EQ(transfer.opened_sessions, std::vector<std::string>({"source_0"}));
 
+  ASSERT_TRUE(transfer.link_sessions(cluster_ids, remote_addrs));
+  EXPECT_EQ(transfer.peer_calls.size(), 8U);
+  EXPECT_EQ(transfer.opened_sessions, std::vector<std::string>({"source_0"}));
+
   for (size_t index = 0; index < remote_addrs.size(); ++index) {
     EXPECT_TRUE(
         transfer.close_session(cluster_ids[index], remote_addrs[index]));
@@ -680,7 +1373,8 @@ TEST(MooncakeKVCacheTransferEngineTest, LinksAllPcpSourcesWithOneActiveOwner) {
   EXPECT_EQ(transfer.closed_sessions, std::vector<std::string>({"source_0"}));
 }
 
-TEST(MooncakeKVCacheTransferEngineTest, LinkFailureRollsBackEveryPcpSource) {
+TEST(MooncakeKVCacheTransferEngineTest,
+     LinkFailureRollsBackAttemptedPcpSources) {
   MooncakeKVCacheTransferState& core =
       MooncakeKVCacheTransferState::get_instance();
   WorkerCacheLayoutManifest destination = make_pcp_manifest(
@@ -721,7 +1415,12 @@ TEST(MooncakeKVCacheTransferEngineTest, LinkFailureRollsBackEveryPcpSource) {
                     [](const RecordingMooncakeTransferEngine::PeerCall& call) {
                       return call.mode == CachePeerMode::ABSENT;
                     }),
-      8);
+      4);
+  ASSERT_EQ(transfer.peer_calls.size(), 8U);
+  for (size_t index = 0; index < 4; ++index) {
+    EXPECT_EQ(transfer.peer_calls[index + 4].remote_addr, remote_addrs[index]);
+    EXPECT_EQ(transfer.peer_calls[index + 4].mode, CachePeerMode::ABSENT);
+  }
   EXPECT_EQ(transfer.closed_sessions,
             std::vector<std::string>({"rollback-source_0"}));
 }

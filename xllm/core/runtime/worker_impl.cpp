@@ -560,9 +560,6 @@ bool WorkerImpl::allocate_kv_cache_storage(
   if (::xllm::KVCacheConfig::get_instance().enable_virtual_memory()) {
     CHECK(tensor_allocator == nullptr)
         << "Virtual memory KV cache cannot use another tensor allocator.";
-    CHECK(!options_.enable_disagg_pd() ||
-          options_.kv_cache_transfer_mode() == "PUSH")
-        << "Virtual memory PD requires PUSH with remote physical offsets";
     tensor_allocator = create_virtual_kv_cache_tensor_allocator(
         WorkerMemoryResources::get_instance().kv_cache_memory(),
         options_.model_id(),
