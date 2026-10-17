@@ -1171,9 +1171,20 @@ TEST_F(MooncakeVirtualKVCachePullTest,
   EXPECT_FALSE(engine_->get_remote_virtual_offsets(
       kSourceClusterId, "source", mapping_.remote_ids, &manifest, &offsets));
 
+  WorkerCacheLayoutManifest changed_destination =
+      transfer_->local_cache_layout_;
+  ++changed_destination.layout_generation;
+  EXPECT_TRUE(engine_->set_local_cache_layout(changed_destination).ok());
+
+  const size_t peer_calls_after_first_close = engine_->peer_calls.size();
+  EXPECT_FALSE(engine_->close_session(kSourceClusterId, "source"));
+  EXPECT_EQ(engine_->peer_calls.size(), peer_calls_after_first_close + 1);
+  EXPECT_EQ(engine_->closed_sessions, std::vector<std::string>({"source"}));
+
   engine_->failed_absent_peer.clear();
   EXPECT_TRUE(engine_->close_session(kSourceClusterId, "source"));
   EXPECT_EQ(engine_->closed_sessions, std::vector<std::string>{"source"});
+  EXPECT_EQ(engine_->peer_calls.size(), peer_calls_after_first_close + 2);
 }
 
 TEST_F(MooncakeVirtualKVCachePullTest,

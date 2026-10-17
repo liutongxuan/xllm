@@ -157,10 +157,15 @@ class MooncakeKVCacheTransferEngine : public MooncakeTransferEngine {
     CachePeerMode mode = CachePeerMode::PLAN_ONLY;
     bool holds_session = false;
   };
+  struct PendingRemoteUnlink {
+    uint64_t cluster_id = 0;
+    WorkerCacheLayoutManifest destination_manifest;
+  };
   MooncakeKVCacheTransferState& cache_state_;
   std::mutex peer_operation_mutex_;
   std::mutex peer_mutex_;
   std::unordered_map<std::string, LocalCachePeer> cache_peers_;
+  std::unordered_map<std::string, PendingRemoteUnlink> pending_remote_unlinks_;
 };
 
 class MooncakeKVCacheTransferService final

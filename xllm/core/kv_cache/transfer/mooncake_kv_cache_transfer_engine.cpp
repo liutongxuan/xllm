@@ -895,6 +895,12 @@ bool MooncakeKVCacheTransferEngine::link_sessions(
     }
     new_indices.reserve(remote_manifests.size());
     for (size_t index = 0; index < remote_manifests.size(); ++index) {
+      if (pending_remote_unlinks_.find(remote_addrs[index]) !=
+          pending_remote_unlinks_.end()) {
+        LOG(ERROR) << "Cache peer has a pending remote unlink: "
+                   << remote_addrs[index];
+        return false;
+      }
       const auto peer = cache_peers_.find(remote_addrs[index]);
       if (peer == cache_peers_.end()) {
         new_indices.emplace_back(index);
@@ -1070,31 +1076,57 @@ bool MooncakeKVCacheTransferEngine::close_session(
     const std::string& remote_addr) {
   std::lock_guard<std::mutex> operation_lock(peer_operation_mutex_);
   LocalCachePeer peer_snapshot;
+  std::optional<PendingRemoteUnlink> pending_unlink;
+  bool has_peer = false;
   {
     std::lock_guard<std::mutex> lock(peer_mutex_);
+    const auto pending = pending_remote_unlinks_.find(remote_addr);
+    if (pending != pending_remote_unlinks_.end()) {
+      pending_unlink = pending->second;
+      if (pending_unlink->cluster_id != cluster_id) {
+        LOG(ERROR) << "Pending cache peer unlink cluster identity mismatch for "
+                   << remote_addr;
+        return false;
+      }
+    }
     const auto peer = cache_peers_.find(remote_addr);
-    if (peer == cache_peers_.end()) {
+    if (peer == cache_peers_.end() && !pending_unlink.has_value()) {
       return true;
     }
-    peer_snapshot = peer->second;
+    if (peer != cache_peers_.end()) {
+      peer_snapshot = peer->second;
+      has_peer = true;
+    }
   }
-  if (peer_snapshot.source_manifest.cluster_id != cluster_id) {
+  if (has_peer && peer_snapshot.source_manifest.cluster_id != cluster_id) {
     LOG(ERROR) << "Cache peer cluster identity mismatch for " << remote_addr;
     return false;
   }
-  const bool remote_closed = set_remote_peer(cluster_id,
+
+  const uint64_t remote_cluster_id =
+      pending_unlink.has_value() ? pending_unlink->cluster_id : cluster_id;
+  const WorkerCacheLayoutManifest& destination_manifest =
+      pending_unlink.has_value() ? pending_unlink->destination_manifest
+                                 : peer_snapshot.destination_manifest;
+  const bool remote_closed = set_remote_peer(remote_cluster_id,
                                              remote_addr,
-                                             peer_snapshot.destination_manifest,
+                                             destination_manifest,
                                              CachePeerMode::ABSENT);
   if (!remote_closed) {
     LOG(ERROR) << "Remote cache peer unlink failed for " << remote_addr;
+    std::lock_guard<std::mutex> lock(peer_mutex_);
+    pending_remote_unlinks_[remote_addr] =
+        PendingRemoteUnlink{remote_cluster_id, destination_manifest};
+  } else if (pending_unlink.has_value()) {
+    std::lock_guard<std::mutex> lock(peer_mutex_);
+    pending_remote_unlinks_.erase(remote_addr);
   }
-  const bool local_closed =
-      !peer_snapshot.holds_session || close_local_session(remote_addr);
+  const bool local_closed = !has_peer || !peer_snapshot.holds_session ||
+                            close_local_session(remote_addr);
   if (!local_closed) {
     LOG(ERROR) << "Local cache session close failed for " << remote_addr;
   }
-  if (local_closed) {
+  if (has_peer && local_closed) {
     std::lock_guard<std::mutex> lock(peer_mutex_);
     const auto peer = cache_peers_.find(remote_addr);
     if (peer != cache_peers_.end() &&
