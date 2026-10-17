@@ -122,11 +122,8 @@ bool LLMWorkerImpl::init_model(ModelContext& context) {
 
   // Dont find model in causal models
   CHECK(model_ != nullptr) << "Failed to create model.";
-  model_executor_ = std::make_unique<Executor>(model_.get(),
-                                               context.get_model_args(),
-                                               device_,
-                                               options_,
-                                               &context.get_parallel_args());
+  model_executor_ = std::make_unique<Executor>(
+      model_.get(), context.get_model_args(), device_, options_);
 
   // MTP draft workers execute a separate one-layer model and must not consume
   // the target model's EPLB prepare/update commands. Only the target reports
@@ -286,16 +283,40 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_internal(
     return std::nullopt;
   }
 
-  LogitsOutput logits_output;
+  torch::Tensor logits;
+  torch::Tensor lm_head_selected_token_idxes;
+  torch::Tensor selected_hidden;
+  torch::Tensor selected_hidden_gather_idxes;
   if (sampling_params.selected_token_idxes.defined()) {
+    lm_head_selected_token_idxes = remap_selected_token_idxes_for_lm_head(
+        sampling_params.selected_token_idxes,
+        execution_params.parallel,
+        model_output.hidden_states);
+    if (model_output.hidden_states.defined() &&
+        lm_head_selected_token_idxes.device() !=
+            model_output.hidden_states.device()) {
+      lm_head_selected_token_idxes =
+          lm_head_selected_token_idxes
+              .to(model_output.hidden_states.device(), /*non_blocking=*/false)
+              .contiguous();
+    }
     const bool need_selected_hidden =
         input.return_selected_hidden ||
         (options_.cp_size() > 1 && options_.enable_speculative_decode());
-    logits_output =
-        model_executor_->compute_logits(model_output.hidden_states,
-                                        sampling_params.selected_token_idxes,
-                                        need_selected_hidden,
-                                        &execution_params.parallel);
+    if (need_selected_hidden) {
+      logits = model_->logits(model_output.hidden_states,
+                              lm_head_selected_token_idxes,
+                              selected_hidden);
+      if (!selected_hidden.defined() && model_output.hidden_states.defined()) {
+        selected_hidden_gather_idxes =
+            lm_head_selected_token_idxes.to(torch::kLong);
+        selected_hidden = model_output.hidden_states.index_select(
+            /*dim=*/0, selected_hidden_gather_idxes);
+      }
+    } else {
+      logits = model_->logits(model_output.hidden_states,
+                              lm_head_selected_token_idxes);
+    }
   }
 
   ForwardOutput output;
@@ -326,14 +347,13 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_internal(
 
   // driver prepare model output
   if (sampling_params.selected_token_idxes.defined()) {
-    output.logits = logits_output.logits;
-    output.selected_hidden = logits_output.selected_hidden;
+    output.logits = logits;
+    output.selected_hidden = selected_hidden;
     output.do_sample = sampling_params.do_sample;
     output.logprobs = sampling_params.logprobs;
     output.max_top_logprobs = sampling_params.max_top_logprobs;
     if (!input.skip_sampling_for_logits_only) {
-      auto sample_output =
-          model_executor_->sample(logits_output.logits, sampling_params);
+      auto sample_output = model_executor_->sample(logits, sampling_params);
       output.filter_bitmask_applied_to_logits =
           sampling_params.filter_bitmask.defined();
 
@@ -355,8 +375,8 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_internal(
     output_spec_hidden_states(output.sample_output,
                               model_output.hidden_states,
                               model_output.aux_hidden_states,
-                              logits_output.selected_token_idxes,
-                              logits_output.selected_hidden,
+                              lm_head_selected_token_idxes,
+                              selected_hidden,
                               is_target_prefill,
                               /*cp_enabled=*/options_.cp_size() > 1);
   }
@@ -371,8 +391,22 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_internal(
     wait_kv_push();
     output.retained_inputs.emplace_back(
         std::make_shared<LlmForwardInput>(input.clone()));
-    output.retained_inputs.emplace_back(
-        std::make_shared<LogitsOutput>(std::move(logits_output)));
+    if (logits.defined()) {
+      output.retained_inputs.emplace_back(
+          std::make_shared<torch::Tensor>(logits));
+    }
+    if (lm_head_selected_token_idxes.defined()) {
+      output.retained_inputs.emplace_back(
+          std::make_shared<torch::Tensor>(lm_head_selected_token_idxes));
+    }
+    if (selected_hidden.defined()) {
+      output.retained_inputs.emplace_back(
+          std::make_shared<torch::Tensor>(selected_hidden));
+    }
+    if (selected_hidden_gather_idxes.defined()) {
+      output.retained_inputs.emplace_back(
+          std::make_shared<torch::Tensor>(selected_hidden_gather_idxes));
+    }
     if (enable_schedule_overlap() && record_ready_event) {
       output.ready_event = device_.current_stream()->record_event_or_sync();
     }
@@ -383,8 +417,22 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_internal(
     CHECK_EQ(ret, 0) << "synchronize_default_stream failed";
   } else {
     // Graph decode returns before the LM head finishes consuming its indices.
-    output.retained_inputs.emplace_back(
-        std::make_shared<LogitsOutput>(std::move(logits_output)));
+    if (logits.defined()) {
+      output.retained_inputs.emplace_back(
+          std::make_shared<torch::Tensor>(logits));
+    }
+    if (lm_head_selected_token_idxes.defined()) {
+      output.retained_inputs.emplace_back(
+          std::make_shared<torch::Tensor>(lm_head_selected_token_idxes));
+    }
+    if (selected_hidden.defined()) {
+      output.retained_inputs.emplace_back(
+          std::make_shared<torch::Tensor>(selected_hidden));
+    }
+    if (selected_hidden_gather_idxes.defined()) {
+      output.retained_inputs.emplace_back(
+          std::make_shared<torch::Tensor>(selected_hidden_gather_idxes));
+    }
     output.ready_event = device_.current_stream()->record_event_or_sync();
   }
 

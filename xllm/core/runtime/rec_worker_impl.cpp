@@ -484,18 +484,10 @@ std::optional<ForwardOutput> RecWorkerImpl::RecWorkPipeline::step(
     return std::nullopt;
   }
 
-  LogitsOutput logits_output;
   torch::Tensor logits;
   if (sampling_params.selected_token_idxes.defined()) {
-    const bool return_selected_hidden =
-        runtime_.worker.options_.enable_speculative_decode() &&
-        (input_params.meta.batch_forward_type.is_decode() ||
-         runtime_.worker.is_spec_draft_);
-    logits_output =
-        runtime_.executor->compute_logits(model_output.hidden_states,
-                                          sampling_params.selected_token_idxes,
-                                          return_selected_hidden);
-    logits = logits_output.logits;
+    logits = runtime_.model->logits(model_output.hidden_states,
+                                    sampling_params.selected_token_idxes);
   }
 
   ForwardOutput output;
@@ -558,7 +550,8 @@ std::optional<ForwardOutput> RecWorkerImpl::RecWorkPipeline::step(
         !runtime_.worker.is_spec_draft_) {
       output.sample_output.embeddings = model_output.hidden_states;
     } else if (sampling_params.selected_token_idxes.defined()) {
-      output.sample_output.embeddings = logits_output.selected_hidden;
+      output.sample_output.embeddings = model_output.hidden_states.index_select(
+          /*dim=*/0, sampling_params.selected_token_idxes);
     }
   }
 
@@ -793,12 +786,10 @@ std::optional<ForwardOutput> RecWorkerImpl::OneRecWorkPipeline::step(
     return std::nullopt;
   }
 
-  LogitsOutput logits_output;
   torch::Tensor logits;
   if (sampling_params.selected_token_idxes.defined()) {
-    logits_output = runtime_.executor->compute_logits(
-        hidden_states, sampling_params.selected_token_idxes);
-    logits = logits_output.logits;
+    logits = runtime_.model->logits(hidden_states,
+                                    sampling_params.selected_token_idxes);
   }
 
   ForwardOutput output;
@@ -1197,11 +1188,6 @@ std::optional<ForwardOutput> RecWorkerImpl::OneRecXAttentionWorkPipeline::step(
   CHECK(input_params.onerec_xattention_params() != nullptr)
       << "OneRec xattention pipeline requires onerec_xattention_params.";
 
-  std::vector<LogitsOutput> retained_logits_outputs;
-  retained_logits_outputs.reserve(
-      input.step_meta() != nullptr ? std::max(input.step_meta()->total_round, 1)
-                                   : 1);
-
   struct RoundResult {
     torch::Tensor logits;
     SampleOutput sample_output;
@@ -1469,10 +1455,8 @@ std::optional<ForwardOutput> RecWorkerImpl::OneRecXAttentionWorkPipeline::step(
         }
       }
 #endif
-      auto logits_output = runtime_.executor->compute_logits(
-          hidden_states, selected_token_idxes);
-      result.logits = std::move(logits_output.logits);
-      retained_logits_outputs.emplace_back(std::move(logits_output));
+      result.logits =
+          runtime_.model->logits(hidden_states, selected_token_idxes);
       log_stage_timing("logits", stage_round, stage_timer);
       torch::Tensor filter_mask;
       if (filter_mask_future.has_value()) {
@@ -2045,9 +2029,6 @@ std::optional<ForwardOutput> RecWorkerImpl::LlmRecMultiRoundPipeline::step(
   std::optional<folly::SemiFuture<NextRoundInputResults>>
       next_round_async_result;
 
-  std::vector<LogitsOutput> retained_logits_outputs;
-  retained_logits_outputs.reserve(total_rounds);
-
   for (int32_t round = 0; round < total_rounds; ++round) {
     const auto& sampling_params = round > 0
                                       ? mutable_input.decoder_sampling_params
@@ -2090,10 +2071,8 @@ std::optional<ForwardOutput> RecWorkerImpl::LlmRecMultiRoundPipeline::step(
     torch::Tensor hidden_states = model_output.hidden_states;
 
     if (sampling_params.selected_token_idxes.defined()) {
-      auto logits_output = runtime_.executor->compute_logits(
-          hidden_states, sampling_params.selected_token_idxes);
-      logits = std::move(logits_output.logits);
-      retained_logits_outputs.emplace_back(std::move(logits_output));
+      logits = runtime_.model->logits(hidden_states,
+                                      sampling_params.selected_token_idxes);
       sample_output =
           runtime_.executor->sample_rec(logits, round_sampling_params);
     }

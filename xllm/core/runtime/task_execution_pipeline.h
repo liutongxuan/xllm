@@ -243,7 +243,7 @@ class TaskExecutionPipeline final {
     SamplingParameters sampling;
     SampleOutput sample_output;
     ModelOutput model_output;
-    LogitsOutput logits_output;
+    torch::Tensor logits;
     // Used only by the WorkerImpl-owned execution mode. These values stay in
     // the normal task slot until the completed FIFO retires it.
     LlmForwardInput worker_input;

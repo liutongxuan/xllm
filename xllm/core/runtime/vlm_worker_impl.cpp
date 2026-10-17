@@ -57,11 +57,8 @@ bool VLMWorkerImpl::init_model(ModelContext& context) {
   context.set_encoder_embedding_mode(false);
   model_ = create_vlm_model(context);
   CHECK(model_ != nullptr) << "Failed to create model.";
-  model_executor_ = std::make_unique<Executor>(model_.get(),
-                                               context.get_model_args(),
-                                               device_,
-                                               options_,
-                                               &context.get_parallel_args());
+  model_executor_ = std::make_unique<Executor>(
+      model_.get(), context.get_model_args(), device_, options_);
   return true;
 }
 
@@ -144,17 +141,41 @@ std::optional<ForwardOutput> VLMWorkerImpl::step_internal(
 
   const auto& sampling_params = input.sampling_params;
   ModelOutput model_output;
-  LogitsOutput logits_output;
+  torch::Tensor logits;
+  torch::Tensor lm_head_selected_token_idxes;
+  torch::Tensor selected_hidden_from_lm_head;
+  torch::Tensor selected_hidden_gather_idxes;
   {
     ModelInputParams params(input.input_params);
     model_output = model_executor_->forward(
         input.token_ids, input.positions, kv_caches_, params);
     if (sampling_params.selected_token_idxes.defined()) {
-      logits_output =
-          model_executor_->compute_logits(model_output.hidden_states,
-                                          sampling_params.selected_token_idxes,
-                                          options_.enable_speculative_decode(),
-                                          &params.parallel);
+      lm_head_selected_token_idxes = remap_selected_token_idxes_for_lm_head(
+          sampling_params.selected_token_idxes,
+          params.parallel,
+          model_output.hidden_states);
+      if (lm_head_selected_token_idxes.device() !=
+          model_output.hidden_states.device()) {
+        lm_head_selected_token_idxes =
+            lm_head_selected_token_idxes
+                .to(model_output.hidden_states.device(), /*non_blocking=*/false)
+                .contiguous();
+      }
+      if (options_.enable_speculative_decode()) {
+        logits = model_->logits(model_output.hidden_states,
+                                lm_head_selected_token_idxes,
+                                selected_hidden_from_lm_head);
+        if (!selected_hidden_from_lm_head.defined()) {
+          selected_hidden_gather_idxes =
+              lm_head_selected_token_idxes.to(torch::kLong);
+          selected_hidden_from_lm_head =
+              model_output.hidden_states.index_select(
+                  /*dim=*/0, selected_hidden_gather_idxes);
+        }
+      } else {
+        logits = model_->logits(model_output.hidden_states,
+                                lm_head_selected_token_idxes);
+      }
     }
   }
 
@@ -175,9 +196,8 @@ std::optional<ForwardOutput> VLMWorkerImpl::step_internal(
 
   ForwardOutput output;
   if (sampling_params.selected_token_idxes.defined()) {
-    auto sample_output =
-        model_executor_->sample(logits_output.logits, sampling_params);
-    output.logits = logits_output.logits;
+    auto sample_output = model_executor_->sample(logits, sampling_params);
+    output.logits = logits;
     COUNTER_ADD(execution_latency_seconds_sampling, timer.elapsed_seconds());
 
     // set sample output to output
@@ -196,8 +216,8 @@ std::optional<ForwardOutput> VLMWorkerImpl::step_internal(
     output_spec_hidden_states(output.sample_output,
                               model_output.hidden_states,
                               model_output.aux_hidden_states,
-                              logits_output.selected_token_idxes,
-                              logits_output.selected_hidden,
+                              lm_head_selected_token_idxes,
+                              selected_hidden_from_lm_head,
                               is_target_prefill,
                               /*cp_enabled=*/options_.cp_size() > 1);
   }
@@ -205,8 +225,22 @@ std::optional<ForwardOutput> VLMWorkerImpl::step_internal(
   if (sync_policy == ForwardSyncPolicy::NO_SYNC) {
     output.retained_inputs.emplace_back(
         std::make_shared<VlmForwardInput>(input.clone()));
-    output.retained_inputs.emplace_back(
-        std::make_shared<LogitsOutput>(std::move(logits_output)));
+    if (logits.defined()) {
+      output.retained_inputs.emplace_back(
+          std::make_shared<torch::Tensor>(logits));
+    }
+    if (lm_head_selected_token_idxes.defined()) {
+      output.retained_inputs.emplace_back(
+          std::make_shared<torch::Tensor>(lm_head_selected_token_idxes));
+    }
+    if (selected_hidden_from_lm_head.defined()) {
+      output.retained_inputs.emplace_back(
+          std::make_shared<torch::Tensor>(selected_hidden_from_lm_head));
+    }
+    if (selected_hidden_gather_idxes.defined()) {
+      output.retained_inputs.emplace_back(
+          std::make_shared<torch::Tensor>(selected_hidden_gather_idxes));
+    }
     if (record_ready_event && enable_schedule_overlap()) {
       output.ready_event = device_.current_stream()->record_event_or_sync();
     }

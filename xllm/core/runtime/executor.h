@@ -30,24 +30,14 @@ limitations under the License.
 namespace xllm {
 
 class PyExecutorImpl;
-struct ParallelArgs;
 struct RecConstraintTables;
-
-// Keep invocation-owned tensors alive until the caller's completion fence.
-struct LogitsOutput {
-  torch::Tensor logits;
-  torch::Tensor selected_hidden;
-  torch::Tensor selected_token_idxes;
-  torch::Tensor gather_idxes;
-};
 
 class Executor final {
  public:
   Executor(CausalLM* model,
            const ModelArgs& args,
            const torch::Device& device,
-           const runtime::Options& options,
-           const ParallelArgs* parallel_args = nullptr);
+           const runtime::Options& options);
 
   virtual ~Executor() = default;
 
@@ -67,12 +57,6 @@ class Executor final {
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
                       const ModelInputParams& params);
-
-  // Separate projection from sampling so logits-only calls do not advance RNG.
-  LogitsOutput compute_logits(const torch::Tensor& hidden_states,
-                              const torch::Tensor& selected_token_idxes,
-                              bool return_selected_hidden = false,
-                              const ParallelInput* parallel_input = nullptr);
 
   // Sampling preserves in-place logits transforms and raw logprob semantics.
   SampleOutput sample(torch::Tensor& logits,
@@ -107,14 +91,6 @@ class Executor final {
   PyExecutorImpl* python_impl();
 
  private:
-  torch::Tensor remap_selected_token_idxes(
-      const torch::Tensor& selected_token_idxes,
-      const ParallelInput& parallel_input,
-      const torch::Tensor& hidden_states) const;
-
-  // The owning worker destroys this executor before its model.
-  CausalLM& model_;
-  int64_t attention_dp_rank_ = -1;
   bool beam_search_enabled_ = false;
   Sampler sampler_;
   BeamSearcher beam_searcher_;

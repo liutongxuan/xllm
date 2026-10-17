@@ -1398,10 +1398,10 @@ void TaskExecutionPipeline::launch_prefill(SpeculativeSlot& slot) {
                                          kv_caches_,
                                          target_input.model_params());
   if (slot.samples != 0) {
-    slot.target_logits_output = executor_.compute_logits(
+    slot.target_logits = model_.logits(
         slot.target_output.hidden_states,
         slot.target_prefill->sampling_params().selected_token_idxes);
-    sample(executor_, *slot.target_sampling, slot.target_logits_output.logits);
+    sample(executor_, *slot.target_sampling, slot.target_logits);
     slot.target_prefill->device_result().lengths.fill_(1);
     if (block_draft() || capacity_.cp_sampling_group != nullptr) {
       synchronize_samples(slot.target_prefill->device_result());
@@ -1482,12 +1482,11 @@ void TaskExecutionPipeline::launch_decode(SpeculativeSlot& slot) {
                                                    binding.positions(),
                                                    draft_->kv_caches,
                                                    binding.model_params());
-      invocation.logits_output = draft_->executor.compute_logits(
+      invocation.logits = draft_->model.logits(
           invocation.output.hidden_states,
           invocation.sampling->params.selected_token_idxes);
-      invocation.sampled = sample(draft_->executor,
-                                  *invocation.sampling,
-                                  invocation.logits_output.logits);
+      invocation.sampled =
+          sample(draft_->executor, *invocation.sampling, invocation.logits);
       synchronize_tokens(invocation.sampled.next_tokens,
                          invocation.sampling->params.all_greedy_sample);
       slot.proposal.select(/*dim=*/1, step)
@@ -1512,10 +1511,10 @@ void TaskExecutionPipeline::launch_decode(SpeculativeSlot& slot) {
         slot.target_output.aux_hidden_states.narrow(
             /*dim=*/0, /*start=*/0, slot.rows * width);
   }
-  slot.target_logits_output = executor_.compute_logits(
+  slot.target_logits = model_.logits(
       slot.target_output.hidden_states,
       slot.validate_input->sampling_params().selected_token_idxes);
-  sample(executor_, *slot.target_sampling, slot.target_logits_output.logits);
+  sample(executor_, *slot.target_sampling, slot.target_logits);
   const auto target_tokens = slot.target_tokens.view({slot.rows, width});
   const auto bonus = target_tokens.narrow(/*dim=*/1, width - 1, /*length=*/1);
   const auto& base = slot.target_prefill->sampling_params();
@@ -1540,7 +1539,7 @@ void TaskExecutionPipeline::launch_decode(SpeculativeSlot& slot) {
     }
     accepted = slot.rejection->forward(
         DraftProposal(slot.proposal, draft_probs),
-        slot.target_logits_output.logits.view(
+        slot.target_logits.view(
             {slot.rows, width, speculative_capacity_->common.vocab_size}),
         bonus,
         /*mask_out_rejected_tokens=*/true);
@@ -1632,17 +1631,24 @@ void TaskExecutionPipeline::launch_block_draft(SpeculativeSlot& slot) {
                                                input.positions(),
                                                draft_->kv_caches,
                                                input.model_params());
-  invocation.logits_output = draft_->executor.compute_logits(
-      invocation.output.hidden_states,
-      selected,
-      /*return_selected_hidden=*/speculative_capacity_->kind ==
-          SpeculativeTaskKind::DFLASH2);
+  torch::Tensor selected_hidden;
   if (speculative_capacity_->kind == SpeculativeTaskKind::DFLASH2) {
-    const auto& hidden = invocation.logits_output.selected_hidden;
+    invocation.logits = draft_->model.logits(
+        invocation.output.hidden_states, selected, selected_hidden);
+    if (!selected_hidden.defined()) {
+      selected_hidden = invocation.output.hidden_states.index_select(
+          /*dim=*/0, selected.to(torch::kLong));
+    }
+  } else {
+    invocation.logits =
+        draft_->model.logits(invocation.output.hidden_states, selected);
+  }
+  if (speculative_capacity_->kind == SpeculativeTaskKind::DFLASH2) {
+    const auto& hidden = selected_hidden;
     const auto candidates = draft_->model.dflash2_candidates(
         hidden.view(
             {slot.rows, steps, speculative_capacity_->common.hidden_size}),
-        invocation.logits_output.logits.view(
+        invocation.logits.view(
             {slot.rows, steps, speculative_capacity_->common.vocab_size}),
         slot.state->tokens_);
     auto sampled =
@@ -1657,7 +1663,7 @@ void TaskExecutionPipeline::launch_block_draft(SpeculativeSlot& slot) {
     invocation.sampled.probs = std::move(sampled.dense_probs);
   } else if (speculative_capacity_->kind == SpeculativeTaskKind::DSPARK) {
     auto sampled = sample_dspark_block(
-        invocation.logits_output.logits.view(
+        invocation.logits.view(
             {slot.rows, steps, speculative_capacity_->common.vocab_size}),
         slot.state->tokens_.to(torch::kInt64),
         selector_sampling,
@@ -1673,9 +1679,8 @@ void TaskExecutionPipeline::launch_block_draft(SpeculativeSlot& slot) {
         slot.proposal);
     invocation.sampled.probs = sampled.draft_probs().value_or(torch::Tensor());
   } else {
-    invocation.sampled = sample(draft_->executor,
-                                *invocation.sampling,
-                                invocation.logits_output.logits);
+    invocation.sampled =
+        sample(draft_->executor, *invocation.sampling, invocation.logits);
     slot.proposal.copy_(
         invocation.sampled.next_tokens.view({slot.rows, steps}));
   }
@@ -1830,12 +1835,12 @@ void TaskExecutionPipeline::release_outputs(SpeculativeSlot& slot) {
   slot.draft_prefill->model_params().embedding.input_embedding =
       torch::Tensor();
   slot.target_output = ModelOutput();
-  slot.target_logits_output = LogitsOutput();
+  slot.target_logits = torch::Tensor();
   slot.target_sampling.reset();
   slot.rejection.reset();
   for (auto& invocation : slot.drafts) {
     invocation->output = ModelOutput();
-    invocation->logits_output = LogitsOutput();
+    invocation->logits = torch::Tensor();
     invocation->sampled = SampleOutput();
     invocation->sampling.reset();
   }
