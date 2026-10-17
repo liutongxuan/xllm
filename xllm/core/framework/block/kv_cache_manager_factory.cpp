@@ -99,6 +99,11 @@ KVCacheManagerFactoryResult KVCacheManagerFactory::create(
     std::optional<HostCacheValidationOptions> host_validation_options) {
   CHECK_GT(world_size, 0) << "world_size must be greater than 0";
   CHECK_GT(dp_size, 0) << "dp_size must be greater than 0";
+#if defined(USE_NPU)
+  CHECK(!options.enable_virtual_memory() ||
+        !use_npu_nz_kv_cache_layout(model_args.model_type()))
+      << "Virtual memory does not support the NPU NZ KV cache layout.";
+#endif
 
   KVCacheShape shape(kv_cache_capacity, model_args, world_size);
   CHECK(shape.has_key_cache_shape())

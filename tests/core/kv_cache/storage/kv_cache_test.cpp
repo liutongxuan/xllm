@@ -70,6 +70,22 @@ class IndexerCacheDtypeConfigGuard final {
   std::string old_indexer_cache_dtype_;
 };
 
+class PrefixCacheConfigGuard final {
+ public:
+  explicit PrefixCacheConfigGuard(bool enable)
+      : old_enable_prefix_cache_(
+            KVCacheConfig::get_instance().enable_prefix_cache()) {
+    KVCacheConfig::get_instance().enable_prefix_cache(enable);
+  }
+
+  ~PrefixCacheConfigGuard() {
+    KVCacheConfig::get_instance().enable_prefix_cache(old_enable_prefix_cache_);
+  }
+
+ private:
+  bool old_enable_prefix_cache_;
+};
+
 void ExpectTensorGroup(const KVCache& cache,
                        KVCacheTensorRole role,
                        BlockType expected_block_type) {
@@ -340,6 +356,30 @@ TEST_F(NpuKVCacheTest, VirtualMemoryPreservesSharedIndexerOwnership) {
     EXPECT_FALSE(caches[i].get_indexer_cache_scale().has_value());
     EXPECT_FALSE(caches[i].empty());
   }
+}
+
+TEST_F(NpuKVCacheTest, VirtualMemoryRejectsNpuNzLayout) {
+  PrefixCacheConfigGuard prefix_cache_guard(/*enable=*/true);
+
+  KVCacheCapacity capacity;
+  capacity.n_blocks(2).block_size(4);
+  ModelArgs model_args;
+  model_args.model_type("deepseek_v3")
+      .enable_mla(true)
+      .kv_lora_rank(8)
+      .qk_rope_head_dim(4);
+  const KVCacheShape shape(capacity, model_args, /*world_size=*/1);
+
+  KVCacheCreateOptions options;
+  options.device(torch::Device(torch::kCPU))
+      .dtype(torch::kBFloat16)
+      .num_layers(1)
+      .model_type("deepseek_v3")
+      .enable_virtual_memory(true)
+      .tensor_allocator(std::make_shared<RecordingKVCacheTensorAllocator>());
+
+  EXPECT_DEATH(create_kv_cache_tensors(shape, options),
+               "Virtual memory does not support the NPU NZ KV cache layout");
 }
 
 TEST_F(NpuKVCacheTest, InjectedAllocatorOwnsInt8IndexerAndFp16Scale) {
