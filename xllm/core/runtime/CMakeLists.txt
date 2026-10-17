@@ -11,6 +11,7 @@ cc_library(
     forward_runtime_state.h
     dit_forward_params.h
     executor.h
+    rec_executor.h
     task_execution_pipeline.h
     slot_buffer.h
     task_execution_pipeline_speculative.h
@@ -18,6 +19,7 @@ cc_library(
     executor_impl_factory.h
     vlm_executor_impl.h
     base_executor_impl.h
+    rec_executor_impl.h
     dit_executor.h
     $<$<BOOL:${USE_NPU}>:acl_graph_bucket_policy.h>
     $<$<BOOL:${USE_NPU}>:acl_graph_executor_impl.h>
@@ -56,11 +58,13 @@ cc_library(
   SRCS
     decode_graph_bucket.cpp
     executor.cpp
+    rec_executor.cpp
     task_execution_pipeline.cpp
     slot_buffer.cpp
     task_execution_pipeline_speculative.cpp
     executor_impl_factory.cpp
     base_executor_impl.cpp
+    rec_executor_impl.cpp
     vlm_executor_impl.cpp
     dit_executor.cpp
     $<$<BOOL:${USE_NPU}>:acl_graph_executor_impl.cpp>

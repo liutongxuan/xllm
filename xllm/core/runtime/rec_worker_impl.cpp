@@ -2742,10 +2742,9 @@ RecWorkerImpl::RecWorkerImpl(const ParallelArgs& parallel_args,
 }
 
 RecWorkerImpl::~RecWorkerImpl() {
-  // Release model_, model_executor_, eplb_executor_ in destructor to avoid
+  // Release model_ and eplb_executor_ in destructor to avoid
   // double deletion. Ownership actually belongs to work_pipelines_[0].
   model_.release();
-  model_executor_.release();
 
   if (::xllm::EPLBConfig::get_instance().enable_eplb()) {
     eplb_executor_.release();
@@ -2805,23 +2804,22 @@ bool RecWorkerImpl::init_model(ModelContext& context) {
     CHECK(runtime.model != nullptr) << "Failed to create model instance " << i;
 
     runtime.executor =
-        std::make_unique<Executor>(runtime.model.get(),
-                                   runtime.context->get_model_args(),
-                                   runtime.worker.device(),
-                                   runtime.worker.options_);
+        std::make_unique<RecExecutor>(runtime.model.get(),
+                                      runtime.context->get_model_args(),
+                                      runtime.worker.device(),
+                                      runtime.worker.options_,
+                                      pipeline_type);
 
     if (::xllm::EPLBConfig::get_instance().enable_eplb()) {
       runtime.eplb_executor = std::make_unique<EplbExecutor>(
           *runtime.model, runtime.worker.device());
     }
 
-    runtime.executor->configure_rec_sampling(pipeline_type);
     work_pipelines_.emplace_back(create_pipeline(pipeline_type, runtime));
     index_queue_.enqueue(i);
   }
 
   model_.reset(work_pipelines_[0]->runtime().model.get());
-  model_executor_.reset(work_pipelines_[0]->runtime().executor.get());
 
   if (::xllm::EPLBConfig::get_instance().enable_eplb()) {
     eplb_executor_.reset(work_pipelines_[0]->runtime().eplb_executor.get());

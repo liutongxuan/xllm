@@ -22,7 +22,6 @@ limitations under the License.
 #include "framework/model/model_input_params.h"
 #include "framework/model/model_output.h"
 #include "framework/sampling/beam_searcher.h"
-#include "framework/sampling/rec_sampler.h"
 #include "framework/sampling/sampler.h"
 #include "runtime/executor_impl.h"
 #include "runtime/options.h"
@@ -30,7 +29,6 @@ limitations under the License.
 namespace xllm {
 
 class PyExecutorImpl;
-struct RecConstraintTables;
 
 class Executor final {
  public:
@@ -65,17 +63,6 @@ class Executor final {
   BeamSearchOutput beam_search(const SamplingParameters& params,
                                const SampleOutput& sample_output);
 
-  void configure_rec_sampling(RecPipelineType pipeline_type);
-  SampleOutput sample_rec(torch::Tensor& logits,
-                          const SamplingParameters& params,
-                          const torch::Tensor& filter_mask = torch::Tensor(),
-                          const RecSamplingContext* context = nullptr);
-  void initialize_rec_constraints(const RecConstraintTables& tables,
-                                  const torch::Device& device);
-  bool can_use_rec_device_constraints(const SamplingParameters& params,
-                                      int32_t current_step,
-                                      int32_t beam_width) const;
-
   void prepare_graph_input(const torch::Tensor& tokens,
                            const torch::Tensor& positions,
                            std::vector<KVCache>& kv_caches,
@@ -93,7 +80,6 @@ class Executor final {
  private:
   Sampler sampler_;
   BeamSearcher beam_searcher_;
-  std::unique_ptr<RecSampler> rec_sampler_;
   std::unique_ptr<ExecutorImpl> impl_;
 };
 

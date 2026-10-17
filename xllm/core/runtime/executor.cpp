@@ -16,7 +16,6 @@ limitations under the License.
 #include "executor.h"
 
 #include "core/framework/config/beam_search_config.h"
-#include "core/framework/config/execution_config.h"
 #include "core/framework/config/model_config.h"
 #include "core/runtime/py_executor_impl.h"
 #include "executor_impl_factory.h"
@@ -83,33 +82,6 @@ BeamSearchOutput Executor::beam_search(const SamplingParameters& params,
       << "beam search kernel is not enabled";
   return beam_searcher_.forward(
       params.acc_logprob, sample_output.top_tokens, sample_output.top_logprobs);
-}
-
-void Executor::configure_rec_sampling(RecPipelineType pipeline_type) {
-  CHECK(rec_sampler_ == nullptr) << "Rec sampling is already configured";
-  rec_sampler_ = std::make_unique<RecSampler>(pipeline_type);
-}
-
-SampleOutput Executor::sample_rec(torch::Tensor& logits,
-                                  const SamplingParameters& params,
-                                  const torch::Tensor& filter_mask,
-                                  const RecSamplingContext* context) {
-  CHECK(rec_sampler_ != nullptr) << "Rec sampling is not configured";
-  return rec_sampler_->forward(logits, params, filter_mask, context);
-}
-
-void Executor::initialize_rec_constraints(const RecConstraintTables& tables,
-                                          const torch::Device& device) {
-  CHECK(rec_sampler_ != nullptr) << "Rec sampling is not configured";
-  rec_sampler_->initialize_device_constraints(tables, device);
-}
-
-bool Executor::can_use_rec_device_constraints(const SamplingParameters& params,
-                                              int32_t current_step,
-                                              int32_t beam_width) const {
-  CHECK(rec_sampler_ != nullptr) << "Rec sampling is not configured";
-  return rec_sampler_->can_use_device_constraints(
-      params, current_step, beam_width);
 }
 
 void Executor::prepare_graph_input(const torch::Tensor& tokens,
