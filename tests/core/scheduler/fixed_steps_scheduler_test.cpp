@@ -61,6 +61,9 @@ class ControllablePrefetchBlockManagerPool final : public BlockManagerPool {
                              PrefetchDoneCallback done) override {
     ++prefetch_calls_;
     pending_.emplace_back(std::move(request), std::move(done));
+    if (prefetch_started_callback_) {
+      prefetch_started_callback_();
+    }
   }
 
   void complete_prefetches() {
@@ -69,15 +72,29 @@ class ControllablePrefetchBlockManagerPool final : public BlockManagerPool {
     for (auto& [request, done] : pending) {
       done(std::move(request));
     }
+    if (prefetch_completion_callback_) {
+      prefetch_completion_callback_();
+    }
   }
 
   size_t prefetch_calls() const { return prefetch_calls_; }
+
+  void set_prefetch_completion_callback(
+      PrefetchCompletionCallback callback) override {
+    prefetch_completion_callback_ = std::move(callback);
+  }
+
+  void set_prefetch_started_callback(std::function<void()> callback) {
+    prefetch_started_callback_ = std::move(callback);
+  }
 
  private:
   const bool enable_storage_prefetch_;
   size_t prefetch_calls_ = 0;
   std::vector<std::pair<std::shared_ptr<Request>, PrefetchDoneCallback>>
       pending_;
+  PrefetchCompletionCallback prefetch_completion_callback_;
+  std::function<void()> prefetch_started_callback_;
 };
 
 class FakeTokenizer : public Tokenizer {
@@ -165,6 +182,9 @@ class FakeEngine final : public RecEngine {
   void complete_prefetches() { fake_block_manager_->complete_prefetches(); }
   size_t prefetch_calls() const {
     return fake_block_manager_->prefetch_calls();
+  }
+  void set_prefetch_started_callback(std::function<void()> callback) {
+    fake_block_manager_->set_prefetch_started_callback(std::move(callback));
   }
   void set_step_hook(std::function<void()> step_hook) {
     step_hook_ = std::move(step_hook);
@@ -342,6 +362,40 @@ TEST(FixedStepsSchedulerTest, PrefetchReservesAdmissionUntilCompletion) {
   EXPECT_FALSE(scheduler.has_pending_prefetch());
   EXPECT_EQ(scheduler.get_waiting_requests_num(), 0u);
   EXPECT_TRUE(scheduler.add_request(requests[1]));
+}
+
+TEST(FixedStepsSchedulerTest, PrefetchCompletionWakesScheduler) {
+  ScopedConfigValue<bool> prefix_cache(
+      KVCacheConfig::get_instance().enable_prefix_cache(), false);
+  ScopedConfigValue<double> memory_threshold(
+      SchedulerConfig::get_instance()
+          .prefill_scheduling_memory_usage_threshold(),
+      1.0);
+  auto engine = std::make_unique<FakeEngine>(
+      /*num_blocks=*/64, /*block_size=*/32, /*enable_storage_prefetch=*/true);
+  auto scheduler =
+      std::make_unique<FixedStepsScheduler>(engine.get(), CreateOptions());
+  auto requests = GenRequests({32}, {10}, RecType::kOneRec);
+  ASSERT_TRUE(scheduler->add_request(requests[0]));
+
+  std::promise<void> prefetch_started;
+  auto started = prefetch_started.get_future();
+  engine->set_prefetch_started_callback(
+      [&prefetch_started] { prefetch_started.set_value(); });
+  std::promise<void> step_finished;
+  auto finished = step_finished.get_future();
+  std::thread scheduler_thread([&scheduler, &step_finished] {
+    scheduler->step(absl::Seconds(1));
+    step_finished.set_value();
+  });
+
+  ASSERT_EQ(started.wait_for(std::chrono::seconds(1)),
+            std::future_status::ready);
+  engine->complete_prefetches();
+  EXPECT_EQ(finished.wait_for(std::chrono::milliseconds(200)),
+            std::future_status::ready);
+  scheduler_thread.join();
+  EXPECT_EQ(engine->step_calls(), 1u);
 }
 
 TEST(FixedStepsSchedulerTest, CancelledPrefetchReleasesReservedAdmission) {
