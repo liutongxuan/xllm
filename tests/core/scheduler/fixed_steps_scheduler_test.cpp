@@ -77,6 +77,22 @@ class ControllablePrefetchBlockManagerPool final : public BlockManagerPool {
     }
   }
 
+  void drain_prefetch_completions() override {
+    const size_t calls =
+        drain_calls_.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (drain_hook_) {
+      drain_hook_(calls);
+    }
+  }
+
+  size_t drain_calls() const {
+    return drain_calls_.load(std::memory_order_relaxed);
+  }
+
+  void set_drain_hook(std::function<void(size_t)> hook) {
+    drain_hook_ = std::move(hook);
+  }
+
   size_t prefetch_calls() const { return prefetch_calls_; }
 
   void set_prefetch_completion_callback(
@@ -95,6 +111,8 @@ class ControllablePrefetchBlockManagerPool final : public BlockManagerPool {
       pending_;
   PrefetchCompletionCallback prefetch_completion_callback_;
   std::function<void()> prefetch_started_callback_;
+  std::atomic<size_t> drain_calls_{0};
+  std::function<void(size_t)> drain_hook_;
 };
 
 class FakeTokenizer : public Tokenizer {
@@ -188,6 +206,10 @@ class FakeEngine final : public RecEngine {
   }
   void set_step_hook(std::function<void()> step_hook) {
     step_hook_ = std::move(step_hook);
+  }
+  size_t drain_calls() const { return fake_block_manager_->drain_calls(); }
+  void set_drain_hook(std::function<void(size_t)> hook) {
+    fake_block_manager_->set_drain_hook(std::move(hook));
   }
 
  private:
@@ -502,6 +524,90 @@ TEST(FixedStepsSchedulerTest, StepExecutesRecBatch) {
   scheduler.step(absl::Milliseconds(500));
   EXPECT_EQ(engine->step_calls(), 1u);
   EXPECT_TRUE(engine->last_step_had_request());
+}
+
+TEST(FixedStepsSchedulerTest, IdleStepWaitsWithoutRepeatedScansUntilAdmission) {
+  ScopedConfigValue<bool> prefix_cache(
+      KVCacheConfig::get_instance().enable_prefix_cache(), false);
+  ScopedConfigValue<double> memory_threshold(
+      SchedulerConfig::get_instance()
+          .prefill_scheduling_memory_usage_threshold(),
+      1.0);
+  auto engine = std::make_unique<FakeEngine>(64, 32);
+  std::promise<void> first_scan;
+  auto scanned = first_scan.get_future();
+  std::promise<void> repeated_scan;
+  auto rescanned = repeated_scan.get_future();
+  engine->set_drain_hook([&first_scan, &repeated_scan](size_t calls) {
+    // Each prepare_rec_batch() drains completions twice.
+    if (calls == 2) {
+      first_scan.set_value();
+    } else if (calls == 4) {
+      repeated_scan.set_value();
+    }
+  });
+  FixedStepsScheduler scheduler(engine.get(), CreateOptions());
+  auto finished = std::async(
+      std::launch::async, [&scheduler] { scheduler.step(absl::Seconds(2)); });
+
+  EXPECT_EQ(scanned.wait_for(std::chrono::seconds(1)),
+            std::future_status::ready);
+  EXPECT_EQ(rescanned.wait_for(std::chrono::milliseconds(50)),
+            std::future_status::timeout);
+  EXPECT_EQ(engine->drain_calls(), 2u);
+
+  auto requests = GenRequests({32}, {10}, RecType::kOneRec);
+  EXPECT_TRUE(scheduler.add_request(requests[0]));
+  EXPECT_EQ(finished.wait_for(std::chrono::milliseconds(200)),
+            std::future_status::ready);
+  finished.get();
+  engine->set_drain_hook({});
+  EXPECT_EQ(engine->step_calls(), 1u);
+  EXPECT_TRUE(engine->last_step_had_request());
+}
+
+TEST(FixedStepsSchedulerTest,
+     QueuedRequestProgressesAfterOversizedHeadWithoutNewNotification) {
+  ScopedConfigValue<bool> prefix_cache(
+      KVCacheConfig::get_instance().enable_prefix_cache(), false);
+  ScopedConfigValue<double> memory_threshold(
+      SchedulerConfig::get_instance()
+          .prefill_scheduling_memory_usage_threshold(),
+      1.0);
+  auto engine = std::make_unique<FakeEngine>(64, 32);
+  std::promise<Status> failure;
+  auto rejected = failure.get_future();
+  auto options = CreateOptions(/*max_tokens_per_batch=*/64,
+                               /*max_seqs_per_batch=*/1);
+  options.priority_strategy("priority");
+  FixedStepsScheduler scheduler(engine.get(), options);
+  auto requests = GenRequests({128, 32}, {10, 10}, RecType::kOneRec);
+  requests[0]->state().scheduler_param.priority = RequestPriority::HIGH;
+  requests[0]->state().output_func = [&failure](const RequestOutput& output) {
+    if (output.status.has_value()) {
+      failure.set_value(output.status.value());
+    }
+    return true;
+  };
+  ASSERT_TRUE(scheduler.add_request(requests[0]));
+  ASSERT_TRUE(scheduler.add_request(requests[1]));
+
+  // Both admission notifications precede the first scan. After rejecting
+  // the head, only the scheduler-local queue can trigger the next scan.
+  auto finished = std::async(
+      std::launch::async, [&scheduler] { scheduler.step(absl::Seconds(2)); });
+  const std::future_status rejection_status =
+      rejected.wait_for(std::chrono::seconds(1));
+  EXPECT_EQ(rejection_status, std::future_status::ready);
+  if (rejection_status == std::future_status::ready) {
+    EXPECT_EQ(rejected.get().code(), StatusCode::RESOURCE_EXHAUSTED);
+  }
+  EXPECT_EQ(finished.wait_for(std::chrono::milliseconds(200)),
+            std::future_status::ready);
+  finished.get();
+  EXPECT_EQ(engine->step_calls(), 1u);
+  EXPECT_TRUE(engine->last_step_had_request());
+  EXPECT_EQ(scheduler.get_waiting_requests_num(), 0u);
 }
 
 TEST(FixedStepsSchedulerTest, DestructionWaitsForAsynchronousRecExecution) {

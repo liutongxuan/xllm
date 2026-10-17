@@ -502,9 +502,15 @@ ScheduleResult FixedStepsScheduler::schedule_request(
     if (now >= deadline) {
       break;
     }
-    // Wait for a request or prefetch completion notification. Keep a short
-    // timeout so state changes without a direct notifier are still observed.
-    const auto wait_duration = std::min(absl::Milliseconds(1), deadline - now);
+    const absl::Duration remaining = deadline - now;
+    // Idle schedulers wait until the deadline or the next notification. Keep
+    // short retries while prefetches or local admissions still need progress.
+    const bool has_pending_work =
+        prefetching_requests_.load(std::memory_order_relaxed) > 0 ||
+        !prefill_queue_->empty();
+    const absl::Duration wait_duration =
+        has_pending_work ? std::min(absl::Milliseconds(1), remaining)
+                         : remaining;
     if (notifier_->wait_for(snapshot.generation,
                             absl::ToChronoNanoseconds(wait_duration))) {
       break;
