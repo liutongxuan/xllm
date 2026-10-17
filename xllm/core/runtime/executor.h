@@ -91,7 +91,6 @@ class Executor final {
   PyExecutorImpl* python_impl();
 
  private:
-  bool beam_search_enabled_ = false;
   Sampler sampler_;
   BeamSearcher beam_searcher_;
   std::unique_ptr<RecSampler> rec_sampler_;

@@ -28,9 +28,7 @@ namespace xllm {
 Executor::Executor(CausalLM* model,
                    const ModelArgs& args,
                    const torch::Device& device,
-                   const runtime::Options& options)
-    : beam_search_enabled_(
-          BeamSearchConfig::get_instance().enable_beam_search_kernel()) {
+                   const runtime::Options& options) {
   const auto& model_config = ModelConfig::get_instance();
   std::string backend;
   if (ModelConfig::is_python_model_impl(model_config.model_impl())) {
@@ -81,7 +79,8 @@ BeamSearchOutput Executor::beam_search(const SamplingParameters& params,
       params.acc_logprob.numel() == 0) {
     return {};
   }
-  CHECK(beam_search_enabled_) << "beam search kernel is not enabled";
+  CHECK(BeamSearchConfig::get_instance().enable_beam_search_kernel())
+      << "beam search kernel is not enabled";
   return beam_searcher_.forward(
       params.acc_logprob, sample_output.top_tokens, sample_output.top_logprobs);
 }
