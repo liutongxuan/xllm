@@ -964,6 +964,8 @@ bool MooncakeKVCacheTransferEngine::link_sessions(
                            *local_manifest,
                            CachePeerMode::ABSENT)) {
         LOG(ERROR) << "Cache peer rollback failed for " << remote_addrs[index];
+        record_pending_remote_unlink(
+            cluster_ids[index], remote_addrs[index], *local_manifest);
       }
     }
     for (size_t index : opened_indices) {
@@ -1013,6 +1015,8 @@ bool MooncakeKVCacheTransferEngine::link_sessions(
                            *local_manifest,
                            CachePeerMode::ABSENT)) {
         LOG(ERROR) << "Cache peer rollback failed for " << remote_addrs[index];
+        record_pending_remote_unlink(
+            cluster_ids[index], remote_addrs[index], *local_manifest);
       }
     }
     for (size_t index : opened_indices) {
@@ -1114,9 +1118,8 @@ bool MooncakeKVCacheTransferEngine::close_session(
                                              CachePeerMode::ABSENT);
   if (!remote_closed) {
     LOG(ERROR) << "Remote cache peer unlink failed for " << remote_addr;
-    std::lock_guard<std::mutex> lock(peer_mutex_);
-    pending_remote_unlinks_[remote_addr] =
-        PendingRemoteUnlink{remote_cluster_id, destination_manifest};
+    record_pending_remote_unlink(
+        remote_cluster_id, remote_addr, destination_manifest);
   } else if (pending_unlink.has_value()) {
     std::lock_guard<std::mutex> lock(peer_mutex_);
     pending_remote_unlinks_.erase(remote_addr);
@@ -1145,6 +1148,15 @@ bool MooncakeKVCacheTransferEngine::close_session(
     }
   }
   return remote_closed && local_closed;
+}
+
+void MooncakeKVCacheTransferEngine::record_pending_remote_unlink(
+    const uint64_t cluster_id,
+    const std::string& remote_addr,
+    const WorkerCacheLayoutManifest& destination_manifest) {
+  std::lock_guard<std::mutex> lock(peer_mutex_);
+  pending_remote_unlinks_[remote_addr] =
+      PendingRemoteUnlink{cluster_id, destination_manifest};
 }
 
 bool MooncakeKVCacheTransferEngine::move_memory_regions_with_session(

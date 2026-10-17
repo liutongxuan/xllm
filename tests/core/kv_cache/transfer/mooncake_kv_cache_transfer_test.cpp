@@ -1747,6 +1747,7 @@ TEST(MooncakeKVCacheTransferEngineTest,
     }
   }
   transfer.failed_peer = remote_addrs[3];
+  transfer.failed_absent_peer = remote_addrs[3];
 
   EXPECT_FALSE(transfer.link_sessions(cluster_ids, remote_addrs));
   EXPECT_EQ(
@@ -1763,6 +1764,22 @@ TEST(MooncakeKVCacheTransferEngineTest,
   }
   EXPECT_EQ(transfer.closed_sessions,
             std::vector<std::string>({"rollback-source_0"}));
+
+  transfer.failed_peer.clear();
+  const size_t peer_calls_after_failed_link = transfer.peer_calls.size();
+  EXPECT_FALSE(transfer.link_sessions(cluster_ids, remote_addrs));
+  EXPECT_EQ(transfer.peer_calls.size(), peer_calls_after_failed_link);
+
+  transfer.failed_absent_peer.clear();
+  EXPECT_TRUE(transfer.close_session(cluster_ids[3], remote_addrs[3]));
+  EXPECT_EQ(transfer.peer_calls.back().remote_addr, remote_addrs[3]);
+  EXPECT_EQ(transfer.peer_calls.back().mode, CachePeerMode::ABSENT);
+
+  ASSERT_TRUE(transfer.link_sessions(cluster_ids, remote_addrs));
+  for (size_t index = 0; index < remote_addrs.size(); ++index) {
+    EXPECT_TRUE(
+        transfer.close_session(cluster_ids[index], remote_addrs[index]));
+  }
 }
 
 TEST(MooncakeKVCacheTransferDefaultTest,

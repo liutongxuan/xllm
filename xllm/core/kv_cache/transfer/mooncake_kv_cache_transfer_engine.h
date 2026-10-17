@@ -149,6 +149,11 @@ class MooncakeKVCacheTransferEngine : public MooncakeTransferEngine {
       proto::VirtualKVCacheOffsetsResponse* response);
 
  private:
+  void record_pending_remote_unlink(
+      uint64_t cluster_id,
+      const std::string& remote_addr,
+      const WorkerCacheLayoutManifest& destination_manifest);
+
   struct LocalCachePeer {
     WorkerCacheLayoutManifest destination_manifest;
     WorkerCacheLayoutManifest source_manifest;
