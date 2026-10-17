@@ -55,6 +55,11 @@ class VirtualKVCacheMemoryRegistry final {
   bool unmap(const std::string& model_id, const std::vector<offset_t>& offsets);
   std::optional<int64_t> num_layers(const std::string& model_id) const;
 
+  std::optional<VirtualKVCacheBlockGlobalOffsets> get_global_offsets_for_block(
+      const std::string& model_id,
+      int64_t layer_id,
+      int64_t block_id) const;
+
   // Returns offsets relative to the shared physical-page mapping, or
   // {UINT64_MAX, UINT64_MAX} when the model/block has no valid mapping.
   std::pair<uint64_t, uint64_t> get_global_offsets_for_block(

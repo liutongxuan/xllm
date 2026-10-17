@@ -24,7 +24,7 @@ limitations under the License.
 #include <string>
 #include <vector>
 
-#include "core/kv_cache/storage/kv_cache_utils.h"
+#include "core/kv_cache/layout/kv_cache_tensor_role.h"
 
 namespace xllm {
 
@@ -116,7 +116,7 @@ WorkerCacheLayoutManifest make_ssm_manifest(int32_t tp_rank,
   tensor.cache_namespace = CacheNamespace::MAIN;
   tensor.layer_id = 0;
   tensor.role = static_cast<int32_t>(KVCacheTensorRole::SSM);
-  tensor.group_id = cache_group_id(BlockType::LINEAR);
+  tensor.group_id = 7;
   tensor.mooncake_buffer_id = static_cast<int64_t>(buffer_id);
   tensor.scalar_type = 0;
   tensor.element_bytes = 1;
@@ -204,6 +204,70 @@ WorkerCacheLayoutManifest make_large_head_manifest(int32_t tp_rank,
     }
   }
   return manifest;
+}
+
+WorkerCacheLayoutManifest make_virtual_mla_manifest(
+    int32_t tp_rank,
+    int32_t tp_size,
+    const std::vector<bool>& index_layers,
+    const std::string& addr) {
+  WorkerCacheLayoutManifest manifest = make_head_manifest(
+      tp_rank, tp_size, /*global_heads=*/1, /*buffer_id=*/0, addr);
+  manifest.layout_family = "mla";
+  manifest.tensors.clear();
+  manifest.tensors.reserve(index_layers.size() * 3);
+  for (size_t layer = 0; layer < index_layers.size(); ++layer) {
+    const int32_t role_count = index_layers[layer] ? 3 : 2;
+    for (int32_t role = 0; role < role_count; ++role) {
+      const uint64_t token_bytes =
+          role == KVCacheTensorRole::KEY
+              ? 4
+              : (role == KVCacheTensorRole::VALUE ? 2 : 1);
+      CacheTensorManifest tensor;
+      tensor.layer_id = static_cast<int64_t>(layer);
+      tensor.role = role;
+      tensor.group_id = 7;
+      tensor.element_bytes = 1;
+      tensor.shape = {static_cast<int64_t>(kResourceCount),
+                      static_cast<int64_t>(kTokenCount),
+                      static_cast<int64_t>(token_bytes)};
+      tensor.stride = {static_cast<int64_t>(kTokenCount * token_bytes),
+                       static_cast<int64_t>(token_bytes),
+                       1};
+      tensor.contiguous = true;
+      tensor.resource_count = kResourceCount;
+      tensor.resource_stride_bytes = kTokenCount * token_bytes;
+      tensor.buffer_bytes = 4096;
+      tensor.block_token_capacity = kTokenCount;
+      tensor.explicit_resource_offsets = true;
+      tensor.shard.kind = LogicalShardKind::REPLICATED;
+      LogicalSpan span;
+      span.logical_tensor =
+          KVCacheTensorRole(static_cast<KVCacheTensorRole::Value>(role))
+              .to_string();
+      span.bytes_per_region = tensor.resource_stride_bytes;
+      span.owner_tp_rank = role == KVCacheTensorRole::INDEX ? tp_size - 1 : 0;
+      tensor.shard.spans.emplace_back(std::move(span));
+      manifest.tensors.emplace_back(std::move(tensor));
+    }
+  }
+  return manifest;
+}
+
+std::vector<ExplicitResourceMapping> make_virtual_mla_mappings() {
+  std::vector<ExplicitResourceMapping> mappings;
+  mappings.reserve(3);
+  for (int32_t role = 0; role < 3; ++role) {
+    ExplicitResourceMapping mapping;
+    mapping.group_id = 7;
+    mapping.role = role;
+    mapping.local_ids = {1};
+    mapping.remote_ids = {2};
+    mapping.local_offsets = {100 + static_cast<uint64_t>(role) * 100};
+    mapping.remote_offsets = {600 + static_cast<uint64_t>(role) * 100};
+    mappings.emplace_back(std::move(mapping));
+  }
+  return mappings;
 }
 
 std::vector<WorkerCacheLayoutManifest> make_instance(
@@ -446,7 +510,7 @@ TEST(ReshardPlannerTest, CheckpointedSsmBindsLogicalSlotsAcrossTp) {
     ASSERT_TRUE(
         planner.build_outgoing_plan(sources[rank], destination, &plan).ok());
     KVTransferMapping mapping;
-    mapping.group_id = cache_group_id(BlockType::LINEAR);
+    mapping.group_id = sources[rank].tensors[0].group_id;
     mapping.local_ids = {1};
     mapping.remote_ids = {1};
     std::vector<ByteRegion> regions;
@@ -1118,6 +1182,147 @@ TEST(RequestRegionBinderTest, BindsExplicitVirtualMemoryResourceOffsets) {
   EXPECT_EQ(regions[0].local_offset, 100U);
   EXPECT_EQ(regions[0].remote_offset, 500U);
   EXPECT_EQ(regions[0].length, kTokenCount);
+}
+
+TEST(RequestRegionBinderTest,
+     BindsUnequalVirtualMlaRolesAtIndependentPhysicalOffsets) {
+  const WorkerCacheLayoutManifest source = make_virtual_mla_manifest(
+      /*tp_rank=*/0, /*tp_size=*/1, {true, false}, "source");
+  const WorkerCacheLayoutManifest destination = make_virtual_mla_manifest(
+      /*tp_rank=*/0, /*tp_size=*/1, {true, false}, "destination");
+  ReshardPlanTemplate plan;
+  ASSERT_TRUE(ReshardPlanner()
+                  .validate_destination_coverage({source}, destination)
+                  .ok());
+  ASSERT_TRUE(
+      ReshardPlanner().build_outgoing_plan(source, destination, &plan).ok());
+  std::vector<ByteRegion> regions;
+
+  ASSERT_TRUE(RequestRegionBinder()
+                  .bind_explicit(plan,
+                                 make_virtual_mla_mappings(),
+                                 CacheNamespace::MAIN,
+                                 /*layer_id=*/0,
+                                 &regions)
+                  .ok());
+
+  ASSERT_EQ(regions.size(), 3U);
+  std::sort(regions.begin(),
+            regions.end(),
+            [](const ByteRegion& lhs, const ByteRegion& rhs) {
+              return lhs.local_offset < rhs.local_offset;
+            });
+  for (size_t role = 0; role < regions.size(); ++role) {
+    const ByteRegion& region = regions[role];
+    EXPECT_EQ(region.local_buffer_id, 0U);
+    EXPECT_EQ(region.remote_buffer_id, 0U);
+    EXPECT_EQ(region.local_offset, 100 + role * 100);
+    EXPECT_EQ(region.remote_offset, 600 + role * 100);
+    EXPECT_EQ(region.length, kTokenCount * (4U >> role));
+  }
+}
+
+TEST(ReshardPlannerTest, SelectsSparseVirtualIndexOwnerAcrossLayers) {
+  const std::vector<WorkerCacheLayoutManifest> sources = {
+      make_virtual_mla_manifest(
+          /*tp_rank=*/0, /*tp_size=*/2, {false, false}, "source0"),
+      make_virtual_mla_manifest(
+          /*tp_rank=*/1, /*tp_size=*/2, {false, true}, "source1")};
+  const WorkerCacheLayoutManifest destination = make_virtual_mla_manifest(
+      /*tp_rank=*/0, /*tp_size=*/1, {false, true}, "destination");
+  ReshardPlanner planner;
+  std::vector<size_t> selected;
+  ASSERT_TRUE(planner.select_sources(sources, destination, &selected).ok());
+  EXPECT_EQ(selected, std::vector<size_t>({0, 1}));
+
+  for (size_t rank : selected) {
+    ReshardPlanTemplate plan;
+    ASSERT_TRUE(
+        planner.build_outgoing_plan(sources[rank], destination, &plan).ok());
+    for (int64_t layer = 0; layer < 2; ++layer) {
+      std::vector<ExplicitResourceMapping> mappings =
+          make_virtual_mla_mappings();
+      mappings.resize(layer == 0 ? 2 : 3);
+      std::vector<ByteRegion> regions;
+      ASSERT_TRUE(RequestRegionBinder()
+                      .bind_explicit(
+                          plan, mappings, CacheNamespace::MAIN, layer, &regions)
+                      .ok());
+      const size_t expected_count = rank == 0 ? 2 : static_cast<size_t>(layer);
+      ASSERT_EQ(regions.size(), expected_count);
+      for (size_t index = 0; index < regions.size(); ++index) {
+        const size_t role = rank == 0 ? index : 2;
+        EXPECT_EQ(regions[index].local_offset, 100 + role * 100);
+        EXPECT_EQ(regions[index].remote_offset, 600 + role * 100);
+        EXPECT_EQ(regions[index].length, kTokenCount * (4U >> role));
+      }
+    }
+  }
+}
+
+TEST(RequestRegionBinderTest, RejectsVirtualMlaRequestMissingIndexMapping) {
+  const WorkerCacheLayoutManifest source = make_virtual_mla_manifest(
+      /*tp_rank=*/0, /*tp_size=*/1, {true, false}, "source");
+  const WorkerCacheLayoutManifest destination = make_virtual_mla_manifest(
+      /*tp_rank=*/0, /*tp_size=*/1, {true, false}, "destination");
+  ReshardPlanTemplate plan;
+  ASSERT_TRUE(
+      ReshardPlanner().build_outgoing_plan(source, destination, &plan).ok());
+  std::vector<ExplicitResourceMapping> mappings = make_virtual_mla_mappings();
+  mappings.pop_back();
+  std::vector<ByteRegion> regions(1);
+
+  const Status status = RequestRegionBinder().bind_explicit(
+      plan, mappings, CacheNamespace::MAIN, /*layer_id=*/0, &regions);
+
+  EXPECT_FALSE(status.ok());
+  EXPECT_NE(status.message().find("missing an explicit cache tensor mapping"),
+            std::string::npos);
+  EXPECT_TRUE(regions.empty());
+}
+
+TEST(ReshardPlannerTest, RejectsVirtualMlaDestinationIndexWithoutSourceOwner) {
+  const WorkerCacheLayoutManifest source = make_virtual_mla_manifest(
+      /*tp_rank=*/0, /*tp_size=*/1, {false, false}, "source");
+  const WorkerCacheLayoutManifest destination = make_virtual_mla_manifest(
+      /*tp_rank=*/0, /*tp_size=*/1, {false, true}, "destination");
+
+  const Status status =
+      ReshardPlanner().validate_destination_coverage({source}, destination);
+
+  EXPECT_FALSE(status.ok());
+  EXPECT_NE(status.message().find("no source writer"), std::string::npos);
+}
+
+TEST(CacheLayoutTest, ManifestProtoRoundTripPreservesSparseVirtualMlaRoles) {
+  const WorkerCacheLayoutManifest original = make_virtual_mla_manifest(
+      /*tp_rank=*/1, /*tp_size=*/2, {false, true}, "source");
+  proto::WorkerCacheLayoutManifest wire;
+  cache_layout_to_proto(original, &wire);
+  WorkerCacheLayoutManifest decoded;
+
+  const Status status = cache_layout_from_proto(wire, &decoded);
+
+  ASSERT_TRUE(status.ok()) << status.message();
+  ASSERT_EQ(decoded.tensors.size(), 5U);
+  for (size_t index = 0; index < original.tensors.size(); ++index) {
+    const CacheTensorManifest& expected = original.tensors[index];
+    const CacheTensorManifest& actual = decoded.tensors[index];
+    EXPECT_EQ(actual.layer_id, expected.layer_id);
+    EXPECT_EQ(actual.role, expected.role);
+    EXPECT_EQ(actual.shape, expected.shape);
+    EXPECT_EQ(actual.stride, expected.stride);
+    EXPECT_EQ(actual.resource_stride_bytes, expected.resource_stride_bytes);
+    EXPECT_EQ(actual.block_token_capacity, kTokenCount);
+    EXPECT_TRUE(actual.explicit_resource_offsets);
+    ASSERT_EQ(actual.shard.spans.size(), 1U);
+    EXPECT_EQ(actual.shard.spans[0].logical_tensor,
+              expected.shard.spans[0].logical_tensor);
+    EXPECT_EQ(actual.shard.spans[0].bytes_per_region,
+              expected.shard.spans[0].bytes_per_region);
+    EXPECT_EQ(actual.shard.spans[0].owner_tp_rank,
+              expected.shard.spans[0].owner_tp_rank);
+  }
 }
 
 TEST(RequestRegionBinderTest, RejectsExplicitOffsetOutsideManifestBuffer) {

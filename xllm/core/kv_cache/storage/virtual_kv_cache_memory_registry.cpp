@@ -102,6 +102,20 @@ std::optional<int64_t> VirtualKVCacheMemoryRegistry::num_layers(
   return it->second.num_layers();
 }
 
+std::optional<VirtualKVCacheBlockGlobalOffsets>
+VirtualKVCacheMemoryRegistry::get_global_offsets_for_block(
+    const std::string& model_id,
+    int64_t layer_id,
+    int64_t block_id) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto it = regions_.find(model_id);
+  if (it == regions_.end()) {
+    LOG(ERROR) << "Model " << model_id << " has no KV cache regions";
+    return std::nullopt;
+  }
+  return it->second.get_global_offsets_for_block(layer_id, block_id);
+}
+
 std::pair<uint64_t, uint64_t>
 VirtualKVCacheMemoryRegistry::get_global_offsets_for_block(
     const std::string& model_id,

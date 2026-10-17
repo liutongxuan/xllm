@@ -25,7 +25,6 @@ limitations under the License.
 #endif
 
 #include <algorithm>
-#include <array>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -251,9 +250,11 @@ struct MemoryProviderOffsetQuery {
 };
 
 struct SharedTransferMemoryState {
-  std::array<uint8_t, 256> backing{};
+  std::vector<uint8_t> backing = std::vector<uint8_t>(256);
+  size_t page_size = 256;
   std::unordered_map<uint64_t, std::pair<uint64_t, uint64_t>> block_offsets;
   std::vector<MemoryProviderOffsetQuery> offset_queries;
+  std::unordered_map<uint64_t, VirtualKVCacheBlockGlobalOffsets> role_offsets;
 };
 
 class RecordingVirtualKVCacheTransferMemoryProvider final
@@ -264,7 +265,23 @@ class RecordingVirtualKVCacheTransferMemoryProvider final
       : state_(std::move(state)) {}
 
   VirtualKVCacheTransferMemoryRegion memory_region() const override {
-    return {state_->backing.data(), state_->backing.size(), state_};
+    return {state_->backing.data(),
+            state_->backing.size(),
+            state_,
+            state_->page_size};
+  }
+
+  std::optional<VirtualKVCacheBlockGlobalOffsets> get_global_offsets_for_block(
+      const std::string& model_id,
+      int64_t layer_id,
+      uint64_t block_id) const override {
+    state_->offset_queries.emplace_back(
+        MemoryProviderOffsetQuery{model_id, layer_id, block_id, 0});
+    const auto it = state_->role_offsets.find(block_id);
+    if (it == state_->role_offsets.end()) {
+      return std::nullopt;
+    }
+    return it->second;
   }
 
   std::pair<uint64_t, uint64_t> get_global_offsets_for_block(
@@ -353,110 +370,266 @@ TEST(MooncakeVirtualKVCacheTransferTest,
   EXPECT_EQ(second_engine_ptr->registered_lifetimes[0], shared_state);
 }
 
-TEST(MooncakeVirtualKVCacheTransferTest, PullUsesProviderBlockOffsets) {
-  auto shared_state = std::make_shared<SharedTransferMemoryState>();
-  shared_state->block_offsets = {{2, {16, 48}}, {3, {80, 112}}};
-  shared_state->offset_queries.reserve(2);
+TEST(MooncakeVirtualKVCacheTransferTest,
+     RegistersUnequalMlaRolesWithSparseIndexOwnership) {
+  constexpr size_t kPageSize = 2 * 1024 * 1024;
+  constexpr int64_t kBlockCount = 4;
+  constexpr int64_t kBlockTokens = 128;
+  const std::vector<bool> index_layers = {true, false, true};
+  auto state = std::make_shared<SharedTransferMemoryState>();
+  state->page_size = kPageSize;
+  state->backing.resize(8 * kPageSize);
   MooncakeVirtualKVCacheTransfer transfer(
       /*device_id=*/0,
       /*listen_port=*/0,
       torch::Device(torch::kCPU),
-      std::make_unique<RecordingVirtualKVCacheTransferMemoryProvider>(
-          shared_state));
+      std::make_unique<RecordingVirtualKVCacheTransferMemoryProvider>(state));
   auto engine = std::make_unique<RecordingMooncakeTransferEngine>(
       /*listen_port=*/0, torch::Device(torch::kCPU));
-  RecordingMooncakeTransferEngine* engine_ptr = engine.get();
+  RecordingMooncakeTransferEngine* engine_observer = engine.get();
   transfer.mooncake_te_ = std::move(engine);
-  register_virtual_memory_transfer_cache(transfer);
-  transfer.set_model_id("provider-test-model");
+  transfer.addr_ = "virtual-mla";
+
+  ModelArgs model_args;
+  model_args.model_type("glm_moe_dsa")
+      .n_layers(3)
+      .n_heads(64)
+      .n_kv_heads(64)
+      .head_dim(128)
+      .enable_mla(true)
+      .kv_lora_rank(512)
+      .qk_rope_head_dim(64)
+      .index_n_heads(32)
+      .index_head_dim(128);
+  KVCacheCapacity capacity;
+  capacity.n_blocks(kBlockCount).block_size(kBlockTokens);
+  const KVCacheShape shape(capacity, model_args, /*world_size=*/2);
+  std::vector<KVCache> caches;
+  caches.reserve(index_layers.size());
+  for (bool owns_index : index_layers) {
+    KVCacheTensors kv_tensors{
+        torch::zeros(shape.key_cache_shape(), torch::kBFloat16),
+        torch::zeros(shape.value_cache_shape(), torch::kBFloat16)};
+    if (owns_index) {
+      IndexedKVCacheTensors indexed_tensors;
+      indexed_tensors.kv_cache_tensors = std::move(kv_tensors);
+      indexed_tensors.index_cache =
+          torch::zeros(shape.index_cache_shape(), torch::kBFloat16);
+      caches.emplace_back(std::move(indexed_tensors));
+    } else {
+      caches.emplace_back(std::move(kv_tensors));
+    }
+  }
+  transfer.configure_cache_layout(make_args(/*rank=*/1,
+                                            /*world_size=*/2,
+                                            /*dp_size=*/1),
+                                  model_args,
+                                  kBlockTokens,
+                                  /*is_spec_draft=*/false);
+
+  transfer.register_kv_cache(caches, shape, torch::kBFloat16);
+
+  ASSERT_EQ(engine_observer->registered_addrs.size(), 1U);
+  EXPECT_EQ(engine_observer->registered_addrs[0],
+            std::vector<void*>({state->backing.data()}));
+  ASSERT_EQ(engine_observer->registered_lens.size(), 1U);
+  EXPECT_EQ(engine_observer->registered_lens[0],
+            std::vector<size_t>({state->backing.size()}));
+  ASSERT_EQ(engine_observer->registered_lifetimes.size(), 1U);
+  EXPECT_EQ(engine_observer->registered_lifetimes[0], state);
+  const WorkerCacheLayoutManifest& layout = transfer.local_cache_layout_;
+#if defined(USE_MLU) || defined(USE_ILU)
+  EXPECT_EQ(layout.layout_family, "head_token_dim_virtual_memory_v2");
+#else
+  EXPECT_EQ(layout.layout_family, "token_head_dim_virtual_memory_v2");
+#endif
+  EXPECT_EQ(layout.coordinates.tp_rank, 1);
+  EXPECT_EQ(layout.coordinates.tp_size, 2);
+  ASSERT_EQ(layout.tensors.size(), 8U);
+  const std::vector<KVCacheTensorRole> roles = {KVCacheTensorRole::KEY,
+                                                KVCacheTensorRole::VALUE,
+                                                KVCacheTensorRole::INDEX};
+  const std::vector<uint64_t> block_bytes = {128 * 1024, 16 * 1024, 32 * 1024};
+  const std::vector<std::vector<int64_t>> shapes = {shape.key_cache_shape(),
+                                                    shape.value_cache_shape(),
+                                                    shape.index_cache_shape()};
+  for (size_t layer = 0; layer < index_layers.size(); ++layer) {
+    for (size_t role = 0; role < roles.size(); ++role) {
+      SCOPED_TRACE(testing::Message() << "layer=" << layer
+                                      << ", role=" << roles[role].to_string());
+      const auto tensor = std::find_if(
+          layout.tensors.begin(),
+          layout.tensors.end(),
+          [layer, &roles, role](const CacheTensorManifest& manifest) {
+            return manifest.layer_id == static_cast<int64_t>(layer) &&
+                   manifest.role ==
+                       static_cast<int32_t>(
+                           static_cast<KVCacheTensorRole::Value>(roles[role]));
+          });
+      if (roles[role] == KVCacheTensorRole::INDEX && !index_layers[layer]) {
+        EXPECT_EQ(tensor, layout.tensors.end());
+        continue;
+      }
+      ASSERT_NE(tensor, layout.tensors.end());
+      EXPECT_EQ(tensor->cache_namespace, CacheNamespace::MAIN);
+      EXPECT_EQ(tensor->group_id, cache_group_id(BlockType::KV));
+      EXPECT_EQ(tensor->mooncake_buffer_id, 0);
+      EXPECT_EQ(tensor->buffer_bytes, state->backing.size());
+      EXPECT_EQ(tensor->resource_count, kBlockCount);
+      EXPECT_EQ(tensor->resource_stride_bytes, block_bytes[role]);
+      EXPECT_EQ(tensor->scalar_type, static_cast<int32_t>(torch::kBFloat16));
+      EXPECT_EQ(tensor->element_bytes, 2U);
+      EXPECT_EQ(tensor->block_token_capacity, kBlockTokens);
+      EXPECT_EQ(tensor->shape, shapes[role]);
+      EXPECT_TRUE(tensor->contiguous);
+      EXPECT_TRUE(tensor->explicit_resource_offsets);
+      EXPECT_EQ(tensor->shard.kind, LogicalShardKind::REPLICATED);
+      EXPECT_EQ(tensor->shard.resource_scope, CacheResourceScope::BLOCK);
+      ASSERT_EQ(tensor->shard.spans.size(), 1U);
+      EXPECT_EQ(tensor->shard.spans[0].bytes_per_region, block_bytes[role]);
+      EXPECT_EQ(tensor->shard.spans[0].owner_tp_rank, 0);
+    }
+  }
+  EXPECT_TRUE(state->offset_queries.empty());
+}
+
+TEST(MooncakeVirtualKVCacheTransferTest,
+     PullRejectsMissingRemoteMappingProtocol) {
+  auto state = std::make_shared<SharedTransferMemoryState>();
+  MooncakeVirtualKVCacheTransfer transfer(
+      /*device_id=*/0,
+      /*listen_port=*/0,
+      torch::Device(torch::kCPU),
+      std::make_unique<RecordingVirtualKVCacheTransferMemoryProvider>(state));
+  auto engine = std::make_unique<RecordingMooncakeTransferEngine>(
+      /*listen_port=*/0, torch::Device(torch::kCPU));
+  RecordingMooncakeTransferEngine* observer = engine.get();
+  transfer.mooncake_te_ = std::move(engine);
   KVTransferMapping mapping;
   mapping.group_id = cache_group_id(BlockType::KV);
   mapping.local_ids = {3};
   mapping.remote_ids = {2};
-
-  ASSERT_TRUE(
+  EXPECT_FALSE(
       transfer.pull_kv_blocks(/*src_cluster_id=*/1, "source", {mapping}));
+  EXPECT_TRUE(state->offset_queries.empty());
+  EXPECT_TRUE(observer->region_move_calls.empty());
+  EXPECT_TRUE(observer->move_calls.empty());
+}
 
-  ASSERT_EQ(shared_state->offset_queries.size(), 2U);
-  EXPECT_EQ(shared_state->offset_queries[0].block_id, 2U);
-  EXPECT_EQ(shared_state->offset_queries[1].block_id, 3U);
-  for (const MemoryProviderOffsetQuery& query : shared_state->offset_queries) {
-    EXPECT_EQ(query.model_id, "provider-test-model");
-    EXPECT_EQ(query.layer_id, 0);
-    EXPECT_EQ(query.block_size, 2 * sizeof(float));
+TEST(MooncakeVirtualKVCacheTransferTest,
+     PushUsesIndependentLocalAndRemoteRoleOffsets) {
+  auto state = std::make_shared<SharedTransferMemoryState>();
+  state->role_offsets = {{3, {16, 80, 128}}, {4, {32, 96, 160}}};
+  MooncakeVirtualKVCacheTransfer transfer(
+      /*device_id=*/0,
+      /*listen_port=*/0,
+      torch::Device(torch::kCPU),
+      std::make_unique<RecordingVirtualKVCacheTransferMemoryProvider>(state));
+  transfer.set_model_id("glm-test");
+  KVTransferMapping mapping;
+  mapping.group_id = cache_group_id(BlockType::KV);
+  mapping.local_ids = {3, 4};
+  mapping.remote_ids = {21, 22};
+  VirtualKVCacheLayerGlobalOffsets destination{
+      {1000, 2000}, {3000, 4000}, {5000, 6000}};
+  std::vector<ExplicitResourceMapping> mappings;
+  ASSERT_TRUE(
+      transfer.build_explicit_mappings(mapping, destination, 7, &mappings));
+  ASSERT_EQ(mappings.size(), 3U);
+  EXPECT_EQ(mappings[0].role, static_cast<int32_t>(KVCacheTensorRole::KEY));
+  EXPECT_EQ(mappings[0].local_offsets, (std::vector<uint64_t>{16, 32}));
+  EXPECT_EQ(mappings[0].remote_offsets, destination.k_offsets);
+  EXPECT_EQ(mappings[1].local_offsets, (std::vector<uint64_t>{80, 96}));
+  EXPECT_EQ(mappings[1].remote_offsets, destination.v_offsets);
+  EXPECT_EQ(mappings[2].role, static_cast<int32_t>(KVCacheTensorRole::INDEX));
+  EXPECT_EQ(mappings[2].local_offsets, (std::vector<uint64_t>{128, 160}));
+  EXPECT_EQ(mappings[2].remote_offsets, destination.index_offsets);
+  for (const auto& item : mappings) {
+    EXPECT_EQ(item.local_ids, mapping.local_ids);
+    EXPECT_EQ(item.remote_ids, mapping.remote_ids);
   }
-  ASSERT_EQ(engine_ptr->region_move_calls.size(), 1U);
-  const RecordingMooncakeTransferEngine::RegionMoveCall& call =
-      engine_ptr->region_move_calls[0];
-  EXPECT_EQ(call.remote_addr, "source");
-  EXPECT_EQ(call.opcode, MooncakeTransferEngine::MoveOpcode::READ);
-  ASSERT_EQ(call.regions.size(), 2U);
-  EXPECT_EQ(call.regions[0].local_offset, 80U);
-  EXPECT_EQ(call.regions[0].remote_offset, 16U);
-  EXPECT_EQ(call.regions[1].local_offset, 112U);
-  EXPECT_EQ(call.regions[1].remote_offset, 48U);
-  for (const ByteRegion& region : call.regions) {
-    EXPECT_EQ(region.local_buffer_id, 0);
-    EXPECT_EQ(region.remote_buffer_id, 0);
-    EXPECT_EQ(region.length, 2 * sizeof(float));
+  ASSERT_EQ(state->offset_queries.size(), 2U);
+  for (const auto& query : state->offset_queries) {
+    EXPECT_EQ(query.model_id, "glm-test");
+    EXPECT_EQ(query.layer_id, 7);
   }
 }
 
 TEST(MooncakeVirtualKVCacheTransferTest,
-     PullRejectsInvalidProviderOffsetsBeforeTransfer) {
-  struct InvalidBlockOffsetCase {
-    uint64_t block_id;
-    std::pair<uint64_t, uint64_t> offsets;
-  };
-  constexpr uint64_t kInvalidOffset = std::numeric_limits<uint64_t>::max();
-  const std::array<InvalidBlockOffsetCase, 4> invalid_cases = {
-      {{2, {kInvalidOffset, 48}},
-       {2, {16, kInvalidOffset}},
-       {3, {kInvalidOffset, 112}},
-       {3, {80, kInvalidOffset}}}};
-  for (const InvalidBlockOffsetCase& invalid_case : invalid_cases) {
-    SCOPED_TRACE(testing::Message()
-                 << "block_id=" << invalid_case.block_id
-                 << ", key_offset=" << invalid_case.offsets.first
-                 << ", value_offset=" << invalid_case.offsets.second);
-    auto shared_state = std::make_shared<SharedTransferMemoryState>();
-    shared_state->block_offsets = {{2, {16, 48}}, {3, {80, 112}}};
-    shared_state->block_offsets[invalid_case.block_id] = invalid_case.offsets;
-    shared_state->offset_queries.reserve(2);
-    MooncakeVirtualKVCacheTransfer transfer(
-        /*device_id=*/0,
-        /*listen_port=*/0,
-        torch::Device(torch::kCPU),
-        std::make_unique<RecordingVirtualKVCacheTransferMemoryProvider>(
-            shared_state));
-    auto engine = std::make_unique<RecordingMooncakeTransferEngine>(
-        /*listen_port=*/0, torch::Device(torch::kCPU));
-    RecordingMooncakeTransferEngine* engine_ptr = engine.get();
-    transfer.mooncake_te_ = std::move(engine);
-    register_virtual_memory_transfer_cache(transfer);
-    transfer.set_model_id("provider-test-model");
-    KVTransferMapping mapping;
-    mapping.group_id = cache_group_id(BlockType::KV);
-    mapping.local_ids = {3};
-    mapping.remote_ids = {2};
+     PushSupportsSharedIndexerAndRejectsInvalidOffsets) {
+  auto state = std::make_shared<SharedTransferMemoryState>();
+  state->role_offsets = {{3, {16, 80, std::nullopt}}};
+  MooncakeVirtualKVCacheTransfer transfer(
+      /*device_id=*/0,
+      /*listen_port=*/0,
+      torch::Device(torch::kCPU),
+      std::make_unique<RecordingVirtualKVCacheTransferMemoryProvider>(state));
+  KVTransferMapping mapping;
+  mapping.group_id = cache_group_id(BlockType::KV);
+  mapping.local_ids = {3};
+  mapping.remote_ids = {21};
+  VirtualKVCacheLayerGlobalOffsets destination{{1000}, {2000}, {}};
+  std::vector<ExplicitResourceMapping> mappings;
+  ASSERT_TRUE(
+      transfer.build_explicit_mappings(mapping, destination, 1, &mappings));
+  EXPECT_EQ(mappings.size(), 2U);
+  destination.index_offsets = {3000};
+  EXPECT_FALSE(
+      transfer.build_explicit_mappings(mapping, destination, 1, &mappings));
+  state->role_offsets[3].index_offset = 128;
+  destination.index_offsets.clear();
+  EXPECT_FALSE(
+      transfer.build_explicit_mappings(mapping, destination, 1, &mappings));
+  destination.index_offsets = {3000, 4000};
+  EXPECT_FALSE(
+      transfer.build_explicit_mappings(mapping, destination, 1, &mappings));
+  destination.index_offsets = {3000};
+  state->role_offsets.clear();
+  EXPECT_FALSE(
+      transfer.build_explicit_mappings(mapping, destination, 1, &mappings));
+}
 
-    EXPECT_FALSE(
-        transfer.pull_kv_blocks(/*src_cluster_id=*/1, "source", {mapping}));
+TEST(MooncakeVirtualKVCacheTransferTest, MergePreservesSparseIndexOffsets) {
+  auto state = std::make_shared<SharedTransferMemoryState>();
+  MooncakeVirtualKVCacheTransfer transfer(
+      /*device_id=*/0,
+      /*listen_port=*/0,
+      torch::Device(torch::kCPU),
+      std::make_unique<RecordingVirtualKVCacheTransferMemoryProvider>(state));
+  TransferKVInfo first = make_info(1, 1, 0);
+  first.dst_virtual_kv_cache_layer_global_offsets = {
+      {{10, 11}, {20, 21}, {30, 31}}, {{40, 41}, {50, 51}, {}}};
+  TransferKVInfo second = first;
+  second.dst_virtual_kv_cache_layer_global_offsets[0] = {
+      {12, 13}, {22, 23}, {32, 33}};
+  std::unordered_map<std::string, KVCacheTransfer::KVCacheInfo> merged;
+  transfer.merge_kv_blocks(merged, {first, second}, make_args(0, 1, 1));
+  ASSERT_EQ(merged.size(), 1U);
+  const auto& layers =
+      merged.begin()->second.dst_virtual_kv_cache_layer_global_offsets;
+  ASSERT_EQ(layers.size(), 2U);
+  EXPECT_EQ(layers[0].index_offsets, (std::vector<uint64_t>{30, 31, 32, 33}));
+  EXPECT_TRUE(layers[1].index_offsets.empty());
+}
 
-    EXPECT_TRUE(engine_ptr->region_move_calls.empty());
-    EXPECT_TRUE(engine_ptr->move_calls.empty());
-    const size_t expected_queries = invalid_case.block_id == 2 ? 1 : 2;
-    ASSERT_EQ(shared_state->offset_queries.size(), expected_queries);
-    EXPECT_EQ(shared_state->offset_queries.front().block_id, 2U);
-    EXPECT_EQ(shared_state->offset_queries.back().block_id,
-              invalid_case.block_id);
-    for (const MemoryProviderOffsetQuery& query :
-         shared_state->offset_queries) {
-      EXPECT_EQ(query.model_id, "provider-test-model");
-      EXPECT_EQ(query.layer_id, 0);
-      EXPECT_EQ(query.block_size, 2 * sizeof(float));
-    }
-  }
+TEST(MooncakeVirtualKVCacheTransferTest,
+     KvSplitFiltersAllRoleOffsetsWithRemoteIds) {
+  TransferKVInfo info = make_info(1, 1, 0);
+  info.mappings[0].local_ids = {3, 4};
+  info.mappings[0].remote_ids = {20, 21, 22};
+  info.dst_virtual_kv_cache_layer_global_offsets = {
+      {{10, 11, 12}, {20, 21, 22}, {30, 31, 32}},
+      {{40, 41, 42}, {50, 51, 52}, {}}};
+  const auto filtered = filter_kv_split_infos(1, 2, {info});
+  ASSERT_EQ(filtered.size(), 1U);
+  EXPECT_EQ(filtered[0].mappings[0].local_ids, (std::vector<uint64_t>{3}));
+  EXPECT_EQ(filtered[0].mappings[0].remote_ids, (std::vector<uint64_t>{21}));
+  const auto& layers = filtered[0].dst_virtual_kv_cache_layer_global_offsets;
+  ASSERT_EQ(layers.size(), 2U);
+  EXPECT_EQ(layers[0].k_offsets, (std::vector<uint64_t>{11}));
+  EXPECT_EQ(layers[0].v_offsets, (std::vector<uint64_t>{21}));
+  EXPECT_EQ(layers[0].index_offsets, (std::vector<uint64_t>{31}));
+  EXPECT_TRUE(layers[1].index_offsets.empty());
 }
 
 TEST(MooncakeKVCacheTransferEngineTest, LinksAllPcpSourcesWithOneActiveOwner) {

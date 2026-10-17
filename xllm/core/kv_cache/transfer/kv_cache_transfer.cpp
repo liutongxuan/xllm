@@ -146,6 +146,7 @@ std::vector<TransferKVInfo> filter_kv_split_infos(
     int32_t kv_split_size,
     const std::vector<TransferKVInfo>& kv_infos) {
   std::vector<TransferKVInfo> filtered_kv_infos;
+  filtered_kv_infos.reserve(kv_infos.size());
   for (const TransferKVInfo& kv_info : kv_infos) {
     if (kv_info.rank_local_mapping) {
       filtered_kv_infos.emplace_back(kv_info);
@@ -160,6 +161,31 @@ std::vector<TransferKVInfo> filter_kv_split_infos(
         continue;
       }
       const std::vector<uint64_t> remote_ids = mapping.remote_ids;
+      if (mapping.group_id == cache_group_id(BlockType::KV)) {
+        for (auto& layer : filtered.dst_virtual_kv_cache_layer_global_offsets) {
+          const auto filter_offsets = [&](std::vector<uint64_t>& offsets,
+                                          bool optional) {
+            if (optional && offsets.empty()) {
+              return;
+            }
+            CHECK_EQ(offsets.size(), remote_ids.size());
+            std::vector<uint64_t> selected;
+            selected.reserve(mapping.local_ids.size());
+            for (size_t k = 0; k < mapping.local_ids.size(); ++k) {
+              const size_t index = static_cast<size_t>(kv_split_rank) +
+                                   k * static_cast<size_t>(kv_split_size);
+              if (index >= offsets.size()) {
+                break;
+              }
+              selected.emplace_back(offsets[index]);
+            }
+            offsets = std::move(selected);
+          };
+          filter_offsets(layer.k_offsets, /*optional=*/false);
+          filter_offsets(layer.v_offsets, /*optional=*/false);
+          filter_offsets(layer.index_offsets, /*optional=*/true);
+        }
+      }
       mapping.remote_ids.clear();
       size_t mapped_local = 0;
       mapping.remote_ids.reserve(mapping.local_ids.size());
@@ -352,12 +378,17 @@ void KVCacheTransfer::merge_kv_blocks(
           if (existing.empty()) {
             existing = info.dst_virtual_kv_cache_layer_global_offsets;
           } else {
-            // Append offsets for each layer
-            for (size_t layer = 0;
-                 layer <
-                     info.dst_virtual_kv_cache_layer_global_offsets.size() &&
-                 layer < existing.size();
-                 ++layer) {
+            CHECK_EQ(existing.size(),
+                     info.dst_virtual_kv_cache_layer_global_offsets.size());
+            for (size_t layer = 0; layer < existing.size(); ++layer) {
+              const auto& source =
+                  info.dst_virtual_kv_cache_layer_global_offsets[layer];
+              CHECK_EQ(existing[layer].index_offsets.empty(),
+                       source.index_offsets.empty());
+              existing[layer].index_offsets.insert(
+                  existing[layer].index_offsets.end(),
+                  source.index_offsets.begin(),
+                  source.index_offsets.end());
               existing[layer].k_offsets.insert(
                   existing[layer].k_offsets.end(),
                   info.dst_virtual_kv_cache_layer_global_offsets[layer]

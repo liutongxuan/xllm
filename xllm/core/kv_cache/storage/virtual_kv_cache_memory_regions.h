@@ -20,10 +20,12 @@ limitations under the License.
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
 #include "core/framework/allocator/virtual_memory/mapped_virtual_memory_region.h"
+#include "core/kv_cache/layout/virtual_kv_cache_offsets.h"
 
 namespace xllm {
 
@@ -65,6 +67,12 @@ class VirtualKVCacheMemoryRegions final {
 
   bool map(const std::vector<offset_t>& offsets);
   bool unmap(const std::vector<offset_t>& offsets);
+
+  // Each role's block must fit one physical page and divide its page size.
+  // Returns nullopt if any required role is invalid or unmapped.
+  std::optional<VirtualKVCacheBlockGlobalOffsets> get_global_offsets_for_block(
+      int64_t layer_id,
+      int64_t block_id) const;
 
   // Returns pool-relative offsets, or {UINT64_MAX, UINT64_MAX} on failure.
   std::pair<uint64_t, uint64_t> get_global_offsets_for_block(
