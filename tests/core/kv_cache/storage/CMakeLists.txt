@@ -34,6 +34,9 @@ if(USE_NPU)
     VirtualKVCacheMemoryRegistryTest.ModelsKeepIndependentMappingsAndMetadata
     VirtualKVCacheMemoryRegistryTest.ShortageDoesNotPartiallyMapAnotherModel
     VirtualKVCacheMemoryRegistryTest.TensorAllocatorUsesItsInjectedRegistry
+    VirtualMLAKVCacheMemoryRegistryTest.LatentAndRopeBoundariesKeepIndependentMappings
+    VirtualMLAKVCacheMemoryRegistryTest.ShortageDoesNotPartiallyMapLatentRopeOrAnotherLayer
+    VirtualMLAKVCacheMemoryRegistryTest.IncompleteLogicalPagesDoNotChangeExistingMappings
     PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE
   )
 endif()

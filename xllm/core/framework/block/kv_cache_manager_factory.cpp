@@ -28,6 +28,7 @@ limitations under the License.
 #include "core/framework/block/hierarchy_block_manager_pool.h"
 #include "core/framework/config/kv_cache_config.h"
 #include "core/kv_cache/layout/kv_cache_estimation.h"
+#include "core/kv_cache/layout/virtual_kv_cache_page_layout.h"
 #include "core/kv_cache/storage/kv_cache_utils.h"
 #include "core/kv_cache/storage/virtual_kv_cache_page_allocator_impl.h"
 #include "core/runtime/options.h"
@@ -90,6 +91,7 @@ KVCacheManagerFactoryResult KVCacheManagerFactory::create(
     const KVCacheCapacity& kv_cache_capacity,
     const ModelArgs& model_args,
     int64_t world_size,
+    torch::ScalarType dtype,
     BlockManagerPool::Options options,
     std::shared_ptr<KVCacheTransferCoordinatorBase> transfer_coordinator,
     int32_t dp_size,
@@ -131,11 +133,56 @@ KVCacheManagerFactoryResult KVCacheManagerFactory::create(
     }
   }
 
-  VirtualKVCachePageAllocator* page_allocator =
-      options.enable_virtual_memory()
-          ? &DistributedVirtualMemoryCoordinator::get_instance()
-                 .virtual_kv_cache_page_allocator()
-          : nullptr;
+  VirtualKVCachePageAllocator* page_allocator = nullptr;
+  if (options.enable_virtual_memory()) {
+    CHECK(shape.has_value_cache_shape());
+    CHECK_EQ(kv_cache_capacity.scale_slot_size(), 0)
+        << "Virtual memory does not support quantized KV cache";
+    CHECK(!kv_cache_capacity.enable_mla_kv_cache_quant());
+    CHECK(!shape.has_grouped_cache_layout());
+    CHECK(!shape.has_conv_cache_shape() && !shape.has_ssm_cache_shape());
+    const size_t element_size = torch::elementSize(dtype);
+    const size_t key_bytes = VirtualKVCachePageLayout::tensor_block_bytes(
+        shape.key_cache_shape(), element_size);
+    const size_t value_bytes = VirtualKVCachePageLayout::tensor_block_bytes(
+        shape.value_cache_shape(), element_size);
+    CHECK(!options.enable_disagg_pd() || key_bytes == value_bytes)
+        << "Virtual memory PD transfer requires equally sized K/V blocks";
+    auto& allocator = DistributedVirtualMemoryCoordinator::get_instance()
+                          .virtual_kv_cache_page_allocator();
+    const VirtualKVCachePageLayout layout({key_bytes, value_bytes},
+                                          allocator.page_size());
+    CHECK_GT(options.num_layers(), 0);
+    CHECK_LE(layout.pages_per_tensor(0),
+             std::numeric_limits<size_t>::max() - layout.pages_per_tensor(1));
+    const size_t pages_per_layer =
+        layout.pages_per_tensor(0) + layout.pages_per_tensor(1);
+    CHECK_LE(static_cast<uint64_t>(options.num_layers()),
+             std::numeric_limits<size_t>::max() / pages_per_layer);
+    const size_t physical_pages =
+        pages_per_layer * static_cast<size_t>(options.num_layers());
+    // Leave the tensor shape unchanged, but expose only complete page groups
+    // to the scheduler. This prevents mapping past a short final tensor page.
+    const size_t virtual_pages =
+        static_cast<size_t>(kv_cache_capacity.n_blocks()) /
+        layout.blocks_per_page();
+    CHECK_GT(virtual_pages, 0)
+        << "KV cache must fit one complete VM page group";
+    CHECK(allocator.register_model(options.model_id(),
+                                   options.num_layers(),
+                                   physical_pages,
+                                   virtual_pages));
+    const size_t usable_pages =
+        allocator.get_num_total_virt_pages(options.model_id());
+    CHECK_GT(usable_pages, 0) << "Physical pool cannot fit one VM page group";
+    const size_t usable_blocks = usable_pages * layout.blocks_per_page();
+    LOG(INFO) << "Virtual KV cache: blocks=" << usable_blocks
+              << ", blocks_per_page=" << layout.blocks_per_page()
+              << ", physical_pages_per_group=" << physical_pages;
+    options.virtual_block_bytes(layout.block_bytes())
+        .num_blocks(static_cast<uint32_t>(usable_blocks));
+    page_allocator = &allocator;
+  }
   std::unique_ptr<KVCacheManager> manager;
   if (options.enable_host_offload()) {
     CHECK(transfer_coordinator != nullptr)
