@@ -127,6 +127,12 @@ class MooncakeKVCacheTransferEngine : public MooncakeTransferEngine {
 
   bool close_session(uint64_t cluster_id, const std::string& remote_addr);
 
+  // Keep a remote data session alive for the complete READ operation.
+  virtual bool move_memory_regions_with_session(
+      const std::string& remote_addr,
+      const std::vector<ByteRegion>& regions,
+      MoveOpcode move_opcode);
+
  protected:
   virtual bool fetch_cache_layout(uint64_t cluster_id,
                                   const std::string& remote_addr,
@@ -143,16 +149,28 @@ class MooncakeKVCacheTransferEngine : public MooncakeTransferEngine {
       proto::VirtualKVCacheOffsetsResponse* response);
 
  private:
+  void record_pending_remote_unlink(
+      uint64_t cluster_id,
+      const std::string& remote_addr,
+      const WorkerCacheLayoutManifest& destination_manifest);
+
   struct LocalCachePeer {
     WorkerCacheLayoutManifest destination_manifest;
+    WorkerCacheLayoutManifest source_manifest;
     std::string source_incarnation;
     uint64_t source_layout_generation = 0;
     CachePeerMode mode = CachePeerMode::PLAN_ONLY;
     bool holds_session = false;
   };
+  struct PendingRemoteUnlink {
+    uint64_t cluster_id = 0;
+    WorkerCacheLayoutManifest destination_manifest;
+  };
   MooncakeKVCacheTransferState& cache_state_;
+  std::mutex peer_operation_mutex_;
   std::mutex peer_mutex_;
   std::unordered_map<std::string, LocalCachePeer> cache_peers_;
+  std::unordered_map<std::string, PendingRemoteUnlink> pending_remote_unlinks_;
 };
 
 class MooncakeKVCacheTransferService final

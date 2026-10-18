@@ -633,8 +633,10 @@ bool WorkerImpl::allocate_kv_cache_with_transfer(
                                      model_args.model_type(),
                                      options_.model_id(),
                                      std::move(memory_provider));
-  CHECK(kv_cache_transfer_ != nullptr)
-      << "Failed to create KV cache transfer backend.";
+  if (kv_cache_transfer_ == nullptr) {
+    LOG(ERROR) << "Failed to create KV cache transfer backend.";
+    return false;
+  }
   kv_cache_transfer_->initialize(device_.index());
 
   bool use_huge_page_allocator = true;

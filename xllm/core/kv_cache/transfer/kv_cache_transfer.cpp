@@ -381,26 +381,43 @@ void KVCacheTransfer::merge_kv_blocks(
             CHECK_EQ(existing.size(),
                      info.dst_virtual_kv_cache_layer_global_offsets.size());
             for (size_t layer = 0; layer < existing.size(); ++layer) {
+              auto& existing_layer = existing[layer];
               const auto& source =
                   info.dst_virtual_kv_cache_layer_global_offsets[layer];
-              CHECK_EQ(existing[layer].index_offsets.empty(),
-                       source.index_offsets.empty());
-              existing[layer].index_offsets.insert(
-                  existing[layer].index_offsets.end(),
+              CHECK_EQ(existing_layer.k_offsets.empty(),
+                       existing_layer.v_offsets.empty());
+              CHECK_EQ(source.k_offsets.empty(), source.v_offsets.empty());
+              if (existing_layer.k_offsets.empty()) {
+                CHECK(existing_layer.index_offsets.empty());
+              } else {
+                CHECK_EQ(existing_layer.k_offsets.size(),
+                         existing_layer.v_offsets.size());
+                CHECK(existing_layer.index_offsets.empty() ||
+                      existing_layer.index_offsets.size() ==
+                          existing_layer.k_offsets.size());
+              }
+              if (source.k_offsets.empty()) {
+                CHECK(source.index_offsets.empty());
+              } else {
+                CHECK_EQ(source.k_offsets.size(), source.v_offsets.size());
+                CHECK(source.index_offsets.empty() ||
+                      source.index_offsets.size() == source.k_offsets.size());
+              }
+              if (!existing_layer.k_offsets.empty() &&
+                  !source.k_offsets.empty()) {
+                CHECK_EQ(existing_layer.index_offsets.empty(),
+                         source.index_offsets.empty());
+              }
+              existing_layer.index_offsets.insert(
+                  existing_layer.index_offsets.end(),
                   source.index_offsets.begin(),
                   source.index_offsets.end());
-              existing[layer].k_offsets.insert(
-                  existing[layer].k_offsets.end(),
-                  info.dst_virtual_kv_cache_layer_global_offsets[layer]
-                      .k_offsets.begin(),
-                  info.dst_virtual_kv_cache_layer_global_offsets[layer]
-                      .k_offsets.end());
-              existing[layer].v_offsets.insert(
-                  existing[layer].v_offsets.end(),
-                  info.dst_virtual_kv_cache_layer_global_offsets[layer]
-                      .v_offsets.begin(),
-                  info.dst_virtual_kv_cache_layer_global_offsets[layer]
-                      .v_offsets.end());
+              existing_layer.k_offsets.insert(existing_layer.k_offsets.end(),
+                                              source.k_offsets.begin(),
+                                              source.k_offsets.end());
+              existing_layer.v_offsets.insert(existing_layer.v_offsets.end(),
+                                              source.v_offsets.begin(),
+                                              source.v_offsets.end());
             }
           }
         }
@@ -424,18 +441,21 @@ std::shared_ptr<KVCacheTransfer> KVCacheTransferFactory::create(
   std::shared_ptr<MooncakeKVCacheTransferBase> mooncake_transfer;
 #if defined(USE_NPU)
   if (memory_provider != nullptr) {
+    if (model_id.empty()) {
+      LOG(ERROR)
+          << "VirtualMemory KV cache transfer requires a non-empty model_id";
+      return nullptr;
+    }
     auto virtual_memory_transfer =
         std::make_shared<MooncakeVirtualKVCacheTransfer>(
             device_id,
             transfer_listen_port,
             device,
             std::move(memory_provider));
-    if (!model_id.empty()) {
-      virtual_memory_transfer->set_model_id(model_id);
-      LOG(INFO)
-          << "VirtualMemory mode enabled for MooncakeKVCacheTransfer, model_id="
-          << model_id;
-    }
+    virtual_memory_transfer->set_model_id(model_id);
+    LOG(INFO)
+        << "VirtualMemory mode enabled for MooncakeKVCacheTransfer, model_id="
+        << model_id;
     mooncake_transfer = virtual_memory_transfer;
   } else {
     mooncake_transfer = std::make_shared<MooncakeKVCacheTransferDefault>(

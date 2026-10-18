@@ -40,11 +40,26 @@ std::string get_merge_key(const uint64_t dst_cluster_id,
   return std::to_string(dst_cluster_id) + "_" + dst_addr;
 }
 
+void validate_virtual_kv_cache_global_offsets(
+    const VirtualKVCacheLayerGlobalOffsets& offsets) {
+  CHECK_EQ(offsets.k_offsets.empty(), offsets.v_offsets.empty());
+  if (offsets.k_offsets.empty()) {
+    CHECK(offsets.index_offsets.empty());
+    return;
+  }
+  CHECK_EQ(offsets.k_offsets.size(), offsets.v_offsets.size());
+  CHECK(offsets.index_offsets.empty() ||
+        offsets.index_offsets.size() == offsets.k_offsets.size());
+}
+
 void merge_virtual_kv_cache_global_offsets(
     std::vector<VirtualKVCacheLayerGlobalOffsets>& merged_layer_offsets,
     const std::vector<VirtualKVCacheLayerGlobalOffsets>& layer_offsets) {
   if (layer_offsets.empty()) {
     return;
+  }
+  for (const VirtualKVCacheLayerGlobalOffsets& offsets : layer_offsets) {
+    validate_virtual_kv_cache_global_offsets(offsets);
   }
   if (merged_layer_offsets.empty()) {
     merged_layer_offsets = layer_offsets;
@@ -53,15 +68,17 @@ void merge_virtual_kv_cache_global_offsets(
 
   CHECK_EQ(merged_layer_offsets.size(), layer_offsets.size());
   for (size_t layer_id = 0; layer_id < layer_offsets.size(); ++layer_id) {
-    CHECK_EQ(merged_layer_offsets[layer_id].index_offsets.empty(),
-             layer_offsets[layer_id].index_offsets.empty());
+    validate_virtual_kv_cache_global_offsets(merged_layer_offsets[layer_id]);
     auto& index_target = merged_layer_offsets[layer_id].index_offsets;
     const auto& index_source = layer_offsets[layer_id].index_offsets;
+    auto& k_target = merged_layer_offsets[layer_id].k_offsets;
+    const auto& k_source = layer_offsets[layer_id].k_offsets;
+    if (!k_target.empty() && !k_source.empty()) {
+      CHECK_EQ(index_target.empty(), index_source.empty());
+    }
     index_target.reserve(index_target.size() + index_source.size());
     index_target.insert(
         index_target.end(), index_source.begin(), index_source.end());
-    std::vector<uint64_t>& k_target = merged_layer_offsets[layer_id].k_offsets;
-    const std::vector<uint64_t>& k_source = layer_offsets[layer_id].k_offsets;
     k_target.reserve(k_target.size() + k_source.size());
     k_target.insert(k_target.end(), k_source.begin(), k_source.end());
 
@@ -890,13 +907,32 @@ bool MooncakeVirtualKVCacheTransfer::pull_kv_blocks(
     const uint64_t src_cluster_id,
     const std::string& src_addr,
     const std::vector<KVTransferMapping>& mappings) {
-  if (model_id_.empty() || mappings.size() != 1 ||
-      mappings[0].group_id != cache_group_id(BlockType::KV) ||
-      mappings[0].local_ids.size() != mappings[0].remote_ids.size()) {
+  if (model_id_.empty()) {
     LOG(ERROR) << "Invalid VirtualMemory PULL model or KV mapping";
     return false;
   }
-  const KVTransferMapping& mapping = mappings[0];
+
+  const KVTransferMapping* kv_mapping = nullptr;
+  for (const KVTransferMapping& candidate : mappings) {
+    if (candidate.group_id == cache_group_id(BlockType::KV)) {
+      if (kv_mapping != nullptr ||
+          candidate.local_ids.size() != candidate.remote_ids.size()) {
+        LOG(ERROR) << "Invalid VirtualMemory PULL model or KV mapping";
+        return false;
+      }
+      kv_mapping = &candidate;
+      continue;
+    }
+    if (!candidate.local_ids.empty() || !candidate.remote_ids.empty()) {
+      LOG(ERROR) << "VirtualMemory PULL only supports empty auxiliary mappings";
+      return false;
+    }
+  }
+  if (kv_mapping == nullptr) {
+    LOG(ERROR) << "Invalid VirtualMemory PULL model or KV mapping";
+    return false;
+  }
+  const KVTransferMapping& mapping = *kv_mapping;
   if (mapping.local_ids.empty()) {
     return true;
   }
@@ -952,7 +988,7 @@ bool MooncakeVirtualKVCacheTransfer::pull_kv_blocks(
   }
 
   for (const std::vector<ByteRegion>& regions : layer_regions) {
-    if (!mooncake_te_->move_memory_regions(
+    if (!mooncake_te_->move_memory_regions_with_session(
             src_addr, regions, MooncakeTransferEngine::MoveOpcode::READ)) {
       LOG(ERROR) << "VirtualMemory PULL transfer failed, source=" << src_addr;
       return false;

@@ -200,6 +200,12 @@ class RecordingMooncakeTransferEngine final
     return move_result;
   }
 
+  bool move_memory_regions_with_session(const std::string& remote_addr,
+                                        const std::vector<ByteRegion>& regions,
+                                        MoveOpcode opcode) override {
+    return move_memory_regions(remote_addr, regions, opcode);
+  }
+
   bool has_reshard_plan(const std::string& remote_addr) const override {
     return planned_addrs.find(remote_addr) != planned_addrs.end();
   }
@@ -207,6 +213,7 @@ class RecordingMooncakeTransferEngine final
   bool fetch_cache_layout(uint64_t cluster_id,
                           const std::string& remote_addr,
                           WorkerCacheLayoutManifest* manifest) override {
+    ++fetch_cache_layout_calls;
     const auto it = remote_layouts.find(remote_addr);
     if (it == remote_layouts.end() || it->second.cluster_id != cluster_id) {
       return false;
@@ -249,17 +256,20 @@ class RecordingMooncakeTransferEngine final
                        const WorkerCacheLayoutManifest& /*manifest*/,
                        CachePeerMode mode) override {
     peer_calls.emplace_back(PeerCall{remote_addr, mode});
+    if (mode == CachePeerMode::ABSENT && remote_addr == failed_absent_peer) {
+      return false;
+    }
     return mode == CachePeerMode::ABSENT || remote_addr != failed_peer;
   }
 
   bool open_local_session(const std::string& remote_addr) override {
     opened_sessions.emplace_back(remote_addr);
-    return true;
+    return remote_addr != failed_session_peer;
   }
 
   bool close_local_session(const std::string& remote_addr) override {
     closed_sessions.emplace_back(remote_addr);
-    return true;
+    return remote_addr != failed_close_session_peer;
   }
 
   bool move_result = true;
@@ -273,7 +283,11 @@ class RecordingMooncakeTransferEngine final
   std::vector<VirtualOffsetQuery> virtual_offset_queries;
   std::unordered_set<std::string> planned_addrs;
   std::unordered_map<std::string, WorkerCacheLayoutManifest> remote_layouts;
+  size_t fetch_cache_layout_calls = 0;
   std::string failed_peer;
+  std::string failed_absent_peer;
+  std::string failed_close_session_peer;
+  std::string failed_session_peer;
   std::vector<std::vector<void*>> registered_addrs;
   std::vector<std::vector<size_t>> registered_lens;
   std::vector<std::vector<uint64_t>> registered_block_bytes;
@@ -549,6 +563,16 @@ TEST(MooncakeVirtualKVCacheTransferTest,
   EXPECT_TRUE(state->offset_queries.empty());
 }
 
+TEST(MooncakeVirtualKVCacheTransferTest,
+     MoveMemoryRegionsWithSessionRequiresActivePeer) {
+  MooncakeKVCacheTransferEngine engine(/*listen_port=*/0,
+                                       torch::Device(torch::kCPU));
+  ByteRegion region;
+  region.length = 1;
+  EXPECT_FALSE(engine.move_memory_regions_with_session(
+      "source", {region}, MooncakeTransferEngine::MoveOpcode::READ));
+}
+
 class MooncakeVirtualKVCachePullTest : public testing::Test {
  protected:
   static constexpr uint64_t kSourceClusterId = 17;
@@ -778,6 +802,21 @@ TEST_F(MooncakeVirtualKVCachePullTest,
   expect_no_move();
 }
 
+#if defined(USE_NPU)
+TEST(MooncakeVirtualKVCacheTransferTest,
+     FactoryRejectsVirtualMemoryWithoutModelIdentity) {
+  auto state = std::make_shared<SharedTransferMemoryState>();
+  EXPECT_EQ(KVCacheTransferFactory::create(
+                /*transfer_listen_port=*/0,
+                torch::Device(torch::kCPU),
+                /*model_type=*/"glm_moe_dsa",
+                /*model_id=*/"",
+                std::make_unique<RecordingVirtualKVCacheTransferMemoryProvider>(
+                    state)),
+            nullptr);
+}
+#endif
+
 TEST_F(MooncakeVirtualKVCachePullTest, FailedRemoteQueryDoesNotReadMemory) {
   engine_->virtual_offset_query_result = false;
   EXPECT_FALSE(pull());
@@ -891,6 +930,26 @@ TEST_F(MooncakeVirtualKVCachePullTest,
 }
 
 TEST_F(MooncakeVirtualKVCachePullTest,
+       AllowsEmptyLinearHelperMappingAlongsideKvMapping) {
+  KVTransferMapping empty_linear_mapping;
+  empty_linear_mapping.group_id = cache_group_id(BlockType::LINEAR);
+
+  EXPECT_TRUE(transfer_->pull_kv_blocks(
+      kSourceClusterId, "source", {mapping_, empty_linear_mapping}));
+  ASSERT_EQ(engine_->virtual_offset_queries.size(), 1U);
+  EXPECT_EQ(engine_->virtual_offset_queries[0].block_ids, mapping_.remote_ids);
+  EXPECT_FALSE(engine_->region_move_calls.empty());
+
+  engine_->region_move_calls.clear();
+  engine_->move_calls.clear();
+  empty_linear_mapping.local_ids = {0};
+  empty_linear_mapping.remote_ids = {0};
+  EXPECT_FALSE(transfer_->pull_kv_blocks(
+      kSourceClusterId, "source", {mapping_, empty_linear_mapping}));
+  expect_no_move();
+}
+
+TEST_F(MooncakeVirtualKVCachePullTest,
        SourceServiceReturnsPerLayerPhysicalOffsetsAndSparseIndex) {
   MooncakeKVCacheTransferService service;
   proto::VirtualKVCacheOffsetsRequest request;
@@ -991,6 +1050,7 @@ TEST_F(MooncakeVirtualKVCachePullTest,
 TEST_F(MooncakeVirtualKVCachePullTest,
        ProtocolQueriesBindSourceIdentityAndRetainPlanOnlySession) {
   ASSERT_NO_FATAL_FAILURE(enable_protocol_queries());
+  EXPECT_EQ(engine_->fetch_cache_layout_calls, 2U);
   ASSERT_EQ(engine_->opened_sessions,
             (std::vector<std::string>{"owner-source"}));
   WorkerCacheLayoutManifest manifest;
@@ -1018,6 +1078,41 @@ TEST_F(MooncakeVirtualKVCachePullTest,
   ASSERT_TRUE(engine_->get_remote_virtual_offsets(
       kSourceClusterId, "source", mapping_.remote_ids, &manifest, &offsets));
   EXPECT_EQ(engine_->opened_sessions.size(), 2U);
+  EXPECT_EQ(engine_->fetch_cache_layout_calls, 2U);
+  expect_no_move();
+}
+
+TEST_F(MooncakeVirtualKVCachePullTest,
+       FailedLazySessionOpenCanRetryWithoutUnlinkingPeer) {
+  ASSERT_NO_FATAL_FAILURE(enable_protocol_queries());
+  const size_t linked_peer_calls = engine_->peer_calls.size();
+  engine_->failed_session_peer = "source";
+  WorkerCacheLayoutManifest manifest = engine_->virtual_offset_manifest;
+  auto offsets = engine_->virtual_layer_offsets;
+
+  EXPECT_FALSE(engine_->get_remote_virtual_offsets(
+      kSourceClusterId, "source", mapping_.remote_ids, &manifest, &offsets));
+  EXPECT_TRUE(manifest.incarnation_id.empty());
+  EXPECT_TRUE(offsets.empty());
+  EXPECT_EQ(engine_->opened_sessions,
+            (std::vector<std::string>{"owner-source", "source"}));
+  EXPECT_TRUE(engine_->closed_sessions.empty());
+  EXPECT_EQ(engine_->peer_calls.size(), linked_peer_calls);
+
+  engine_->failed_session_peer.clear();
+  ASSERT_TRUE(engine_->get_remote_virtual_offsets(
+      kSourceClusterId, "source", mapping_.remote_ids, &manifest, &offsets));
+  EXPECT_EQ(manifest.incarnation_id,
+            engine_->virtual_offset_manifest.incarnation_id);
+  EXPECT_EQ(offsets.size(), engine_->virtual_layer_offsets.size());
+  EXPECT_EQ(engine_->opened_sessions,
+            (std::vector<std::string>{"owner-source", "source", "source"}));
+  EXPECT_TRUE(engine_->closed_sessions.empty());
+  EXPECT_EQ(engine_->peer_calls.size(), linked_peer_calls);
+
+  ASSERT_TRUE(engine_->get_remote_virtual_offsets(
+      kSourceClusterId, "source", mapping_.remote_ids, &manifest, &offsets));
+  EXPECT_EQ(engine_->opened_sessions.size(), 3U);
   expect_no_move();
 }
 
@@ -1044,6 +1139,8 @@ TEST_F(MooncakeVirtualKVCachePullTest,
       kSourceClusterId, "source", mapping_.remote_ids, &manifest, &offsets));
   EXPECT_EQ(engine_->opened_sessions.size(), 2U);
 
+  EXPECT_FALSE(engine_->close_session(kSourceClusterId + 1, "source"));
+  EXPECT_TRUE(engine_->closed_sessions.empty());
   ASSERT_TRUE(engine_->close_session(kSourceClusterId, "source"));
   EXPECT_EQ(engine_->closed_sessions, (std::vector<std::string>{"source"}));
   ASSERT_EQ(engine_->peer_calls.size(), linked_peer_calls + 1);
@@ -1058,6 +1155,56 @@ TEST_F(MooncakeVirtualKVCachePullTest,
   EXPECT_TRUE(offsets.empty());
   EXPECT_EQ(engine_->opened_sessions.size(), 2U);
   expect_no_move();
+}
+
+TEST_F(MooncakeVirtualKVCachePullTest,
+       CloseSessionErasesLocalStateWhenRemoteUnlinkFails) {
+  ASSERT_NO_FATAL_FAILURE(enable_protocol_queries());
+  WorkerCacheLayoutManifest manifest;
+  std::vector<VirtualKVCacheLayerGlobalOffsets> offsets;
+  ASSERT_TRUE(engine_->get_remote_virtual_offsets(
+      kSourceClusterId, "source", mapping_.remote_ids, &manifest, &offsets));
+
+  engine_->failed_absent_peer = "source";
+  EXPECT_FALSE(engine_->close_session(kSourceClusterId, "source"));
+  EXPECT_EQ(engine_->closed_sessions, std::vector<std::string>({"source"}));
+  EXPECT_FALSE(engine_->get_remote_virtual_offsets(
+      kSourceClusterId, "source", mapping_.remote_ids, &manifest, &offsets));
+
+  WorkerCacheLayoutManifest changed_destination =
+      transfer_->local_cache_layout_;
+  ++changed_destination.layout_generation;
+  EXPECT_TRUE(engine_->set_local_cache_layout(changed_destination).ok());
+
+  const size_t peer_calls_after_first_close = engine_->peer_calls.size();
+  EXPECT_FALSE(engine_->close_session(kSourceClusterId, "source"));
+  EXPECT_EQ(engine_->peer_calls.size(), peer_calls_after_first_close + 1);
+  EXPECT_EQ(engine_->closed_sessions, std::vector<std::string>({"source"}));
+
+  engine_->failed_absent_peer.clear();
+  EXPECT_TRUE(engine_->close_session(kSourceClusterId, "source"));
+  EXPECT_EQ(engine_->closed_sessions, std::vector<std::string>{"source"});
+  EXPECT_EQ(engine_->peer_calls.size(), peer_calls_after_first_close + 2);
+}
+
+TEST_F(MooncakeVirtualKVCachePullTest,
+       CloseSessionRetainsStateWhenLocalCloseFails) {
+  ASSERT_NO_FATAL_FAILURE(enable_protocol_queries());
+  WorkerCacheLayoutManifest manifest;
+  std::vector<VirtualKVCacheLayerGlobalOffsets> offsets;
+  ASSERT_TRUE(engine_->get_remote_virtual_offsets(
+      kSourceClusterId, "source", mapping_.remote_ids, &manifest, &offsets));
+
+  engine_->failed_close_session_peer = "source";
+  EXPECT_FALSE(engine_->close_session(kSourceClusterId, "source"));
+  EXPECT_EQ(engine_->closed_sessions, std::vector<std::string>({"source"}));
+
+  engine_->failed_close_session_peer.clear();
+  EXPECT_TRUE(engine_->close_session(kSourceClusterId, "source"));
+  EXPECT_EQ(engine_->closed_sessions,
+            std::vector<std::string>({"source", "source"}));
+  EXPECT_FALSE(engine_->get_remote_virtual_offsets(
+      kSourceClusterId, "source", mapping_.remote_ids, &manifest, &offsets));
 }
 
 TEST_F(MooncakeVirtualKVCachePullTest,
@@ -1147,9 +1294,6 @@ TEST_F(MooncakeVirtualKVCachePullTest,
   expect_rejected();
   engine_->virtual_wire_response = original;
   engine_->virtual_wire_result = false;
-  expect_rejected();
-  engine_->virtual_wire_result = true;
-  engine_->remote_layouts["source"].incarnation_id = "restarted-source";
   expect_rejected();
   expect_no_move();
 }
@@ -1321,6 +1465,129 @@ TEST(MooncakeVirtualKVCacheTransferTest,
   EXPECT_TRUE(layers[1].index_offsets.empty());
 }
 
+TEST(MooncakeVirtualKVCacheTransferTest, MergeAllowsEmptyKvSplitOffsets) {
+  auto state = std::make_shared<SharedTransferMemoryState>();
+  MooncakeVirtualKVCacheTransfer transfer(
+      /*device_id=*/0,
+      /*listen_port=*/0,
+      torch::Device(torch::kCPU),
+      std::make_unique<RecordingVirtualKVCacheTransferMemoryProvider>(state));
+  TransferKVInfo first = make_info(1, 1, 0);
+  first.dst_virtual_kv_cache_layer_global_offsets = {
+      {{10, 11}, {20, 21}, {30, 31}}};
+  TransferKVInfo second = first;
+  second.dst_virtual_kv_cache_layer_global_offsets[0] = {{}, {}, {}};
+  std::unordered_map<std::string, KVCacheTransfer::KVCacheInfo> merged;
+  transfer.merge_kv_blocks(merged, {first, second}, make_args(0, 1, 1));
+  ASSERT_EQ(merged.size(), 1U);
+  const auto& layers =
+      merged.begin()->second.dst_virtual_kv_cache_layer_global_offsets;
+  ASSERT_EQ(layers.size(), 1U);
+  EXPECT_EQ(layers[0].k_offsets, (std::vector<uint64_t>{10, 11}));
+  EXPECT_EQ(layers[0].v_offsets, (std::vector<uint64_t>{20, 21}));
+  EXPECT_EQ(layers[0].index_offsets, (std::vector<uint64_t>{30, 31}));
+
+  std::unordered_map<std::string, KVCacheTransfer::KVCacheInfo> reverse_merged;
+  transfer.merge_kv_blocks(reverse_merged, {second, first}, make_args(0, 1, 1));
+  ASSERT_EQ(reverse_merged.size(), 1U);
+  const auto& reverse_layers =
+      reverse_merged.begin()->second.dst_virtual_kv_cache_layer_global_offsets;
+  ASSERT_EQ(reverse_layers.size(), 1U);
+  EXPECT_EQ(reverse_layers[0].k_offsets, (std::vector<uint64_t>{10, 11}));
+  EXPECT_EQ(reverse_layers[0].v_offsets, (std::vector<uint64_t>{20, 21}));
+  EXPECT_EQ(reverse_layers[0].index_offsets, (std::vector<uint64_t>{30, 31}));
+}
+
+TEST(MooncakeVirtualKVCacheTransferTest,
+     MergeAllowsAuxiliaryOnlyInfoWithEmptyKvOffsets) {
+  auto state = std::make_shared<SharedTransferMemoryState>();
+  MooncakeVirtualKVCacheTransfer transfer(
+      /*device_id=*/0,
+      /*listen_port=*/0,
+      torch::Device(torch::kCPU),
+      std::make_unique<RecordingVirtualKVCacheTransferMemoryProvider>(state));
+
+  TransferKVInfo auxiliary_only = make_info(1, 1, 0);
+  auxiliary_only.mappings[0].local_ids.clear();
+  auxiliary_only.mappings[0].remote_ids.clear();
+  KVTransferMapping linear_mapping;
+  linear_mapping.group_id = cache_group_id(BlockType::LINEAR);
+  linear_mapping.local_ids = {31};
+  linear_mapping.remote_ids = {41};
+  auxiliary_only.mappings.emplace_back(std::move(linear_mapping));
+  auxiliary_only.dst_virtual_kv_cache_layer_global_offsets = {{{}, {}, {}}};
+
+  TransferKVInfo kv_info = make_info(1, 1, 0);
+  kv_info.mappings[0].local_ids = {13};
+  kv_info.mappings[0].remote_ids = {23, 24};
+  kv_info.dst_virtual_kv_cache_layer_global_offsets = {
+      {{10, 11}, {20, 21}, {30, 31}}};
+
+  const std::vector<TransferKVInfo> filtered = filter_kv_split_infos(
+      /*kv_split_rank=*/1, /*kv_split_size=*/2, {auxiliary_only, kv_info});
+  ASSERT_EQ(filtered.size(), 2U);
+  EXPECT_TRUE(filtered[0]
+                  .dst_virtual_kv_cache_layer_global_offsets[0]
+                  .k_offsets.empty());
+  EXPECT_EQ(filtered[1].dst_virtual_kv_cache_layer_global_offsets[0].k_offsets,
+            (std::vector<uint64_t>{11}));
+
+  std::unordered_map<std::string, KVCacheTransfer::KVCacheInfo> merged;
+  transfer.merge_kv_blocks(merged, filtered, make_args(0, 1, 1));
+  ASSERT_EQ(merged.size(), 1U);
+  const auto& layers =
+      merged.begin()->second.dst_virtual_kv_cache_layer_global_offsets;
+  ASSERT_EQ(layers.size(), 1U);
+  EXPECT_EQ(layers[0].k_offsets, (std::vector<uint64_t>{11}));
+  EXPECT_EQ(layers[0].v_offsets, (std::vector<uint64_t>{21}));
+  EXPECT_EQ(layers[0].index_offsets, (std::vector<uint64_t>{31}));
+
+  std::unordered_map<std::string, KVCacheTransfer::KVCacheInfo> reverse_merged;
+  transfer.merge_kv_blocks(
+      reverse_merged, {filtered[1], filtered[0]}, make_args(0, 1, 1));
+  ASSERT_EQ(reverse_merged.size(), 1U);
+  const auto& reverse_layers =
+      reverse_merged.begin()->second.dst_virtual_kv_cache_layer_global_offsets;
+  ASSERT_EQ(reverse_layers.size(), 1U);
+  EXPECT_EQ(reverse_layers[0].k_offsets, (std::vector<uint64_t>{11}));
+  EXPECT_EQ(reverse_layers[0].v_offsets, (std::vector<uint64_t>{21}));
+  EXPECT_EQ(reverse_layers[0].index_offsets, (std::vector<uint64_t>{31}));
+}
+
+TEST(MooncakeVirtualKVCacheTransferTest,
+     MergeRejectsMalformedVirtualKvCacheOffsets) {
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  auto state = std::make_shared<SharedTransferMemoryState>();
+  MooncakeVirtualKVCacheTransfer transfer(
+      /*device_id=*/0,
+      /*listen_port=*/0,
+      torch::Device(torch::kCPU),
+      std::make_unique<RecordingVirtualKVCacheTransferMemoryProvider>(state));
+
+  const auto expect_rejected =
+      [&transfer](VirtualKVCacheLayerGlobalOffsets offsets) {
+        TransferKVInfo info = make_info(1, 1, 0);
+        info.dst_virtual_kv_cache_layer_global_offsets = {std::move(offsets)};
+        std::unordered_map<std::string, KVCacheTransfer::KVCacheInfo> merged;
+        EXPECT_DEATH(
+            transfer.merge_kv_blocks(merged, {info}, make_args(0, 1, 1)), "");
+      };
+
+  expect_rejected({{10}, {}, {}});
+  expect_rejected({{10, 11}, {20}, {}});
+  expect_rejected({{}, {}, {30}});
+  expect_rejected({{10}, {20}, {30, 31}});
+
+  TransferKVInfo first = make_info(1, 1, 0);
+  first.dst_virtual_kv_cache_layer_global_offsets = {{{10}, {20}, {}}};
+  TransferKVInfo second = first;
+  second.dst_virtual_kv_cache_layer_global_offsets = {{{11}, {21}, {31}}};
+  std::unordered_map<std::string, KVCacheTransfer::KVCacheInfo> merged;
+  EXPECT_DEATH(
+      transfer.merge_kv_blocks(merged, {first, second}, make_args(0, 1, 1)),
+      "");
+}
+
 TEST(MooncakeKVCacheTransferEngineTest, LinksAllPcpSourcesWithOneActiveOwner) {
   MooncakeKVCacheTransferState& core =
       MooncakeKVCacheTransferState::get_instance();
@@ -1362,6 +1629,12 @@ TEST(MooncakeKVCacheTransferEngineTest, LinksAllPcpSourcesWithOneActiveOwner) {
   }
   EXPECT_EQ(transfer.opened_sessions, std::vector<std::string>({"source_0"}));
 
+  EXPECT_FALSE(transfer.link_sessions({cluster_ids[0], cluster_ids[0]},
+                                      {remote_addrs[0], remote_addrs[0]}));
+  EXPECT_FALSE(transfer.link_sessions({cluster_ids[0], cluster_ids[0] + 1},
+                                      {remote_addrs[0], remote_addrs[0]}));
+  EXPECT_EQ(transfer.peer_calls.size(), 8U);
+
   ASSERT_TRUE(transfer.link_sessions(cluster_ids, remote_addrs));
   EXPECT_EQ(transfer.peer_calls.size(), 8U);
   EXPECT_EQ(transfer.opened_sessions, std::vector<std::string>({"source_0"}));
@@ -1371,6 +1644,73 @@ TEST(MooncakeKVCacheTransferEngineTest, LinksAllPcpSourcesWithOneActiveOwner) {
         transfer.close_session(cluster_ids[index], remote_addrs[index]));
   }
   EXPECT_EQ(transfer.closed_sessions, std::vector<std::string>({"source_0"}));
+}
+
+TEST(MooncakeKVCacheTransferEngineTest,
+     FailedSessionOpenRollsBackEarlierSessionsAndAllowsRelink) {
+  MooncakeKVCacheTransferState& core =
+      MooncakeKVCacheTransferState::get_instance();
+  WorkerCacheLayoutManifest destination = make_peer_manifest(
+      "open-failure-destination", "open-failure-destination-incarnation", 1);
+  auto& destination_tensor = destination.tensors[0];
+  destination_tensor.shape = {2, 1, 2, 1};
+  destination_tensor.stride = {2, 2, 1, 1};
+  destination_tensor.resource_stride_bytes = 2;
+  destination_tensor.buffer_bytes = 4;
+  LogicalSpan second_span = destination_tensor.shard.spans[0];
+  second_span.logical_offset_bytes = 1;
+  second_span.physical_offset_bytes = 1;
+  destination_tensor.shard.spans.emplace_back(std::move(second_span));
+  ASSERT_TRUE(core.set_local_cache_layout(destination).ok());
+
+  RecordingMooncakeTransferEngine transfer(/*listen_port=*/0,
+                                           torch::Device(torch::kCPU));
+  const std::vector<uint64_t> cluster_ids = {10, 11};
+  const std::vector<std::string> remote_addrs = {"open-failure-source_0",
+                                                 "open-failure-source_1"};
+  for (int32_t rank = 0; rank < 2; ++rank) {
+    const size_t index = static_cast<size_t>(rank);
+    WorkerCacheLayoutManifest source = make_peer_manifest(
+        remote_addrs[index], remote_addrs[index] + "-incarnation", 1);
+    source.cluster_id = cluster_ids[index];
+    source.coordinates.tp_rank = rank;
+    source.coordinates.tp_size = 2;
+    source.tensors[0].shard.spans[0].logical_offset_bytes =
+        static_cast<uint64_t>(rank);
+    source.tensors[0].shard.spans[0].owner_tp_rank = rank;
+    transfer.remote_layouts.emplace(remote_addrs[index], std::move(source));
+  }
+  transfer.failed_session_peer = remote_addrs[1];
+
+  EXPECT_FALSE(transfer.link_sessions(cluster_ids, remote_addrs));
+  EXPECT_EQ(transfer.opened_sessions, remote_addrs);
+  EXPECT_EQ(transfer.closed_sessions,
+            (std::vector<std::string>{remote_addrs[1], remote_addrs[0]}));
+  ASSERT_EQ(transfer.peer_calls.size(), 4U);
+  for (size_t index = 0; index < 2; ++index) {
+    EXPECT_EQ(transfer.peer_calls[index].remote_addr, remote_addrs[index]);
+    EXPECT_EQ(transfer.peer_calls[index].mode, CachePeerMode::ACTIVE);
+    EXPECT_EQ(transfer.peer_calls[index + 2].remote_addr, remote_addrs[index]);
+    EXPECT_EQ(transfer.peer_calls[index + 2].mode, CachePeerMode::ABSENT);
+  }
+  EXPECT_TRUE(transfer.close_session(cluster_ids[0], remote_addrs[0]));
+  EXPECT_TRUE(transfer.close_session(cluster_ids[1], remote_addrs[1]));
+  EXPECT_EQ(transfer.closed_sessions.size(), 2U);
+  EXPECT_EQ(transfer.peer_calls.size(), 4U);
+
+  transfer.failed_session_peer.clear();
+  ASSERT_TRUE(transfer.link_sessions(cluster_ids, remote_addrs));
+  EXPECT_EQ(
+      transfer.opened_sessions,
+      (std::vector<std::string>{
+          remote_addrs[0], remote_addrs[1], remote_addrs[0], remote_addrs[1]}));
+  EXPECT_EQ(transfer.peer_calls.size(), 6U);
+  EXPECT_TRUE(transfer.close_session(cluster_ids[0], remote_addrs[0]));
+  EXPECT_TRUE(transfer.close_session(cluster_ids[1], remote_addrs[1]));
+  EXPECT_EQ(
+      transfer.closed_sessions,
+      (std::vector<std::string>{
+          remote_addrs[1], remote_addrs[0], remote_addrs[0], remote_addrs[1]}));
 }
 
 TEST(MooncakeKVCacheTransferEngineTest,
@@ -1407,6 +1747,7 @@ TEST(MooncakeKVCacheTransferEngineTest,
     }
   }
   transfer.failed_peer = remote_addrs[3];
+  transfer.failed_absent_peer = remote_addrs[3];
 
   EXPECT_FALSE(transfer.link_sessions(cluster_ids, remote_addrs));
   EXPECT_EQ(
@@ -1423,6 +1764,22 @@ TEST(MooncakeKVCacheTransferEngineTest,
   }
   EXPECT_EQ(transfer.closed_sessions,
             std::vector<std::string>({"rollback-source_0"}));
+
+  transfer.failed_peer.clear();
+  const size_t peer_calls_after_failed_link = transfer.peer_calls.size();
+  EXPECT_FALSE(transfer.link_sessions(cluster_ids, remote_addrs));
+  EXPECT_EQ(transfer.peer_calls.size(), peer_calls_after_failed_link);
+
+  transfer.failed_absent_peer.clear();
+  EXPECT_TRUE(transfer.close_session(cluster_ids[3], remote_addrs[3]));
+  EXPECT_EQ(transfer.peer_calls.back().remote_addr, remote_addrs[3]);
+  EXPECT_EQ(transfer.peer_calls.back().mode, CachePeerMode::ABSENT);
+
+  ASSERT_TRUE(transfer.link_sessions(cluster_ids, remote_addrs));
+  for (size_t index = 0; index < remote_addrs.size(); ++index) {
+    EXPECT_TRUE(
+        transfer.close_session(cluster_ids[index], remote_addrs[index]));
+  }
 }
 
 TEST(MooncakeKVCacheTransferDefaultTest,

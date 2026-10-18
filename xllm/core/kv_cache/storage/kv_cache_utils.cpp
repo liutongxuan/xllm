@@ -184,6 +184,9 @@ KVCacheTensors create_kv_cache_tensors(
                                              create_options);
   }
 #elif defined(USE_NPU)
+  CHECK(!create_options.enable_virtual_memory() ||
+        !use_npu_nz_kv_cache_layout(create_options.model_type()))
+      << "Virtual memory does not support the NPU NZ KV cache layout.";
   const bool mla_packed_c8 = create_options.mla_packed_c8();
   // The factory rejects NZ + virtual memory before any tensor is created.
   // Keep the model-selected descriptor here so non-VM DeepSeek caches retain
