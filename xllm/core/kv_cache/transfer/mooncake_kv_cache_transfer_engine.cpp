@@ -633,7 +633,11 @@ bool MooncakeKVCacheTransferEngine::get_remote_virtual_offsets(
     const std::string& remote_addr,
     const std::vector<uint64_t>& block_ids,
     WorkerCacheLayoutManifest* manifest,
-    std::vector<VirtualKVCacheLayerGlobalOffsets>* layer_offsets) {
+    std::vector<VirtualKVCacheLayerGlobalOffsets>* layer_offsets,
+    VirtualKVCachePullSession* session) {
+  if (session != nullptr) {
+    *session = VirtualKVCachePullSession();
+  }
   if (manifest == nullptr || layer_offsets == nullptr) {
     return false;
   }
@@ -737,7 +741,8 @@ bool MooncakeKVCacheTransferEngine::get_remote_virtual_offsets(
   // offsets without waiting for another link/unlink operation. Only the
   // first PLAN_ONLY query needs serialization while it acquires a reference.
   auto peer_matches_snapshot = [&](const LocalCachePeer& peer) {
-    return peer.source_manifest.incarnation_id ==
+    return peer.link_epoch == peer_snapshot.link_epoch &&
+           peer.source_manifest.incarnation_id ==
                remote_manifest.incarnation_id &&
            peer.source_manifest.layout_generation ==
                remote_manifest.layout_generation &&
@@ -748,6 +753,23 @@ bool MooncakeKVCacheTransferEngine::get_remote_virtual_offsets(
                local_manifest->layout_generation &&
            peer.mode == peer_snapshot.mode;
   };
+  const auto publish_offsets = [&]() {
+    if (session != nullptr) {
+      session->link_epoch = peer_snapshot.link_epoch;
+      session->source_cluster_id = remote_manifest.cluster_id;
+      session->source_addr = remote_manifest.addr;
+      session->source_incarnation = remote_manifest.incarnation_id;
+      session->source_layout_generation = remote_manifest.layout_generation;
+      session->destination_cluster_id = local_manifest->cluster_id;
+      session->destination_addr = local_manifest->addr;
+      session->destination_incarnation = local_manifest->incarnation_id;
+      session->destination_layout_generation =
+          local_manifest->layout_generation;
+    }
+    *manifest = peer_snapshot.source_manifest;
+    *layer_offsets = std::move(offsets);
+    return true;
+  };
   {
     std::lock_guard<std::mutex> lock(peer_mutex_);
     const auto peer = cache_peers_.find(remote_addr);
@@ -755,9 +777,7 @@ bool MooncakeKVCacheTransferEngine::get_remote_virtual_offsets(
       return false;
     }
     if (peer->second.holds_session) {
-      *manifest = peer_snapshot.source_manifest;
-      *layer_offsets = std::move(offsets);
-      return true;
+      return publish_offsets();
     }
   }
 
@@ -769,9 +789,7 @@ bool MooncakeKVCacheTransferEngine::get_remote_virtual_offsets(
       return false;
     }
     if (peer->second.holds_session) {
-      *manifest = peer_snapshot.source_manifest;
-      *layer_offsets = std::move(offsets);
-      return true;
+      return publish_offsets();
     }
   }
 
@@ -797,9 +815,7 @@ bool MooncakeKVCacheTransferEngine::get_remote_virtual_offsets(
     }
     return false;
   }
-  *manifest = peer_snapshot.source_manifest;
-  *layer_offsets = std::move(offsets);
-  return true;
+  return publish_offsets();
 }
 
 bool MooncakeKVCacheTransferEngine::set_remote_peer(
@@ -1003,6 +1019,8 @@ bool MooncakeKVCacheTransferEngine::link_sessions(
               selected_set.find(index) != selected_set.end();
           cache_peer.mode = cache_peer.holds_session ? CachePeerMode::ACTIVE
                                                      : CachePeerMode::PLAN_ONLY;
+          CHECK_NE(next_link_epoch_, 0) << "Cache peer link epoch exhausted";
+          cache_peer.link_epoch = next_link_epoch_++;
           cache_peers_[remote_addrs[index]] = std::move(cache_peer);
         }
       }
@@ -1161,20 +1179,35 @@ void MooncakeKVCacheTransferEngine::record_pending_remote_unlink(
 
 bool MooncakeKVCacheTransferEngine::move_memory_regions_with_session(
     const std::string& remote_addr,
+    const VirtualKVCachePullSession& session,
     const std::vector<ByteRegion>& regions,
     const MoveOpcode move_opcode) {
   std::lock_guard<std::mutex> operation_lock(peer_operation_mutex_);
   {
     std::lock_guard<std::mutex> lock(peer_mutex_);
     const auto peer = cache_peers_.find(remote_addr);
-    if (peer == cache_peers_.end() || !peer->second.holds_session) {
-      LOG(ERROR) << "No active cache session for remote address "
+    if (peer == cache_peers_.end() || !peer->second.holds_session ||
+        session.link_epoch == 0 || session.source_addr != remote_addr ||
+        peer->second.link_epoch != session.link_epoch ||
+        peer->second.source_manifest.cluster_id != session.source_cluster_id ||
+        peer->second.source_manifest.addr != session.source_addr ||
+        peer->second.source_manifest.incarnation_id !=
+            session.source_incarnation ||
+        peer->second.source_manifest.layout_generation !=
+            session.source_layout_generation ||
+        peer->second.destination_manifest.incarnation_id !=
+            session.destination_incarnation ||
+        peer->second.destination_manifest.cluster_id !=
+            session.destination_cluster_id ||
+        peer->second.destination_manifest.addr != session.destination_addr ||
+        peer->second.destination_manifest.layout_generation !=
+            session.destination_layout_generation) {
+      LOG(ERROR) << "No matching active cache session for remote address "
                  << remote_addr;
       return false;
     }
   }
-  return MooncakeTransferEngine::move_memory_regions(
-      remote_addr, regions, move_opcode);
+  return move_memory_regions(remote_addr, regions, move_opcode);
 }
 
 MooncakeKVCacheTransferService::MooncakeKVCacheTransferService()

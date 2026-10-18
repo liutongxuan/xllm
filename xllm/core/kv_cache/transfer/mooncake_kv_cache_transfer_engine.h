@@ -15,10 +15,13 @@ limitations under the License.
 
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "core/framework/transfer/mooncake_transfer_engine.h"
 #include "core/kv_cache/transfer/cache_layout.h"
@@ -35,6 +38,19 @@ enum class CachePeerMode : int8_t {
 };
 
 class MooncakeKVCacheTransferService;
+
+// Binds physical offsets to one local link and both registered cache layouts.
+struct VirtualKVCachePullSession {
+  uint64_t link_epoch = 0;
+  uint64_t source_cluster_id = 0;
+  std::string source_addr;
+  std::string source_incarnation;
+  uint64_t source_layout_generation = 0;
+  uint64_t destination_cluster_id = 0;
+  std::string destination_addr;
+  std::string destination_incarnation;
+  uint64_t destination_layout_generation = 0;
+};
 
 class MooncakeKVCacheTransferState final {
  public:
@@ -107,7 +123,8 @@ class MooncakeKVCacheTransferEngine : public MooncakeTransferEngine {
       const std::string& remote_addr,
       const std::vector<uint64_t>& block_ids,
       WorkerCacheLayoutManifest* manifest,
-      std::vector<VirtualKVCacheLayerGlobalOffsets>* layer_offsets);
+      std::vector<VirtualKVCacheLayerGlobalOffsets>* layer_offsets,
+      VirtualKVCachePullSession* session = nullptr);
 
   bool has_outgoing_plan(const std::string& remote_addr,
                          CacheNamespace cache_namespace) const;
@@ -127,9 +144,10 @@ class MooncakeKVCacheTransferEngine : public MooncakeTransferEngine {
 
   bool close_session(uint64_t cluster_id, const std::string& remote_addr);
 
-  // Keep a remote data session alive for the complete READ operation.
+  // Validate the offsets' link and keep it alive for this complete READ.
   virtual bool move_memory_regions_with_session(
       const std::string& remote_addr,
+      const VirtualKVCachePullSession& session,
       const std::vector<ByteRegion>& regions,
       MoveOpcode move_opcode);
 
@@ -160,6 +178,7 @@ class MooncakeKVCacheTransferEngine : public MooncakeTransferEngine {
     std::string source_incarnation;
     uint64_t source_layout_generation = 0;
     CachePeerMode mode = CachePeerMode::PLAN_ONLY;
+    uint64_t link_epoch = 0;
     bool holds_session = false;
   };
   struct PendingRemoteUnlink {
@@ -169,6 +188,7 @@ class MooncakeKVCacheTransferEngine : public MooncakeTransferEngine {
   MooncakeKVCacheTransferState& cache_state_;
   std::mutex peer_operation_mutex_;
   std::mutex peer_mutex_;
+  uint64_t next_link_epoch_ = 1;
   std::unordered_map<std::string, LocalCachePeer> cache_peers_;
   std::unordered_map<std::string, PendingRemoteUnlink> pending_remote_unlinks_;
 };

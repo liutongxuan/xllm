@@ -941,11 +941,13 @@ bool MooncakeVirtualKVCacheTransfer::pull_kv_blocks(
   // block IDs on the two instances do not imply matching physical pages.
   WorkerCacheLayoutManifest source_manifest;
   std::vector<VirtualKVCacheLayerGlobalOffsets> source_offsets;
+  VirtualKVCachePullSession pull_session;
   if (!mooncake_te_->get_remote_virtual_offsets(src_cluster_id,
                                                 src_addr,
                                                 mapping.remote_ids,
                                                 &source_manifest,
-                                                &source_offsets) ||
+                                                &source_offsets,
+                                                &pull_session) ||
       num_layers_ <= 0 ||
       source_offsets.size() != static_cast<size_t>(num_layers_)) {
     LOG(ERROR) << "Failed to resolve VirtualMemory PULL source offsets";
@@ -989,7 +991,10 @@ bool MooncakeVirtualKVCacheTransfer::pull_kv_blocks(
 
   for (const std::vector<ByteRegion>& regions : layer_regions) {
     if (!mooncake_te_->move_memory_regions_with_session(
-            src_addr, regions, MooncakeTransferEngine::MoveOpcode::READ)) {
+            src_addr,
+            pull_session,
+            regions,
+            MooncakeTransferEngine::MoveOpcode::READ)) {
       LOG(ERROR) << "VirtualMemory PULL transfer failed, source=" << src_addr;
       return false;
     }
