@@ -298,9 +298,14 @@ IndexedKVCacheTensors create_indexed_kv_cache_tensors(
         npu_format_type);
   }
 #else
-  tensors.index_cache = torch::zeros(
-      kv_cache_shape.index_cache_shape(),
-      torch::dtype(create_options.dtype()).device(create_options.device()));
+  tensors.index_cache = alloc_cache_tensor(KVCacheTensorRole::INDEX,
+                                           kv_cache_shape.index_cache_shape(),
+                                           create_options.dtype(),
+                                           create_options);
+  if (!create_options.enable_virtual_memory() &&
+      create_options.tensor_allocator() != nullptr) {
+    tensors.index_cache.zero_();
+  }
 #endif
   if (create_options.enable_indexer_cache_quant()) {
 #if !defined(USE_MLU) && !defined(USE_NPU)
