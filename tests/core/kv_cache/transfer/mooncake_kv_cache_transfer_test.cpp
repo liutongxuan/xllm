@@ -806,9 +806,10 @@ TEST_F(MooncakeVirtualKVCachePullTest,
 TEST(MooncakeVirtualKVCacheTransferTest,
      FactoryRejectsVirtualMemoryWithoutModelIdentity) {
   auto state = std::make_shared<SharedTransferMemoryState>();
+  const Device device{torch::Device(torch::kCPU)};
   EXPECT_EQ(KVCacheTransferFactory::create(
                 /*transfer_listen_port=*/0,
-                torch::Device(torch::kCPU),
+                device,
                 /*model_type=*/"glm_moe_dsa",
                 /*model_id=*/"",
                 std::make_unique<RecordingVirtualKVCacheTransferMemoryProvider>(
