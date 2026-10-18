@@ -25,10 +25,18 @@ if(USE_NPU)
     SRCS
       virtual_kv_cache_memory_registry_test.cpp
     DEPS
+      :kv_cache
       :virtual_memory_kv_cache_storage
       GTest::gtest_main
       glog::glog
   )
+  target_link_libraries(virtual_kv_cache_memory_registry_test
+                        PUBLIC
+                        Python::Python
+                        $<$<BOOL:${USE_NPU}>:ascendcl>
+                        $<$<BOOL:${USE_NPU}>:hccl>
+                        $<$<BOOL:${USE_NPU}>:c_sec>
+                        $<$<BOOL:${USE_NPU}>:nnopbase>)
   # Each process initializes the NPU runtime and owns the device-0 page pool.
   set_tests_properties(
     VirtualKVCacheMemoryRegistryTest.ModelsKeepIndependentMappingsAndMetadata
@@ -37,6 +45,12 @@ if(USE_NPU)
     VirtualMLAKVCacheMemoryRegistryTest.LatentAndRopeBoundariesKeepIndependentMappings
     VirtualMLAKVCacheMemoryRegistryTest.ShortageDoesNotPartiallyMapLatentRopeOrAnotherLayer
     VirtualMLAKVCacheMemoryRegistryTest.IncompleteLogicalPagesDoNotChangeExistingMappings
+    VirtualIndexedKVCacheMemoryRegistryTest.SparseIndexRegionsKeepLayerIdsAndGroupBoundaries
+    VirtualIndexedKVCacheMemoryRegistryTest.ShortageKeepsKeyValueAndIndexMappingsAtomic
+    VirtualIndexedKVCacheMemoryRegistryTest.TensorAllocatorSkipsSharedIndexLayers
+    VirtualIndexedKVCacheMemoryRegistryTest.DefaultIndexOwnershipMapsAllLayersAndRejectsTransfer
+    VirtualIndexedKVCacheMemoryRegistryTest.UnownedIndexWidthDoesNotChangeKVPageGeometry
+    VirtualIndexedKVCacheMemoryRegistryTest.AllocateKVCacheUsesSparseVirtualIndexRegions
     PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE
   )
 endif()
@@ -50,6 +64,7 @@ cc_test(
     virtual_kv_cache_page_allocator_impl_test.cpp
   DEPS
     :virtual_kv_cache_page_allocator_impl
+    :virtual_kv_cache_page_layout
     GTest::gtest_main
     glog::glog
 )

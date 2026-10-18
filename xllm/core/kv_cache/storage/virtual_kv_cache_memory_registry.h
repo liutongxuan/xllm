@@ -44,6 +44,12 @@ class VirtualKVCacheMemoryRegistry final {
                                               const std::vector<int64_t>& dims,
                                               torch::ScalarType dtype,
                                               int64_t num_layers);
+  std::vector<torch::Tensor> create_index_tensors(
+      const std::string& model_id,
+      const std::vector<int64_t>& dims,
+      torch::ScalarType dtype,
+      int64_t num_layers,
+      const std::vector<bool>& layer_owned = {});
 
   bool map(const std::string& model_id, const std::vector<offset_t>& offsets);
   bool unmap(const std::string& model_id, const std::vector<offset_t>& offsets);

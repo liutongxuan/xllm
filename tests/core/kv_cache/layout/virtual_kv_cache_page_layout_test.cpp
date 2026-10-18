@@ -66,6 +66,42 @@ TEST(VirtualKVCachePageLayoutTest, SymmetricCacheKeepsOnePagePerTensor) {
   EXPECT_EQ(layout.pages_per_tensor(1), 1);
 }
 
+TEST(VirtualKVCachePageLayoutTest, Glm53CountsOnlyOwnedIndexerLayers) {
+  const size_t key_bytes = VirtualKVCachePageLayout::tensor_block_bytes(
+      {256, 128, 1, 512}, /*element_size=*/2);
+  const size_t value_bytes = VirtualKVCachePageLayout::tensor_block_bytes(
+      {256, 128, 1, 64}, /*element_size=*/2);
+  const size_t index_bytes = VirtualKVCachePageLayout::tensor_block_bytes(
+      {256, 1, 128, 128}, /*element_size=*/2);
+  const VirtualKVCachePageLayout layout({key_bytes, value_bytes, index_bytes},
+                                        kPageSize);
+  EXPECT_EQ(layout.blocks_per_page(), 128);
+  EXPECT_EQ(layout.pages_per_tensor(2), 2);
+  EXPECT_EQ(layout.physical_pages({78, 78, 21}), 744);
+  EXPECT_EQ(layout.physical_pages({78, 78, 0}), 702);
+  EXPECT_EQ(layout.physical_pages({78, 78, 78}), 858);
+  // Every role covers the same block IDs even at its hardware-page boundary.
+  for (size_t block : {size_t{0},
+                       size_t{63},
+                       size_t{64},
+                       size_t{127},
+                       size_t{128},
+                       size_t{255}}) {
+    const size_t logical_page = block / layout.blocks_per_page();
+    EXPECT_GE(block * index_bytes, logical_page * 2 * kPageSize);
+    EXPECT_LE((block + 1) * index_bytes, (logical_page + 1) * 2 * kPageSize);
+  }
+}
+
+TEST(VirtualKVCachePageLayoutTest, PhysicalPageBudgetRejectsOverflow) {
+  const VirtualKVCachePageLayout layout({128 * 1024, 16 * 1024, 32 * 1024},
+                                        kPageSize);
+  EXPECT_DEATH(layout.physical_pages({78, 78}), "tensor_counts.size");
+  EXPECT_DEATH(
+      layout.physical_pages({std::numeric_limits<size_t>::max(), 0, 0}),
+      "Check failed");
+}
+
 TEST(VirtualKVCachePageLayoutTest, NzAndNdLayoutsHaveIdenticalBlockBytes) {
   EXPECT_EQ(VirtualKVCachePageLayout::tensor_block_bytes({129, 128, 1, 512},
                                                          /*element_size=*/2),

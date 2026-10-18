@@ -560,10 +560,14 @@ bool WorkerImpl::allocate_kv_cache_storage(
   if (::xllm::KVCacheConfig::get_instance().enable_virtual_memory()) {
     CHECK(tensor_allocator == nullptr)
         << "Virtual memory KV cache cannot use another tensor allocator.";
+    CHECK(!options_.enable_disagg_pd() ||
+          !kv_cache_shape.has_index_cache_shape())
+        << "Virtual memory PD transfer does not support INDEX cache";
     tensor_allocator = create_virtual_kv_cache_tensor_allocator(
         WorkerMemoryResources::get_instance().kv_cache_memory(),
         options_.model_id(),
-        num_layers);
+        num_layers,
+        indexer_cache_enabled_layers);
   }
 
   KVCacheCreateOptions create_options;
