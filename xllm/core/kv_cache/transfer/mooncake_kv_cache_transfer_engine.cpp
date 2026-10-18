@@ -1048,9 +1048,13 @@ Status MooncakeKVCacheTransferEngine::set_local_cache_layout(
     const WorkerCacheLayoutManifest& manifest) {
   std::lock_guard<std::mutex> operation_lock(peer_operation_mutex_);
   std::lock_guard<std::mutex> lock(peer_mutex_);
-  if (!cache_peers_.empty()) {
+  const bool has_active_peer = std::any_of(
+      cache_peers_.begin(), cache_peers_.end(), [](const auto& peer) {
+        return peer.second.holds_session;
+      });
+  if (has_active_peer) {
     return Status(StatusCode::UNAVAILABLE,
-                  "cache layout cannot change while cache peers are linked");
+                  "cache layout cannot change while cache sessions are open");
   }
   return cache_state_.set_local_cache_layout(manifest);
 }

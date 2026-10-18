@@ -162,7 +162,9 @@ class FixedStepsScheduler : public Scheduler {
 
   ScheduleResult schedule_request(const absl::Duration& timeout);
 
-  void handle_prefill_requests(
+  // Returns true when an oversized request was rejected and more local work
+  // remains to be scheduled in this pass.
+  bool handle_prefill_requests(
       size_t& remaining_token_budget,
       size_t& remaining_seq_budget,
       std::vector<std::shared_ptr<Request>>& finished_requests);

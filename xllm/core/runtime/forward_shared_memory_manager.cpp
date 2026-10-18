@@ -2884,7 +2884,10 @@ bool packed_proto_to_forward_input_impl(
                    torch::TensorOptions()
                        .dtype(torch::kUInt8)
                        .device(torch::kCPU)
-                       .pinned_memory(true));
+                       // The target device is unknown at proto decode time.
+                       // Device preparation creates pinned staging storage when
+                       // an asynchronous host-to-device copy needs it.
+                       .pinned_memory(false));
   std::memcpy(forward_input.runtime.input_host_buffer.data_ptr(),
               payload.data(),
               payload.size());

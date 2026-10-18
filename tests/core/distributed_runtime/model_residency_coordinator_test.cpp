@@ -185,6 +185,13 @@ class ModelResidencyCoordinatorTest : public ::testing::Test {
     return ModelResidencyCoordinator(std::move(options), std::move(manager));
   }
 
+  void register_model_for_test(const std::string& model_id,
+                               int32_t num_layers) {
+    ASSERT_TRUE(DistributedVirtualMemoryCoordinator::get_instance()
+                    .virtual_kv_cache_page_allocator()
+                    .register_model(model_id, num_layers));
+  }
+
   void suspend_model_pages() {
     auto& page_allocator = DistributedVirtualMemoryCoordinator::get_instance()
                                .virtual_kv_cache_page_allocator();
@@ -242,6 +249,7 @@ TEST_F(ModelResidencyCoordinatorTest,
   for (size_t index = 0; index < statuses.size(); ++index) {
     const std::string model_id =
         model_id_ + "_bootstrap_" + std::to_string(index);
+    register_model_for_test(model_id, /*num_layers=*/2);
     auto first = std::make_shared<RecordingWorkerClient>(model_id);
     auto second = std::make_shared<RecordingWorkerClient>(model_id);
     auto coordinator = make_coordinator(
@@ -290,6 +298,7 @@ TEST_F(ModelResidencyCoordinatorTest,
   model_loader.non_decoder_weight_size_ = page_size + 1;
   model_loader.max_decoder_layer_weight_size_ = 3 * page_size + 1;
   const std::string model_id = model_id_ + "_rolling";
+  register_model_for_test(model_id, /*num_layers=*/10);
   auto first = std::make_shared<RecordingWorkerClient>(model_id);
   auto second = std::make_shared<RecordingWorkerClient>(model_id);
   auto coordinator = make_coordinator(

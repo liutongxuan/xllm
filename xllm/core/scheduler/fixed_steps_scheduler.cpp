@@ -214,7 +214,7 @@ void FixedStepsScheduler::apply_cancel_requests() {
   }
 }
 
-void FixedStepsScheduler::handle_prefill_requests(
+bool FixedStepsScheduler::handle_prefill_requests(
     size_t& remaining_token_budget,
     size_t& remaining_seq_budget,
     std::vector<std::shared_ptr<Request>>& finished_requests) {
@@ -334,7 +334,9 @@ void FixedStepsScheduler::handle_prefill_requests(
         request,
         {StatusCode::RESOURCE_EXHAUSTED,
          "No enough budget to schedule single sequence."});
+    return budget_exhausted && !prefill_queue_->empty();
   }
+  return false;
 }
 
 RecBatchGroup FixedStepsScheduler::prepare_rec_batch() {
@@ -421,8 +423,10 @@ RecBatchGroup FixedStepsScheduler::prepare_rec_batch() {
   size_t remaining_seq_budget = std::max(options_.max_seqs_per_batch(), 1);
   size_t num_preempted_requests = 0;
 
-  handle_prefill_requests(
-      remaining_token_budget, remaining_seq_budget, finished_requests);
+  while (handle_prefill_requests(
+      remaining_token_budget, remaining_seq_budget, finished_requests)) {
+    // Continue immediately after rejecting an oversized queue head.
+  }
 
   // only forward once, no decode requests
   // handle_decode_requests(
