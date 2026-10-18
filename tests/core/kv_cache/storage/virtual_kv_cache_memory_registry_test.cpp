@@ -28,6 +28,7 @@ limitations under the License.
 #include <vector>
 
 #include "core/framework/allocator/virtual_memory/physical_page_pool.h"
+#include "core/framework/allocator/virtual_memory/shared_physical_page_mapping.h"
 #include "core/kv_cache/storage/kv_cache.h"
 #include "core/kv_cache/storage/virtual_kv_cache_tensor_allocator.h"
 #include "core/platform/vmm_api.h"
@@ -66,6 +67,26 @@ void expect_block_pattern(const torch::Tensor& tensor,
       static_cast<size_t>(tensor.stride(/*dim=*/0)) * tensor.element_size();
   const auto* block_ptr = static_cast<const uint8_t*>(tensor.data_ptr()) +
                           static_cast<size_t>(block_id) * block_bytes;
+  std::vector<uint8_t> actual(block_bytes);
+  ASSERT_EQ(aclrtMemcpy(actual.data(),
+                        block_bytes,
+                        block_ptr,
+                        block_bytes,
+                        ACL_MEMCPY_DEVICE_TO_HOST),
+            ACL_SUCCESS);
+  EXPECT_EQ(actual, std::vector<uint8_t>(block_bytes, pattern));
+}
+
+void expect_global_block_pattern(const SharedPhysicalPageMapping& mapping,
+                                 uint64_t global_offset,
+                                 const torch::Tensor& tensor,
+                                 uint8_t pattern) {
+  const size_t block_bytes =
+      static_cast<size_t>(tensor.stride(/*dim=*/0)) * tensor.element_size();
+  ASSERT_LE(global_offset, mapping.total_size());
+  ASSERT_LE(block_bytes, mapping.total_size() - global_offset);
+  const auto* block_ptr =
+      static_cast<const uint8_t*>(mapping.base_vaddr()) + global_offset;
   std::vector<uint8_t> actual(block_bytes);
   ASSERT_EQ(aclrtMemcpy(actual.data(),
                         block_bytes,
@@ -358,6 +379,83 @@ TEST_F(VirtualMLAKVCacheMemoryRegistryTest,
 }
 
 TEST_F(VirtualMLAKVCacheMemoryRegistryTest,
+       TransferOffsetsUseIndependentRoleBlockSizes) {
+  const int64_t blocks_per_group = blocks_per_page();
+  auto [keys, values] =
+      create_mla_model("mla", 2 * blocks_per_group, /*num_layers=*/1);
+  EXPECT_FALSE(registry_.get_global_offsets_for_block("mla", 0, 0).has_value());
+  ASSERT_TRUE(registry_.map("mla", {0, static_cast<offset_t>(page_size_)}));
+  auto& pool = PhysicalPagePool::get_instance();
+  SharedPhysicalPageMapping mapping;
+  mapping.init(device_, pool.get_all_pages(), page_size_);
+  ASSERT_TRUE(mapping.is_initialized());
+  const std::vector<int64_t> blocks{
+      0, 1, blocks_per_group / 8, blocks_per_group - 1, blocks_per_group};
+  for (int64_t block : blocks) {
+    const uint8_t key_pattern = static_cast<uint8_t>(10 + block);
+    const uint8_t value_pattern = static_cast<uint8_t>(30 + block);
+    fill_block_pattern(keys.front(), block, key_pattern);
+    fill_block_pattern(values.front(), block, value_pattern);
+    const auto offsets =
+        registry_.get_global_offsets_for_block("mla", 0, block);
+    ASSERT_TRUE(offsets.has_value());
+    EXPECT_FALSE(offsets->index_offset.has_value());
+    EXPECT_EQ(offsets->k_offset % page_size_,
+              block * kBlockSize * kLatentSize * sizeof(uint16_t) % page_size_);
+    EXPECT_EQ(offsets->v_offset % page_size_,
+              block * kBlockSize * kRopeSize * sizeof(uint16_t) % page_size_);
+    expect_global_block_pattern(
+        mapping, offsets->k_offset, keys.front(), key_pattern);
+    expect_global_block_pattern(
+        mapping, offsets->v_offset, values.front(), value_pattern);
+  }
+  EXPECT_FALSE(registry_.get_global_offsets_for_block("missing", 0, 0));
+  EXPECT_FALSE(registry_.get_global_offsets_for_block("mla", -1, 0));
+  EXPECT_FALSE(registry_.get_global_offsets_for_block("mla", 1, 0));
+  EXPECT_FALSE(registry_.get_global_offsets_for_block("mla", 0, -1));
+  EXPECT_FALSE(
+      registry_.get_global_offsets_for_block("mla", 0, 2 * blocks_per_group));
+  ASSERT_TRUE(registry_.unmap("mla", {0}));
+  EXPECT_FALSE(registry_.get_global_offsets_for_block("mla", 0, 0));
+  EXPECT_TRUE(
+      registry_.get_global_offsets_for_block("mla", 0, blocks_per_group));
+  ASSERT_TRUE(registry_.map("mla", {0}));
+  fill_block_pattern(keys.front(), /*block_id=*/1, /*pattern=*/201);
+  fill_block_pattern(values.front(), /*block_id=*/1, /*pattern=*/202);
+  const auto remapped = registry_.get_global_offsets_for_block("mla", 0, 1);
+  ASSERT_TRUE(remapped.has_value());
+  expect_global_block_pattern(mapping, remapped->k_offset, keys.front(), 201);
+  expect_global_block_pattern(mapping, remapped->v_offset, values.front(), 202);
+}
+
+TEST_F(VirtualKVCacheMemoryRegistryTest,
+       TransferRejectsBlocksThatDoNotDivideOnePage) {
+  registry_.create_k_tensors("large_block",
+                             {1, static_cast<int64_t>(2 * page_size_)},
+                             torch::kUInt8,
+                             /*num_layers=*/1);
+  registry_.create_v_tensors("large_block",
+                             {1, static_cast<int64_t>(page_size_)},
+                             torch::kUInt8,
+                             /*num_layers=*/1);
+  ASSERT_TRUE(registry_.map("large_block", {0}));
+  EXPECT_FALSE(registry_.get_global_offsets_for_block("large_block", 0, 0));
+  registry_.erase("large_block");
+
+  ASSERT_NE(page_size_ % 3, 0U);
+  registry_.create_k_tensors("misaligned",
+                             {static_cast<int64_t>(page_size_), 3},
+                             torch::kUInt8,
+                             /*num_layers=*/1);
+  registry_.create_v_tensors("misaligned",
+                             {static_cast<int64_t>(page_size_), 1},
+                             torch::kUInt8,
+                             /*num_layers=*/1);
+  ASSERT_TRUE(registry_.map("misaligned", {0}));
+  EXPECT_FALSE(registry_.get_global_offsets_for_block("misaligned", 0, 0));
+}
+
+TEST_F(VirtualMLAKVCacheMemoryRegistryTest,
        ShortageDoesNotPartiallyMapLatentRopeOrAnotherLayer) {
   create_model("busy", /*num_layers=*/1);
   auto [keys, values] =
@@ -489,6 +587,50 @@ TEST_F(VirtualIndexedKVCacheMemoryRegistryTest,
 }
 
 TEST_F(VirtualIndexedKVCacheMemoryRegistryTest,
+       TransferOffsetsPreserveSparseIndexOwnership) {
+  const int64_t blocks_per_group = blocks_per_page();
+  auto [keys, values, indices] = create_indexed_model(
+      "indexed", 2 * blocks_per_group, /*num_layers=*/3, {true, false, true});
+  ASSERT_TRUE(registry_.map("indexed", {0, static_cast<offset_t>(page_size_)}));
+  auto& pool = PhysicalPagePool::get_instance();
+  SharedPhysicalPageMapping mapping;
+  mapping.init(device_, pool.get_all_pages(), page_size_);
+  ASSERT_TRUE(mapping.is_initialized());
+  const std::vector<int64_t> blocks{
+      1, blocks_per_group / 2 - 1, blocks_per_group / 2, blocks_per_group};
+  for (size_t layer = 0; layer < keys.size(); ++layer) {
+    for (int64_t block : blocks) {
+      fill_block_pattern(keys[layer], block, /*pattern=*/31);
+      fill_block_pattern(values[layer], block, /*pattern=*/41);
+      const auto offsets = registry_.get_global_offsets_for_block(
+          "indexed", static_cast<int64_t>(layer), block);
+      ASSERT_TRUE(offsets.has_value());
+      expect_global_block_pattern(mapping, offsets->k_offset, keys[layer], 31);
+      expect_global_block_pattern(
+          mapping, offsets->v_offset, values[layer], 41);
+      ASSERT_EQ(offsets->index_offset.has_value(), indices[layer].defined());
+      if (!indices[layer].defined()) {
+        continue;
+      }
+      fill_block_pattern(indices[layer], block, /*pattern=*/51);
+      EXPECT_EQ(
+          offsets->index_offset.value() % page_size_,
+          block * kBlockSize * kIndexSize * sizeof(uint16_t) % page_size_);
+      expect_global_block_pattern(
+          mapping, offsets->index_offset.value(), indices[layer], 51);
+    }
+  }
+  ASSERT_TRUE(registry_.unmap("indexed", {0}));
+  for (int64_t layer = 0; layer < 3; ++layer) {
+    EXPECT_FALSE(registry_.get_global_offsets_for_block("indexed", layer, 1));
+    const auto offsets = registry_.get_global_offsets_for_block(
+        "indexed", layer, blocks_per_group);
+    ASSERT_TRUE(offsets.has_value());
+    EXPECT_EQ(offsets->index_offset.has_value(), layer != 1);
+  }
+}
+
+TEST_F(VirtualIndexedKVCacheMemoryRegistryTest,
        ShortageKeepsKeyValueAndIndexMappingsAtomic) {
   create_model("busy", /*num_layers=*/1);
   create_indexed_model(
@@ -597,6 +739,12 @@ TEST_F(VirtualIndexedKVCacheMemoryRegistryTest,
 
   ASSERT_TRUE(registry_.map("indexed", {0}));
   EXPECT_EQ(PhysicalPagePool::get_instance().num_available(), 35);
+  for (int64_t layer = 0; layer < 3; ++layer) {
+    const auto offsets =
+        registry_.get_global_offsets_for_block("indexed", layer, 1);
+    ASSERT_TRUE(offsets.has_value());
+    EXPECT_FALSE(offsets->index_offset.has_value());
+  }
   registry_.erase("indexed");
   EXPECT_EQ(PhysicalPagePool::get_instance().num_available(), pool_pages());
 }

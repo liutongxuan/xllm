@@ -189,9 +189,11 @@ class MooncakeVirtualKVCacheTransfer final
   // Register the shared memory region supplied by the runtime.
   void register_kv_cache_impl();
 
-  bool pull_kv_blocks_impl(const std::string& src_addr,
-                           const std::vector<uint64_t>& src_blocks,
-                           const std::vector<uint64_t>& dst_blocks);
+  bool build_explicit_mappings(
+      const KVTransferMapping& mapping,
+      const VirtualKVCacheLayerGlobalOffsets& remote_offsets,
+      int64_t layer_id,
+      std::vector<ExplicitResourceMapping>* explicit_mappings) const;
 
 #if defined(USE_NPU) || defined(USE_MLU) || defined(USE_DCU)
   bool push_kv_blocks_impl(
@@ -202,7 +204,7 @@ class MooncakeVirtualKVCacheTransfer final
 #endif
 
   std::string model_id_;
-  std::unique_ptr<VirtualKVCacheTransferMemoryProvider> memory_provider_;
+  std::shared_ptr<VirtualKVCacheTransferMemoryProvider> memory_provider_;
 };
 
 }  // namespace xllm

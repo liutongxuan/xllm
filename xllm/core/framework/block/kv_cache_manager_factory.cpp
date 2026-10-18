@@ -154,8 +154,6 @@ KVCacheManagerFactoryResult KVCacheManagerFactory::create(
         shape.value_cache_shape(), element_size);
     CHECK_EQ(shape.value_cache_shape().front(), key_cache_shape.front())
         << "Virtual memory requires matching K/V block counts";
-    CHECK(!options.enable_disagg_pd() || key_bytes == value_bytes)
-        << "Virtual memory PD transfer requires equally sized K/V blocks";
     CHECK_GT(options.num_layers(), 0);
     const size_t num_layers = static_cast<size_t>(options.num_layers());
     std::vector<size_t> block_bytes{key_bytes, value_bytes};
@@ -163,8 +161,6 @@ KVCacheManagerFactoryResult KVCacheManagerFactory::create(
     if (shape.has_index_cache_shape()) {
       CHECK_EQ(dtype, torch::kBFloat16)
           << "Virtual memory indexer cache requires BF16";
-      CHECK(!options.enable_disagg_pd())
-          << "Virtual memory PD transfer does not support index cache";
       CHECK_EQ(shape.index_cache_shape().front(), key_cache_shape.front())
           << "Virtual memory requires matching K/V/INDEX block counts";
       const std::vector<bool> indexer_layers =
@@ -184,6 +180,14 @@ KVCacheManagerFactoryResult KVCacheManagerFactory::create(
     }
     auto& allocator = DistributedVirtualMemoryCoordinator::get_instance()
                           .virtual_kv_cache_page_allocator();
+    if (options.enable_disagg_pd()) {
+      for (size_t bytes : block_bytes) {
+        CHECK_LE(bytes, allocator.page_size())
+            << "Virtual memory PD requires each tensor block to fit one page";
+        CHECK_EQ(allocator.page_size() % bytes, 0)
+            << "Virtual memory PD tensor blocks must divide the page size";
+      }
+    }
     const VirtualKVCachePageLayout layout(std::move(block_bytes),
                                           allocator.page_size());
     const size_t physical_pages = layout.physical_pages(tensor_counts);
