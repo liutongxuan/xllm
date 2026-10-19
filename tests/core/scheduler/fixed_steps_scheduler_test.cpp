@@ -57,6 +57,19 @@ class ControllablePrefetchBlockManagerPool final : public BlockManagerPool {
     return enable_storage_prefetch_;
   }
 
+  bool allocate(Sequence* sequence, size_t num_tokens) override {
+    ++allocation_attempts_;
+    if (fail_next_allocations_ > 0) {
+      --fail_next_allocations_;
+      return false;
+    }
+    return BlockManagerPool::allocate(sequence, num_tokens);
+  }
+
+  void fail_next_allocations(size_t count) { fail_next_allocations_ = count; }
+
+  size_t allocation_attempts() const { return allocation_attempts_; }
+
   void prefetch_from_storage(std::shared_ptr<Request> request,
                              PrefetchDoneCallback done) override {
     ++prefetch_calls_;
@@ -106,6 +119,8 @@ class ControllablePrefetchBlockManagerPool final : public BlockManagerPool {
 
  private:
   const bool enable_storage_prefetch_;
+  size_t fail_next_allocations_ = 0;
+  size_t allocation_attempts_ = 0;
   size_t prefetch_calls_ = 0;
   std::vector<std::pair<std::shared_ptr<Request>, PrefetchDoneCallback>>
       pending_;
@@ -198,6 +213,12 @@ class FakeEngine final : public RecEngine {
     return last_step_had_request_.load(std::memory_order_relaxed);
   }
   void complete_prefetches() { fake_block_manager_->complete_prefetches(); }
+  void fail_next_allocations(size_t count) {
+    fake_block_manager_->fail_next_allocations(count);
+  }
+  size_t allocation_attempts() const {
+    return fake_block_manager_->allocation_attempts();
+  }
   size_t prefetch_calls() const {
     return fake_block_manager_->prefetch_calls();
   }
@@ -528,7 +549,6 @@ TEST(FixedStepsSchedulerTest,
   ASSERT_EQ(batches.size(), 1u);
   EXPECT_TRUE(batches.front().empty());
   EXPECT_EQ(scheduler.get_waiting_requests_num(), 2u);
-  EXPECT_EQ(scheduler.num_pending_requests(), 2u);
 
   SchedulerConfig::get_instance().prefill_scheduling_memory_usage_threshold() =
       1.0;
@@ -557,7 +577,6 @@ TEST(FixedStepsSchedulerTest, PreservesQueuedRequestsWhenKvAllocationFails) {
   ASSERT_EQ(batches.size(), 1u);
   EXPECT_TRUE(batches.front().empty());
   EXPECT_EQ(scheduler.get_waiting_requests_num(), 2u);
-  EXPECT_EQ(scheduler.num_pending_requests(), 2u);
 }
 
 TEST(FixedStepsSchedulerTest, StepExecutesRecBatch) {
@@ -656,6 +675,70 @@ TEST(FixedStepsSchedulerTest,
   EXPECT_EQ(finished.wait_for(std::chrono::milliseconds(200)),
             std::future_status::ready);
   finished.get();
+  EXPECT_EQ(engine->step_calls(), 1u);
+  EXPECT_TRUE(engine->last_step_had_request());
+  EXPECT_EQ(scheduler.get_waiting_requests_num(), 0u);
+}
+
+TEST(FixedStepsSchedulerTest, RetriesRequestAfterTemporaryKvAllocationFailure) {
+  ScopedConfigValue<bool> prefix_cache(
+      KVCacheConfig::get_instance().enable_prefix_cache(), false);
+  ScopedConfigValue<double> memory_threshold(
+      SchedulerConfig::get_instance()
+          .prefill_scheduling_memory_usage_threshold(),
+      1.0);
+  auto engine = std::make_unique<FakeEngine>(64, 32);
+  engine->fail_next_allocations(1);
+  FixedStepsScheduler scheduler(engine.get(), CreateOptions());
+  auto requests = GenRequests({32}, {10}, RecType::kLlmRec);
+  ASSERT_TRUE(scheduler.add_request(requests[0]));
+
+  scheduler.step(absl::Seconds(1));
+
+  EXPECT_EQ(engine->allocation_attempts(), 2u);
+  EXPECT_EQ(engine->step_calls(), 1u);
+  EXPECT_TRUE(engine->last_step_had_request());
+  EXPECT_EQ(scheduler.get_waiting_requests_num(), 0u);
+}
+
+TEST(FixedStepsSchedulerTest,
+     QueuedRequestProgressesAfterPermanentlyOversizedKvHead) {
+  ScopedConfigValue<bool> prefix_cache(
+      KVCacheConfig::get_instance().enable_prefix_cache(), false);
+  ScopedConfigValue<double> memory_threshold(
+      SchedulerConfig::get_instance()
+          .prefill_scheduling_memory_usage_threshold(),
+      1.0);
+  auto engine = std::make_unique<FakeEngine>(2, 32);
+  std::promise<Status> failure;
+  auto rejected = failure.get_future();
+  auto options = CreateOptions(/*max_tokens_per_batch=*/10000,
+                               /*max_seqs_per_batch=*/1);
+  options.priority_strategy("priority");
+  FixedStepsScheduler scheduler(engine.get(), options);
+  // The first request needs three KV blocks; the following request fits in
+  // the two-block pool. Both are admitted before the scheduler starts.
+  auto requests = GenRequests({64, 32}, {10, 10}, RecType::kLlmRec);
+  requests[0]->state().scheduler_param.priority = RequestPriority::HIGH;
+  requests[0]->state().output_func = [&failure](const RequestOutput& output) {
+    if (output.status.has_value()) {
+      failure.set_value(output.status.value());
+    }
+    return true;
+  };
+  ASSERT_TRUE(scheduler.add_request(requests[0]));
+  ASSERT_TRUE(scheduler.add_request(requests[1]));
+
+  auto finished = std::async(
+      std::launch::async, [&scheduler] { scheduler.step(absl::Seconds(2)); });
+  const std::future_status rejection_status =
+      rejected.wait_for(std::chrono::seconds(1));
+  ASSERT_EQ(rejection_status, std::future_status::ready);
+  EXPECT_EQ(rejected.get().code(), StatusCode::RESOURCE_EXHAUSTED);
+  EXPECT_EQ(finished.wait_for(std::chrono::milliseconds(200)),
+            std::future_status::ready);
+  finished.get();
+  EXPECT_EQ(engine->allocation_attempts(), 1u);
   EXPECT_EQ(engine->step_calls(), 1u);
   EXPECT_TRUE(engine->last_step_had_request());
   EXPECT_EQ(scheduler.get_waiting_requests_num(), 0u);

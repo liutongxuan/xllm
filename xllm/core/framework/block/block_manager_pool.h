@@ -97,6 +97,8 @@ class BlockManagerPool : public KVCacheManager {
   bool allocate(Sequence* sequence) override;
   bool allocate(std::vector<Sequence*>& sequences) override;
   bool allocate(Sequence* sequence, size_t num_tokens) override;
+  bool exceeds_total_capacity(Sequence* sequence,
+                              size_t num_tokens) const override;
   // Try to allocate blocks with num_tokens,
   // return {} if not enough blocks
   std::vector<Block> allocate(size_t num_tokens, int32_t& dp_rank) override;

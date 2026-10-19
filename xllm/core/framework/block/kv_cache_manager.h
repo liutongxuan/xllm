@@ -42,6 +42,13 @@ class KVCacheManager {
   virtual bool allocate(Sequence* sequence) = 0;
   virtual bool allocate(std::vector<Sequence*>& sequences) = 0;
   virtual bool allocate(Sequence* sequence, size_t num_tokens) = 0;
+  // Return true only when the requested token footprint cannot fit even if
+  // every block in the selected pool were available. Unknown layouts return
+  // false so callers can preserve the request for a later allocation retry.
+  virtual bool exceeds_total_capacity(Sequence* sequence,
+                                      size_t num_tokens) const {
+    return false;
+  }
   virtual bool try_allocate(Sequence* sequence) = 0;
 
   virtual void transfer_blocks(BatchGroup& batches) {};

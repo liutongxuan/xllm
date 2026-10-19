@@ -258,6 +258,38 @@ bool BlockManagerPool::allocate(Sequence* sequence, size_t num_tokens) {
   return true;
 }
 
+bool BlockManagerPool::exceeds_total_capacity(Sequence* sequence,
+                                              size_t num_tokens) const {
+  DCHECK(sequence != nullptr);
+  const int32_t dp_rank = get_dp_rank(sequence);
+  const auto* composite =
+      static_cast<const CompositeBlockManager*>(block_managers_[dp_rank].get());
+  for (const auto& [type, entry] : composite->leaf_entries()) {
+    if (!entry.participates_in_admission) {
+      continue;
+    }
+
+    const BlockManager& manager = *entry.leaf;
+    const size_t block_size = manager.block_size();
+    if (block_size == 0) {
+      continue;
+    }
+    const size_t required_blocks =
+        num_tokens / block_size + (num_tokens % block_size != 0);
+    size_t total_blocks = manager.num_total_blocks();
+    if (type == BlockType::KV && options_.enable_virtual_memory() &&
+        total_blocks > 0) {
+      // VMM reports the configured total, including block 0 reserved for
+      // padding. Ordinary BlockManagerImpl leaves already exclude that block.
+      --total_blocks;
+    }
+    if (required_blocks > total_blocks) {
+      return true;
+    }
+  }
+  return false;
+}
+
 std::vector<Block> BlockManagerPool::allocate(size_t num_tokens,
                                               int32_t& dp_rank) {
   dp_rank = get_manager_with_max_available_blocks();

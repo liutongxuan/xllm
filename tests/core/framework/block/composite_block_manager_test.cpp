@@ -1217,4 +1217,50 @@ TEST(CompositeBlockManagerTest, PagedShortageReturnsPagesToInjectedAllocator) {
   EXPECT_EQ(allocator.released_pages.size(), 2u);
 }
 
+TEST(CompositeBlockManagerTest,
+     TotalCapacityChecksEveryAdmissionLeafInCompressedLayout) {
+  const BlockManager::Options composite_options =
+      MakeCompositeOptions(/*base_num_blocks=*/512,
+                           /*block_size=*/kBaseBlockSize,
+                           /*window_size=*/128,
+                           /*max_seqs_per_batch=*/4);
+  BlockManagerPool::Options options;
+  options.num_blocks(composite_options.num_blocks())
+      .block_size(composite_options.block_size())
+      .sliding_window_size(composite_options.sliding_window_size())
+      .swa_blocks_per_seq(composite_options.swa_blocks_per_seq())
+      .swa_num_blocks(composite_options.swa_num_blocks())
+      .max_tokens_per_batch(composite_options.max_tokens_per_batch())
+      .max_seqs_per_batch(composite_options.max_seqs_per_batch())
+      .manager_types(composite_options.manager_types())
+      .compress_ratios(composite_options.compress_ratios())
+      .enable_prefix_cache(false);
+  BlockManagerPool pool(options);
+
+  Sequence fits = MakeTestSequence(0, std::vector<int32_t>(49152, 1));
+  Sequence exceeds_c128 = MakeTestSequence(1, std::vector<int32_t>(49153, 1));
+  EXPECT_FALSE(pool.exceeds_total_capacity(&fits, 49152));
+  EXPECT_TRUE(pool.exceeds_total_capacity(&exceeds_c128, 49153));
+}
+
+TEST(CompositeBlockManagerTest,
+     TotalCapacityExcludesVirtualMemoryPaddingBlock) {
+  TestVirtualKVCachePageAllocator allocator(/*dp_size=*/1);
+  BlockManagerPool::Options options;
+  options.num_blocks(8)
+      .block_size(4)
+      .enable_virtual_memory(true)
+      .num_layers(2)
+      .slot_size(36)
+      .virtual_block_bytes(16)
+      .model_id("capacity-boundary");
+  BlockManagerPool pool(options, /*dp_size=*/1, &allocator);
+  pool.reserve_virtual_memory_padding_blocks();
+
+  Sequence fits = MakeTestSequence(0, std::vector<int32_t>(28, 1));
+  Sequence exceeds = MakeTestSequence(1, std::vector<int32_t>(32, 1));
+  EXPECT_FALSE(pool.exceeds_total_capacity(&fits, 28));
+  EXPECT_TRUE(pool.exceeds_total_capacity(&exceeds, 32));
+}
+
 }  // namespace xllm

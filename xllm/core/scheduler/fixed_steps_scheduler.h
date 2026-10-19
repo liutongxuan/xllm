@@ -100,6 +100,12 @@ class FixedStepsScheduler : public Scheduler {
   std::vector<std::shared_ptr<Request>> running_requests_;
 
  private:
+  enum class KVCacheAllocationResult : uint8_t {
+    SUCCESS,
+    TEMPORARY_FAILURE,
+    EXCEEDS_TOTAL_CAPACITY,
+  };
+
   // Scheduler pipeline for different rec types
   class SchedulerPipeline {
    public:
@@ -107,8 +113,9 @@ class FixedStepsScheduler : public Scheduler {
     virtual BatchInputType input_type() const = 0;
     virtual bool requires_kv_cache() const = 0;
     // Allocate KV cache for sequence, implemented by each pipeline
-    virtual bool allocate_kv_cache(KVCacheManager* kv_cache_manager,
-                                   Sequence* sequence) = 0;
+    virtual KVCacheAllocationResult allocate_kv_cache(
+        KVCacheManager* kv_cache_manager,
+        Sequence* sequence) = 0;
   };
 
   class LlmRecSchedulerPipeline final : public SchedulerPipeline {
@@ -117,8 +124,8 @@ class FixedStepsScheduler : public Scheduler {
       return BatchInputType::SEQUENCE;
     }
     bool requires_kv_cache() const override { return true; }
-    bool allocate_kv_cache(KVCacheManager* kv_cache_manager,
-                           Sequence* sequence) override;
+    KVCacheAllocationResult allocate_kv_cache(KVCacheManager* kv_cache_manager,
+                                              Sequence* sequence) override;
   };
 
   class OneRecSchedulerPipeline final : public SchedulerPipeline {
@@ -127,9 +134,10 @@ class FixedStepsScheduler : public Scheduler {
       return BatchInputType::ONEREC;
     }
     bool requires_kv_cache() const override { return false; }
-    bool allocate_kv_cache(KVCacheManager* /*kv_cache_manager*/,
-                           Sequence* /*sequence*/) override {
-      return true;
+    KVCacheAllocationResult allocate_kv_cache(
+        KVCacheManager* /*kv_cache_manager*/,
+        Sequence* /*sequence*/) override {
+      return KVCacheAllocationResult::SUCCESS;
     }
   };
 
@@ -139,8 +147,8 @@ class FixedStepsScheduler : public Scheduler {
       return BatchInputType::ONEREC_XATTENTION;
     }
     bool requires_kv_cache() const override { return true; }
-    bool allocate_kv_cache(KVCacheManager* kv_cache_manager,
-                           Sequence* sequence) override;
+    KVCacheAllocationResult allocate_kv_cache(KVCacheManager* kv_cache_manager,
+                                              Sequence* sequence) override;
   };
 
   class RecMultiRoundSchedulerPipeline final : public SchedulerPipeline {
@@ -149,9 +157,11 @@ class FixedStepsScheduler : public Scheduler {
       return BatchInputType::REC_MULTI_ROUND;
     }
     bool requires_kv_cache() const override { return false; }
-    bool allocate_kv_cache(KVCacheManager* /*kv_cache_manager*/,
-                           Sequence* /*sequence*/) override {
-      return true;  // RecMultiRound mode does not need KV cache allocation
+    KVCacheAllocationResult allocate_kv_cache(
+        KVCacheManager* /*kv_cache_manager*/,
+        Sequence* /*sequence*/) override {
+      // RecMultiRound mode does not need KV cache allocation.
+      return KVCacheAllocationResult::SUCCESS;
     }
   };
 
@@ -159,6 +169,11 @@ class FixedStepsScheduler : public Scheduler {
   static std::unique_ptr<SchedulerPipeline> create_scheduler_pipeline(
       RecType rec_type,
       bool is_rec_multi_round);
+
+  static KVCacheAllocationResult allocate_kv_cache(
+      KVCacheManager* kv_cache_manager,
+      Sequence* sequence,
+      size_t max_generated_tokens);
 
   ScheduleResult schedule_request(const absl::Duration& timeout);
 
