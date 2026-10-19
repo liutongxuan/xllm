@@ -237,6 +237,37 @@ KV 扩展 service，不解释其消息。schema 仍包含 KV 消息，因此当�
 rank 0 再连接这些地址，派发内存操作。这套注册服务独立于 `master_node_addr`
 配置的执行 worker 注册服务。显式 CLI 参数优先于 JSON 配置。
 
+### 弹性虚拟 KV
+
+`enable_virtual_memory=false` 继续使用原有物理 cache 实现。启用虚拟内存后，
+`vmm_elastic=true` 使用按需物化的物理页：启动时只建立稳定页 ID 和虚拟地址，
+活跃 KV 映射及权重预留才分配物理句柄。KV 页最后一个 block 归还后才解除映射并
+释放物理 backing；活跃页、padding block、权重及持有传输 lease 的页仍被固定。
+`vmm_elastic=false` 保留原有启动时整体驻留的 VMM 池。
+
+`max_memory_utilization` 和 `max_cache_size` 作为 KV 与权重共享的可选启动容量上限。
+弹性模式显式设置 `max_memory_utilization=0` 可取消比例上限，`max_cache_size=0`
+表示不设字节上限；这些容量不会预分配为物理显存。较小的非零 ratio 仍会有意限制
+虚拟容量。固定 VMM 及原有物理 cache 要求 ratio 大于零。
+
+进入服务前，弹性 VMM 在每个 DP rank 预热长序列及宽 batch 的 prefill，并覆盖配置的
+decode 并发；该模式不能关闭启动时的 graph warmup。预热形状按 block 向上取整后的
+KV 占用必须能放入配置容量，否则启动明确报错。worker 执行后采样
+“driver 空闲字节 + 池已提交字节”的最低水位，将 KV 增长从执行预算中剔除，
+也不会重复扣除已驻留的 allocator cache。cache 释放显存后，池会保留恢复到已观察
+执行占用所需的空间。`vmm_memory_reserve_bytes` 增加显式空闲余量，启动预热前也
+生效。step 结束采样不能覆盖所有瞬态 SDK buffer 或所有工作负载形状，相关额外
+余量需要根据设备实测配置。
+
+请求准入和 DP 选择取目标 worker 的最小实时容量，并受共享预留账本约束；实际
+映射再次检查设备预算。KV 与权重的 prepare/commit/abort 对全部参与 worker
+补偿完成后才归还失败分配的账本。回滚无法确认时直接终止，避免复用所有权不明确的页。
+
+当前 Mooncake 协议整段注册稠密共享 arena，尚不能注册稀疏弹性 extent。KV 与权重
+注册显式要求 backing 完全驻留，注册撤销前一直持有 lease。PD KV 传输及远端权重
+传输请设置 `--vmm_elastic=false`。新增容量查询和映射事务 RPC 要求 master 与
+worker 同步升级。
+
 本次本地资源、分布式协调器与 RPC C++ 类的拆分保持 protobuf 字段编号：
 `proto/model_memory_dist.proto` 使用 `ModelMemoryDist` 服务和
 `GetVirtualKVCacheOffsets` 方法。该方法服务于虚拟内存 KV 后端，返回共享物理页池

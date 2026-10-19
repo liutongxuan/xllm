@@ -65,12 +65,15 @@ class DistributedVirtualMemoryCoordinator final : public KVCachePageBackend {
   void set_weight_page_count(const std::string& model_id, size_t num_pages);
   size_t get_weight_page_count(const std::string& model_id) const;
   void release_weight_pages(const std::string& model_id);
-  void restore_weight_pages(const std::string& model_id);
+  bool restore_weight_pages(const std::string& model_id);
 
   // Reserve every worker's KV and weight demand in one transaction. The KV
   // allocator must freeze the mapping plan throughout the residency transition.
   bool try_reserve_model_memory(const std::string& model_id,
                                 const KVCacheMappingPlan& plan);
+  // Release a failed resume's whole reservation after all mappings roll back.
+  void release_model_memory_budget(const std::string& model_id,
+                                   const KVCacheMappingPlan& plan);
   void release_kv_mapping_budget(const std::string& model_id,
                                  const KVCacheMappingPlan& plan);
   std::vector<size_t> get_worker_free_page_counts() const;
@@ -132,6 +135,9 @@ class DistributedVirtualMemoryCoordinator final : public KVCachePageBackend {
       const std::string& model_id,
       int32_t dp_rank) const;
   int32_t model_worker_count_locked(const std::string& model_id) const;
+  std::vector<size_t> model_memory_demand_locked(
+      const std::string& model_id,
+      const KVCacheMappingPlan& plan) const;
   void update_memory_usage_locked() const;
 
   // No call into the KV allocator may hold this mutex. KV page operations can
@@ -139,6 +145,10 @@ class DistributedVirtualMemoryCoordinator final : public KVCachePageBackend {
   mutable std::mutex mutex_;
   // Serialize initialization without holding the backend budget lock.
   std::mutex initialization_mutex_;
+  // A worker retains one reversible mapping transaction. Serializing map and
+  // unmap prevents a later allocation from retiring undo state too early.
+  std::mutex mapping_transaction_mutex_;
+  uint64_t next_mapping_transaction_id_ = 1;
   WorkerPhysicalPageBudget page_budget_;
   bool budget_initialized_ = false;
   std::unordered_map<std::string, size_t> weight_page_counts_;

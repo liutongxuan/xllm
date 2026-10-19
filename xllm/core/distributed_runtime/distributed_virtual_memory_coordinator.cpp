@@ -19,6 +19,7 @@ limitations under the License.
 #include <glog/logging.h>
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -145,6 +146,11 @@ void DistributedVirtualMemoryCoordinator::setup_worker_memory_rpc(
 int64_t DistributedVirtualMemoryCoordinator::init_physical_page_pools(
     double max_memory_utilization,
     int64_t max_cache_size) {
+  CHECK(std::isfinite(max_memory_utilization));
+  CHECK_GE(max_memory_utilization, 0.0);
+  CHECK_LE(max_memory_utilization, 1.0);
+  const bool lazy = KVCacheConfig::get_instance().vmm_elastic();
+  const bool has_ratio_cap = max_memory_utilization > 0.0 || !lazy;
   if (world_size_ <= 1) {
     // Single process single GPU, initialize locally
     auto& resources = WorkerMemoryResources::get_instance();
@@ -156,9 +162,9 @@ int64_t DistributedVirtualMemoryCoordinator::init_physical_page_pools(
     const int64_t total_memory = device.total_memory();
 
     int64_t cache_size = available_memory;
-    if (max_memory_utilization < 1.0) {
-      const int64_t buffer_memory =
-          static_cast<int64_t>(total_memory * (1.0 - max_memory_utilization));
+    if (has_ratio_cap && max_memory_utilization < 1.0) {
+      const int64_t buffer_memory = static_cast<int64_t>(
+          std::ceil(total_memory * (1.0 - max_memory_utilization)));
       cache_size -= buffer_memory;
     }
     if (max_cache_size > 0) {
@@ -172,7 +178,13 @@ int64_t DistributedVirtualMemoryCoordinator::init_physical_page_pools(
               << available_memory << ", total_memory=" << total_memory
               << ", cache_size=" << cache_size << ", num_pages=" << num_pages;
 
-    resources.init_physical_page_pool(num_pages);
+    if (num_pages <= 0) {
+      LOG(ERROR) << "Insufficient memory for physical page address capacity";
+      return 0;
+    }
+    // Elastic pools reserve stable address slots without allocating backing
+    // pages; subsequent mapping checks current device pressure atomically.
+    resources.init_physical_page_pool(num_pages, lazy);
     LOG(INFO) << "GlobalVirtualMemoryRegion initialized (local)";
 
     return num_pages;
@@ -190,6 +202,7 @@ int64_t DistributedVirtualMemoryCoordinator::init_physical_page_pools(
 
   int64_t min_available_memory = std::numeric_limits<int64_t>::max();
   int64_t min_total_memory = std::numeric_limits<int64_t>::max();
+  int64_t min_capacity_bytes = std::numeric_limits<int64_t>::max();
 
   for (size_t i = 0; i < memory_results.size(); ++i) {
     if (!memory_results[i].hasValue()) {
@@ -209,15 +222,18 @@ int64_t DistributedVirtualMemoryCoordinator::init_physical_page_pools(
     min_available_memory =
         std::min(min_available_memory, info.available_memory);
     min_total_memory = std::min(min_total_memory, info.total_memory);
+    int64_t worker_capacity = info.available_memory;
+    if (has_ratio_cap && max_memory_utilization < 1.0) {
+      worker_capacity -= static_cast<int64_t>(
+          std::ceil(info.total_memory * (1.0 - max_memory_utilization)));
+    }
+    // Apply the ratio on each worker before reducing. Combining independent
+    // minima of free and total memory can exceed a heterogeneous worker's cap.
+    min_capacity_bytes = std::min(min_capacity_bytes, worker_capacity);
   }
 
   // Step 2: Calculate num_pages based on min available memory
-  int64_t cache_size = min_available_memory;
-  if (max_memory_utilization < 1.0) {
-    const int64_t buffer_memory =
-        static_cast<int64_t>(min_total_memory * (1.0 - max_memory_utilization));
-    cache_size -= buffer_memory;
-  }
+  int64_t cache_size = min_capacity_bytes;
   if (max_cache_size > 0) {
     cache_size = std::min(cache_size, max_cache_size);
   }
@@ -238,7 +254,8 @@ int64_t DistributedVirtualMemoryCoordinator::init_physical_page_pools(
   std::vector<folly::SemiFuture<bool>> init_futures;
   init_futures.reserve(clients_.size());
   for (auto& client : clients_) {
-    init_futures.emplace_back(client->init_physical_page_pool_async(num_pages));
+    init_futures.emplace_back(
+        client->init_physical_page_pool_async(num_pages, lazy));
   }
 
   // Wait for all init responses
@@ -289,47 +306,74 @@ bool DistributedVirtualMemoryCoordinator::broadcast_map_to_kv_tensors(
     const std::string& model_id,
     int32_t dp_rank,
     const std::vector<int64_t>& offsets) {
+  std::lock_guard<std::mutex> transaction_lock(mapping_transaction_mutex_);
+  CHECK_NE(next_mapping_transaction_id_, std::numeric_limits<uint64_t>::max());
+  const uint64_t transaction_id = next_mapping_transaction_id_++;
   if (world_size_ <= 1) {
-    // Single process single GPU, just map locally
-    return WorkerMemoryResources::get_instance().map_to_kv_tensors(model_id,
-                                                                   offsets);
+    auto& resources = WorkerMemoryResources::get_instance();
+    if (resources.prepare_kv_mapping(transaction_id, model_id, offsets) &&
+        resources.commit_kv_mapping(transaction_id)) {
+      return true;
+    }
+    CHECK(resources.abort_kv_mapping(transaction_id))
+        << "Local KV mapping rollback failed; physical ownership is uncertain";
+    return false;
   }
 
-  // Get model-specific parallel strategy
-  auto [model_dp_size, model_tp_size] = get_model_parallel_strategy(model_id);
+  const auto [model_dp_size, model_tp_size] =
+      get_model_parallel_strategy(model_id);
+  if (dp_rank < 0 || dp_rank >= model_dp_size) {
+    return false;
+  }
+  const int32_t start_rank = dp_rank * model_tp_size;
+  const int32_t end_rank = start_rank + model_tp_size;
+  if (end_rank > static_cast<int32_t>(clients_.size())) {
+    return false;
+  }
+  const auto all_succeeded = [](std::vector<folly::SemiFuture<bool>>& futures) {
+    const auto results = folly::collectAll(futures).get();
+    return std::all_of(results.begin(), results.end(), [](const auto& result) {
+      return result.hasValue() && result.value();
+    });
+  };
 
-  CHECK_GE(dp_rank, 0) << "dp_rank must be >= 0";
-  CHECK_LT(dp_rank, model_dp_size) << "dp_rank must be < model_dp_size";
-
-  // Calculate worker range for this DP group based on model's parallel strategy
-  // Workers are organized as: [dp0_tp0, dp0_tp1, ..., dp1_tp0, dp1_tp1, ...]
-  int32_t start_rank = dp_rank * model_tp_size;
-  int32_t end_rank = start_rank + model_tp_size;
-
-  // Broadcast to workers in this DP group via RPC asynchronously
   std::vector<folly::SemiFuture<bool>> futures;
   futures.reserve(model_tp_size);
-  for (int32_t r = start_rank;
-       r < end_rank && r < static_cast<int32_t>(clients_.size());
-       ++r) {
-    futures.emplace_back(
-        clients_[r]->map_to_kv_tensors_async(model_id, offsets));
+  for (int32_t worker = start_rank; worker < end_rank; ++worker) {
+    futures.emplace_back(clients_[worker]->prepare_kv_mapping_async(
+        transaction_id, model_id, offsets));
+  }
+  bool succeeded = all_succeeded(futures);
+  if (succeeded) {
+    futures.clear();
+    for (int32_t worker = start_rank; worker < end_rank; ++worker) {
+      futures.emplace_back(
+          clients_[worker]->commit_kv_mapping_async(transaction_id));
+    }
+    succeeded = all_succeeded(futures);
+  }
+  if (succeeded) {
+    return true;
   }
 
-  // Wait for all futures to complete
-  auto results = folly::collectAll(futures).get();
-  for (const auto& result : results) {
-    if (!result.hasValue() || !result.value()) {
-      return false;
-    }
+  // An RPC failure does not prove the worker did nothing. Abort every
+  // participant, including workers whose prepare/commit reply was lost.
+  futures.clear();
+  for (int32_t worker = start_rank; worker < end_rank; ++worker) {
+    futures.emplace_back(
+        clients_[worker]->abort_kv_mapping_async(transaction_id));
   }
-  return true;
+  CHECK(all_succeeded(futures)) << "Distributed KV mapping rollback was not "
+                                   "acknowledged by every worker; "
+                                   "physical page ownership is uncertain";
+  return false;
 }
 
 bool DistributedVirtualMemoryCoordinator::broadcast_unmap_from_kv_tensors(
     const std::string& model_id,
     int32_t dp_rank,
     const std::vector<int64_t>& offsets) {
+  std::lock_guard<std::mutex> transaction_lock(mapping_transaction_mutex_);
   if (world_size_ <= 1) {
     // Single process single GPU, just unmap locally
     return WorkerMemoryResources::get_instance().unmap_from_kv_tensors(model_id,
@@ -346,6 +390,9 @@ bool DistributedVirtualMemoryCoordinator::broadcast_unmap_from_kv_tensors(
   // Workers are organized as: [dp0_tp0, dp0_tp1, ..., dp1_tp0, dp1_tp1, ...]
   int32_t start_rank = dp_rank * model_tp_size;
   int32_t end_rank = start_rank + model_tp_size;
+  if (end_rank > static_cast<int32_t>(clients_.size())) {
+    return false;
+  }
 
   // Broadcast to workers in this DP group via RPC asynchronously
   std::vector<folly::SemiFuture<bool>> futures;
@@ -370,47 +417,70 @@ bool DistributedVirtualMemoryCoordinator::broadcast_unmap_from_kv_tensors(
 bool DistributedVirtualMemoryCoordinator::broadcast_alloc_weight_pages(
     const std::string& model_id,
     size_t num_pages) {
-  // Get model-specific parallel strategy
-  auto [model_dp_size, model_tp_size] = get_model_parallel_strategy(model_id);
-  int32_t model_world_size = model_dp_size * model_tp_size;
-
-  if (model_world_size <= 1) {
-    return WorkerMemoryResources::get_instance().alloc_weight_pages(model_id,
-                                                                    num_pages);
-  }
-
-  // Broadcast to all workers for this model
-  std::vector<folly::SemiFuture<bool>> futures;
-  int32_t num_workers =
-      std::min(model_world_size, static_cast<int32_t>(clients_.size()));
-  futures.reserve(num_workers);
-  for (int32_t i = 0; i < num_workers; ++i) {
-    futures.emplace_back(
-        clients_[i]->alloc_weight_pages_async(model_id, num_pages));
-  }
-
-  // Wait for all futures to complete
-  auto results = folly::collectAll(futures).get();
-  for (const auto& result : results) {
-    if (!result.hasValue() || !result.value()) {
-      LOG(ERROR) << "broadcast_alloc_weight_pages failed for model "
-                 << model_id;
-      return false;
+  std::lock_guard<std::mutex> transaction_lock(mapping_transaction_mutex_);
+  CHECK_NE(next_mapping_transaction_id_, std::numeric_limits<uint64_t>::max());
+  const uint64_t transaction_id = next_mapping_transaction_id_++;
+  const auto [model_dp_size, model_tp_size] =
+      get_model_parallel_strategy(model_id);
+  const int32_t model_world_size = model_dp_size * model_tp_size;
+  if (world_size_ <= 1) {
+    auto& resources = WorkerMemoryResources::get_instance();
+    if (resources.prepare_weight_pages(transaction_id, model_id, num_pages) &&
+        resources.commit_weight_pages(transaction_id)) {
+      return true;
     }
+    CHECK(resources.abort_weight_pages(transaction_id))
+        << "Weight rollback failed; physical ownership is uncertain";
+    return false;
   }
-
-  LOG(INFO) << "broadcast_alloc_weight_pages success: model=" << model_id
-            << ", num_pages=" << num_pages << ", num_workers=" << num_workers;
-  return true;
+  if (model_world_size > static_cast<int32_t>(clients_.size())) {
+    return false;
+  }
+  const auto all_succeeded = [](std::vector<folly::SemiFuture<bool>>& futures) {
+    const auto results = folly::collectAll(futures).get();
+    return std::all_of(results.begin(), results.end(), [](const auto& result) {
+      return result.hasValue() && result.value();
+    });
+  };
+  std::vector<folly::SemiFuture<bool>> futures;
+  futures.reserve(model_world_size);
+  for (int32_t worker = 0; worker < model_world_size; ++worker) {
+    futures.emplace_back(clients_[worker]->prepare_weight_pages_async(
+        transaction_id, model_id, num_pages));
+  }
+  bool succeeded = all_succeeded(futures);
+  if (succeeded) {
+    futures.clear();
+    for (int32_t worker = 0; worker < model_world_size; ++worker) {
+      futures.emplace_back(
+          clients_[worker]->commit_weight_pages_async(transaction_id));
+    }
+    succeeded = all_succeeded(futures);
+  }
+  if (succeeded) {
+    return true;
+  }
+  // Roll back every target, including workers whose result is unknown. The
+  // ledger remains reserved until every worker confirms physical cleanup.
+  futures.clear();
+  for (int32_t worker = 0; worker < model_world_size; ++worker) {
+    futures.emplace_back(
+        clients_[worker]->abort_weight_pages_async(transaction_id));
+  }
+  CHECK(all_succeeded(futures))
+      << "Distributed weight rollback was not acknowledged by every worker; "
+         "physical page ownership is uncertain";
+  return false;
 }
 
 bool DistributedVirtualMemoryCoordinator::broadcast_free_weight_pages(
     const std::string& model_id) {
+  std::lock_guard<std::mutex> transaction_lock(mapping_transaction_mutex_);
   // Get model-specific parallel strategy
   auto [model_dp_size, model_tp_size] = get_model_parallel_strategy(model_id);
   int32_t model_world_size = model_dp_size * model_tp_size;
 
-  if (model_world_size <= 1) {
+  if (world_size_ <= 1) {
     // Single process: free locally
     WorkerMemoryResources::get_instance().free_weight(model_id);
     return true;
@@ -418,8 +488,10 @@ bool DistributedVirtualMemoryCoordinator::broadcast_free_weight_pages(
 
   // Broadcast to all workers for this model
   std::vector<folly::SemiFuture<bool>> futures;
-  int32_t num_workers =
-      std::min(model_world_size, static_cast<int32_t>(clients_.size()));
+  if (model_world_size > static_cast<int32_t>(clients_.size())) {
+    return false;
+  }
+  const int32_t num_workers = model_world_size;
   futures.reserve(num_workers);
   for (int32_t i = 0; i < num_workers; ++i) {
     futures.emplace_back(clients_[i]->free_weight_pages_async(model_id));
@@ -539,7 +611,12 @@ void DistributedVirtualMemoryCoordinator::init_page_budget(
     page_budget_.reset(total_pages, worker_count);
   }
   // The KV allocator can enter the backend while holding its own lock.
-  kv_cache_pages_->init(total_pages, page_size, dp_size, enable_prealloc);
+  const bool elastic = KVCacheConfig::get_instance().vmm_elastic();
+  kv_cache_pages_->init(total_pages,
+                        page_size,
+                        dp_size,
+                        enable_prealloc && !elastic,
+                        /*max_reserved_pages=*/elastic ? 0 : 32);
   std::lock_guard<std::mutex> lock(mutex_);
   budget_initialized_ = true;
 }
@@ -607,9 +684,45 @@ void DistributedVirtualMemoryCoordinator::release_pages(
 size_t DistributedVirtualMemoryCoordinator::available_pages(
     const std::string& model_id,
     int32_t dp_rank) const {
-  std::lock_guard<std::mutex> lock(mutex_);
-  const auto [first, last] = dp_worker_range_locked(model_id, dp_rank);
-  return first == last ? 0 : page_budget_.min_free_pages(first, last);
+  size_t available = 0;
+  std::vector<std::shared_ptr<WorkerMemoryRpcClient>> workers;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto [first, last] = dp_worker_range_locked(model_id, dp_rank);
+    if (first == last) {
+      return 0;
+    }
+    available = page_budget_.min_free_pages(first, last);
+    if (world_size_ > 1) {
+      if (last > static_cast<int32_t>(clients_.size())) {
+        return 0;
+      }
+      workers.assign(clients_.begin() + first, clients_.begin() + last);
+    }
+  }
+  if (workers.empty()) {
+    const WorkerMemoryCapacity capacity =
+        WorkerMemoryResources::get_instance().memory_capacity_snapshot();
+    return capacity.pool_initialized
+               ? std::min(available, capacity.pool_allocatable_pages)
+               : 0;
+  }
+
+  // Never hold the budget lock across RPCs. Runtime pressure limits this
+  // snapshot, while worker prepare performs the authoritative allocation.
+  std::vector<folly::SemiFuture<MemoryInfo>> futures;
+  futures.reserve(workers.size());
+  for (const auto& worker : workers) {
+    futures.emplace_back(worker->get_memory_info_async());
+  }
+  const auto results = folly::collectAll(futures).get();
+  for (const auto& result : results) {
+    if (!result.hasValue() || !result.value().pool_initialized) {
+      return 0;
+    }
+    available = std::min(available, result.value().pool_allocatable_pages);
+  }
+  return available;
 }
 
 bool DistributedVirtualMemoryCoordinator::map_pages(
@@ -632,18 +745,24 @@ bool DistributedVirtualMemoryCoordinator::reserve_weight_pages(
   {
     std::lock_guard<std::mutex> lock(mutex_);
     CHECK(budget_initialized_);
-    if (!page_budget_.try_reserve(
+    // Preserve existing model accounting if a duplicate initialization arrives.
+    if (weight_page_counts_.find(model_id) != weight_page_counts_.end() ||
+        !page_budget_.try_reserve(
             0, model_worker_count_locked(model_id), num_pages)) {
       return false;
     }
     weight_page_counts_[model_id] = num_pages;
     update_memory_usage_locked();
   }
-  if (num_pages > 0) {
-    CHECK(broadcast_alloc_weight_pages(model_id, num_pages))
-        << "Weight allocation failed; distributed mapping state is uncertain";
+  if (num_pages == 0 || broadcast_alloc_weight_pages(model_id, num_pages)) {
+    return true;
   }
-  return true;
+  // The broadcast returns false only after all workers acknowledge rollback.
+  std::lock_guard<std::mutex> lock(mutex_);
+  page_budget_.release(0, model_worker_count_locked(model_id), num_pages);
+  weight_page_counts_.erase(model_id);
+  update_memory_usage_locked();
+  return false;
 }
 
 void DistributedVirtualMemoryCoordinator::set_weight_page_count(
@@ -673,13 +792,10 @@ void DistributedVirtualMemoryCoordinator::release_weight_pages(
   update_memory_usage_locked();
 }
 
-void DistributedVirtualMemoryCoordinator::restore_weight_pages(
+bool DistributedVirtualMemoryCoordinator::restore_weight_pages(
     const std::string& model_id) {
   const size_t pages = get_weight_page_count(model_id);
-  if (pages > 0) {
-    CHECK(broadcast_alloc_weight_pages(model_id, pages))
-        << "Weight restore failed; distributed mapping state is uncertain";
-  }
+  return pages == 0 || broadcast_alloc_weight_pages(model_id, pages);
 }
 
 bool DistributedVirtualMemoryCoordinator::try_reserve_model_memory(
@@ -687,6 +803,24 @@ bool DistributedVirtualMemoryCoordinator::try_reserve_model_memory(
     const KVCacheMappingPlan& plan) {
   std::lock_guard<std::mutex> lock(mutex_);
   CHECK(budget_initialized_);
+  const bool reserved =
+      page_budget_.try_reserve(model_memory_demand_locked(model_id, plan));
+  update_memory_usage_locked();
+  return reserved;
+}
+
+void DistributedVirtualMemoryCoordinator::release_model_memory_budget(
+    const std::string& model_id,
+    const KVCacheMappingPlan& plan) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  page_budget_.release(model_memory_demand_locked(model_id, plan));
+  update_memory_usage_locked();
+}
+
+std::vector<size_t>
+DistributedVirtualMemoryCoordinator::model_memory_demand_locked(
+    const std::string& model_id,
+    const KVCacheMappingPlan& plan) const {
   std::vector<size_t> demand(page_budget_.worker_count(), 0);
   for (size_t rank = 0; rank < plan.dp_group_page_ids.size(); ++rank) {
     const auto& ids = plan.dp_group_page_ids[rank];
@@ -696,6 +830,10 @@ bool DistributedVirtualMemoryCoordinator::try_reserve_model_memory(
     const auto [first, last] =
         dp_worker_range_locked(model_id, static_cast<int32_t>(rank));
     CHECK_LT(first, last);
+    CHECK_GT(plan.physical_pages_per_virtual_page, 0);
+    CHECK_LE(ids.size(),
+             std::numeric_limits<size_t>::max() /
+                 plan.physical_pages_per_virtual_page);
     const size_t pages = ids.size() * plan.physical_pages_per_virtual_page;
     for (int32_t worker = first; worker < last; ++worker) {
       demand[worker] += pages;
@@ -706,11 +844,10 @@ bool DistributedVirtualMemoryCoordinator::try_reserve_model_memory(
       weight == weight_page_counts_.end() ? 0 : weight->second;
   const int32_t worker_count = model_worker_count_locked(model_id);
   for (int32_t worker = 0; worker < worker_count; ++worker) {
+    CHECK_LE(weight_pages, std::numeric_limits<size_t>::max() - demand[worker]);
     demand[worker] += weight_pages;
   }
-  const bool reserved = page_budget_.try_reserve(demand);
-  update_memory_usage_locked();
-  return reserved;
+  return demand;
 }
 
 void DistributedVirtualMemoryCoordinator::release_kv_mapping_budget(

@@ -81,6 +81,7 @@ limitations under the License.
 #endif
 #include "core/distributed_runtime/master.h"
 #include "core/framework/allocator/global_virtual_memory_region.h"
+#include "core/framework/allocator/virtual_memory/physical_page_pool.h"
 #include "core/framework/model_loader/model_loader.h"
 #include "core/framework/speculative/mtp_utils.h"
 #include "core/kv_cache/layout/layerwise_split_layout.h"
@@ -443,7 +444,8 @@ WorkerImpl::WorkerImpl(const ParallelArgs& parallel_args,
 #endif
 
 #if defined(USE_NPU)
-  if (::xllm::KVCacheConfig::get_instance().enable_virtual_memory()) {
+  if (::xllm::KVCacheConfig::get_instance().enable_virtual_memory() &&
+      !::xllm::KVCacheConfig::get_instance().vmm_elastic()) {
     // Construct the memory owners before the shared transport so registered
     // regions remain alive until the transport stops during process shutdown.
     WorkerMemoryResources::get_instance();
@@ -1833,6 +1835,19 @@ void WorkerImpl::execute_cuda_block_copy_kernel(
 }
 #endif
 
+void WorkerImpl::observe_execution_memory(bool is_warmup) {
+  const auto& cache_config = KVCacheConfig::get_instance();
+  if (!cache_config.enable_virtual_memory() || !cache_config.vmm_elastic()) {
+    return;
+  }
+  if (is_warmup) {
+    CHECK(compute_stream_ != nullptr);
+    CHECK_EQ(compute_stream_->synchronize(), 0)
+        << "Failed to finish elastic VMM execution warmup";
+  }
+  PhysicalPagePool::get_instance().observe_execution_memory();
+}
+
 template <typename Input>
 folly::SemiFuture<std::optional<ForwardOutput>> WorkerImpl::step_async_impl(
     const Input& input) {
@@ -1852,6 +1867,7 @@ folly::SemiFuture<std::optional<ForwardOutput>> WorkerImpl::step_async_impl(
     // run the model on the given input in working thread
     if (!enable_schedule_overlap()) {
       auto output = this->step(input);
+      observe_execution_memory(input.input_params.meta.is_graph_warmup);
       if (output.has_value()) {
         output->is_graph_warmup = input.input_params.meta.is_graph_warmup;
       }
@@ -1869,6 +1885,7 @@ folly::SemiFuture<std::optional<ForwardOutput>> WorkerImpl::step_async_impl(
       }
 
       auto output = this->step_for_schedule_overlap(input);
+      observe_execution_memory(input.input_params.meta.is_graph_warmup);
 #if defined(USE_NPU)
       if (output.has_value() && !output->sample_output.next_tokens.defined() &&
           output->ready_event != nullptr && !output->retained_inputs.empty()) {
