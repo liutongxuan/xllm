@@ -281,6 +281,7 @@ void SchedulerPolicy::schedule_prefill_from_queue(
           << request->best_of() << ") sequences, got " << num_sequences;
     }
 
+    bool reserve_full_prompt = false;
     // Full-footprint admission (fresh requests only): check that the system
     // has enough capacity for this request's full KV plus all already-reserved
     // blocks. In-flight chunked requests are always allowed to continue.
@@ -300,9 +301,20 @@ void SchedulerPolicy::schedule_prefill_from_queue(
       // address space is not evidence of currently admissible physical memory.
       const size_t total_blocks =
           state.kv_cache_manager->admission_capacity(dp_rank);
-      if (reserved_full_footprint[dp_rank] + full_footprint > total_blocks) {
+      if (full_footprint > state.kv_cache_manager->num_blocks()) {
         blocks_exhausted = true;
         break;
+      }
+      if (reserved_full_footprint[dp_rank] + full_footprint > total_blocks) {
+        if (!state.running_sequences.empty() || !state.decode_queue.empty()) {
+          blocks_exhausted = true;
+          break;
+        }
+        // An idle elastic cache may still report capacity sampled before the
+        // previous request released its pages, or zero after a failed query.
+        // Confirm the complete prompt with real mappings before rejecting it.
+        // Reserve only after token/latency checks, without advancing compute.
+        reserve_full_prompt = true;
       }
     }
 
@@ -381,8 +393,12 @@ void SchedulerPolicy::schedule_prefill_from_queue(
       //   and sequence is reset inside kv_cache_manager->allocate().
       // - In-flight chunked requests: existing blocks are preserved.
       // No external deallocate needed here.
-      if (!allocate_for_prefill(
-              prefill_sequence.get(), num_tokens, &actual_tokens, state)) {
+      if (!allocate_for_prefill(prefill_sequence.get(),
+                                num_tokens,
+                                &actual_tokens,
+                                state,
+                                /*skip_shared=*/false,
+                                reserve_full_prompt)) {
         can_schedule = false;
         blocks_exhausted = true;
         break;
@@ -473,7 +489,8 @@ bool SchedulerPolicy::allocate_for_prefill(Sequence* seq,
                                            size_t token_budget,
                                            size_t* actual_tokens,
                                            SchedulerState& state,
-                                           bool skip_shared) {
+                                           bool skip_shared,
+                                           bool reserve_full_prompt) {
   if (!batch_mode_.enable_chunked_prefill) {
     // Full prefill: match prefix cache first.
     if (!skip_shared) {
@@ -519,7 +536,9 @@ bool SchedulerPolicy::allocate_for_prefill(Sequence* seq,
 
   CHECK_GT(max_handle_num_tokens, kv_cache_tokens_num);
   *actual_tokens = max_handle_num_tokens - kv_cache_tokens_num;
-  return state.kv_cache_manager->allocate(seq, max_handle_num_tokens);
+  const size_t allocation_target =
+      reserve_full_prompt ? seq->num_tokens() : max_handle_num_tokens;
+  return state.kv_cache_manager->allocate(seq, allocation_target);
 }
 
 void SchedulerPolicy::allocate_shared_blocks_for(Sequence* seq,

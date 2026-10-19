@@ -117,6 +117,10 @@ class KVCacheManager {
   get_swap_block_transfer_infos() = 0;
 
   virtual uint32_t num_blocks() const = 0;
+  // Advisory total capacity, including held blocks. Elastic caches may return
+  // a stale physical-budget snapshot; a low value alone cannot prove that an
+  // otherwise idle request will fail allocation. num_blocks() is the configured
+  // limit, while allocate() validates the current backing capacity.
   virtual size_t admission_capacity(int32_t /*dp_rank*/) const {
     return num_blocks();
   }

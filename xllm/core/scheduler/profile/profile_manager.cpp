@@ -1288,34 +1288,14 @@ void ProfileManager::run_vmm_warmup_batch(
     const std::vector<int32_t>& token_lengths,
     int32_t dp_rank,
     bool decode) {
-  const int32_t block_size = block_manager_pool_->block_size();
-  CHECK_GT(block_size, 0);
-  const int64_t decode_tokens =
-      decode_graph_warmup_plan_.execution_shape.num_decoding_tokens;
-  CHECK_GT(decode_tokens, 0);
-  const size_t decode_extra =
-      decode ? static_cast<size_t>(decode_tokens) *
-                   (options_.enable_schedule_overlap() ? 2 : 1)
-             : 0;
-  size_t required_blocks = 0;
-  for (int32_t length : token_lengths) {
-    const size_t capacity = static_cast<size_t>(length) + decode_extra;
-    required_blocks += (capacity + block_size - 1) / block_size;
-  }
-  const std::vector<size_t> free_blocks =
-      block_manager_pool_->num_free_blocks();
-  CHECK_LT(static_cast<size_t>(dp_rank), free_blocks.size());
-  CHECK_LE(required_blocks, free_blocks[dp_rank])
-      << "Elastic VMM execution warmup cannot fit the configured "
-      << (decode ? "decode" : "prefill") << " shape on DP rank " << dp_rank
-      << "; lower max_tokens_per_batch/max_seqs_per_batch or raise the "
-         "optional KV capacity ceiling";
   std::vector<std::shared_ptr<Request>> requests;
   std::vector<Sequence*> sequences;
   std::vector<size_t> budgets;
   requests.reserve(token_lengths.size());
   sequences.reserve(token_lengths.size());
   budgets.reserve(token_lengths.size());
+  // Capacity snapshots can lag KV released by the previous warmup batch.
+  // Allocate against the live budget instead of rejecting an advisory sample.
   for (int32_t length : token_lengths) {
     std::shared_ptr<Request> request =
         decode ? generate_single_decode_request(
