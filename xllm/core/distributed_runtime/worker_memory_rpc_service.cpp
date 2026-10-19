@@ -91,6 +91,9 @@ void WorkerMemoryRpcService::GetMemoryInfo(
     response->set_pool_allocatable_pages(capacity.pool_allocatable_pages);
     response->set_execution_memory_reserve_bytes(
         capacity.execution_memory_reserve_bytes);
+    response->set_pool_active_pages(capacity.pool_active_pages);
+    response->set_growth_memory_reserve_bytes(
+        capacity.growth_memory_reserve_bytes);
   });
 }
 
@@ -103,11 +106,22 @@ void WorkerMemoryRpcService::InitPhysicalPagePool(
     brpc::ClosureGuard done_guard(done);
 
     const int64_t num_pages = request->num_pages();
+    const int64_t initial_pages =
+        request->has_initial_pages() ? request->initial_pages() : num_pages;
+    if (num_pages <= 0 || initial_pages < 0 || initial_pages > num_pages ||
+        (!request->lazy() && initial_pages != num_pages)) {
+      response->set_ok(false);
+      return;
+    }
     LOG(INFO) << "InitPhysicalPagePool: global_rank=" << global_rank_
-              << ", num_pages=" << num_pages;
+              << ", num_pages=" << num_pages
+              << ", initial_pages=" << initial_pages;
 
     WorkerMemoryResources::get_instance().init_physical_page_pool(
-        num_pages, request->lazy());
+        num_pages,
+        initial_pages,
+        request->lazy(),
+        static_cast<size_t>(request->growth_memory_reserve_bytes()));
     LOG(INFO) << "GlobalVirtualMemoryRegion initialized on worker "
               << global_rank_;
 

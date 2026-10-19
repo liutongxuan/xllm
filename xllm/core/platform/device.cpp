@@ -17,6 +17,8 @@ limitations under the License.
 
 #include <torch/torch.h>
 
+#include <limits>
+
 #include "core/framework/config/model_config.h"
 #include "core/platform/platform.h"
 #if defined(USE_NPU)
@@ -38,6 +40,7 @@ limitations under the License.
 #elif defined(USE_MUSA)
 #include <c10/musa/MUSAGuard.h>
 #include <musa.h>
+#include <torch_musa/csrc/core/MUSACachingAllocator.h>
 #elif defined(USE_DCU)
 #include <c10/hip/HIPCachingAllocator.h>
 #include <c10/hip/HIPStream.h>
@@ -164,6 +167,53 @@ void Device::empty_cache(int32_t device_index) {
 }
 
 int64_t Device::free_memory() { return get_device_mem().free_memory; }
+
+std::optional<AllocatorMemoryStats> Device::allocator_memory_stats() const {
+  if (device_.type() != Platform::type_torch() || index() < 0) {
+    return std::nullopt;
+  }
+#if defined(USE_NPU)
+  auto* allocator = c10_npu::NPUCachingAllocator::get();
+  if (allocator == nullptr || allocator->name() != "native" ||
+      !allocator->initialized()) {
+    return std::nullopt;
+  }
+  const auto stats = allocator->getDeviceStats(index());
+  const size_t stat_index =
+      static_cast<size_t>(c10_npu::NPUCachingAllocator::StatType::AGGREGATE);
+#elif defined(USE_CUDA) || defined(USE_ILU)
+  auto* allocator = c10::cuda::CUDACachingAllocator::get();
+  if (allocator == nullptr || allocator->name() != "native" ||
+      !allocator->initialized()) {
+    return std::nullopt;
+  }
+  const auto stats = allocator->getDeviceStats(index());
+  const size_t stat_index =
+      static_cast<size_t>(c10::CachingAllocator::StatType::AGGREGATE);
+#elif defined(USE_MUSA)
+  auto* allocator = c10::musa::MUSACachingAllocator::get();
+  if (allocator == nullptr || allocator->name() != "native" ||
+      !allocator->initialized()) {
+    return std::nullopt;
+  }
+  const auto stats = allocator->getDeviceStats(index());
+  const size_t stat_index =
+      static_cast<size_t>(c10::CachingAllocator::StatType::AGGREGATE);
+#else
+  return std::nullopt;
+#endif
+#if defined(USE_NPU) || defined(USE_CUDA) || defined(USE_ILU) || \
+    defined(USE_MUSA)
+  const auto& reserved = stats.reserved_bytes[stat_index];
+  if (reserved.current < 0 || reserved.peak < reserved.current ||
+      static_cast<uint64_t>(reserved.peak) >
+          std::numeric_limits<size_t>::max()) {
+    return std::nullopt;
+  }
+  return AllocatorMemoryStats{static_cast<size_t>(reserved.current),
+                              static_cast<size_t>(reserved.peak)};
+#endif
+}
 
 int Device::synchronize_default_stream() {
 #if defined(USE_NPU)

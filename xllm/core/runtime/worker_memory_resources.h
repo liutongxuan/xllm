@@ -40,6 +40,8 @@ struct WorkerMemoryCapacity {
   size_t pool_committed_pages = 0;
   size_t pool_allocatable_pages = 0;
   size_t execution_memory_reserve_bytes = 0;
+  size_t pool_active_pages = 0;
+  size_t growth_memory_reserve_bytes = 0;
 };
 
 // Owns worker-local KV cache mappings and weight allocations under one device
@@ -53,6 +55,10 @@ class WorkerMemoryResources final {
 
   void init(const torch::Device& device);
   void init_physical_page_pool(int64_t num_pages, bool lazy = true);
+  void init_physical_page_pool(int64_t max_pages,
+                               int64_t initial_pages,
+                               bool lazy,
+                               size_t growth_memory_reserve_bytes);
   WorkerMemoryCapacity memory_capacity_snapshot() const;
   void set_execution_memory_reserve(size_t bytes);
   size_t trim_idle_physical_pages(size_t keep_pages = 0);
@@ -140,6 +146,7 @@ class WorkerMemoryResources final {
   std::optional<WeightMappingTransaction> weight_transaction_;
   uint64_t retired_weight_transaction_id_ = 0;
   size_t execution_memory_reserve_bytes_ = 0;
+  size_t growth_memory_reserve_bytes_ = 0;
   bool initialized_ = false;
   torch::Device device_{torch::kCPU};
   mutable std::mutex mutex_;

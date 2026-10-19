@@ -51,8 +51,10 @@ class DistributedVirtualMemoryCoordinator final : public KVCachePageBackend {
   void setup_worker_memory_rpc(const WorkerMemoryRpcOptions& options,
                                const std::string& master_node_addr,
                                int32_t dp_size);
-  int64_t init_physical_page_pools(double max_memory_utilization = 0.9,
-                                   int64_t max_cache_size = 0);
+  int64_t init_physical_page_pools(
+      double max_memory_utilization = 0.9,
+      int64_t max_cache_size = 0,
+      bool max_memory_utilization_configured = true);
 
   void init_page_budget(size_t total_pages,
                         int32_t dp_size,

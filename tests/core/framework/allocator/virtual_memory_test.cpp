@@ -17,6 +17,7 @@ limitations under the License.
 #include <c10/core/DeviceGuard.h>
 #include <glog/logging.h>
 #include <gtest/gtest.h>
+#include <torch/torch.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -28,6 +29,7 @@ limitations under the License.
 #include "core/framework/allocator/torch/mapped_virtual_memory_tensor_view.h"
 #include "core/framework/allocator/virtual_memory/mapped_virtual_memory_region.h"
 #include "core/framework/allocator/virtual_memory/physical_page_pool.h"
+#include "core/platform/device.h"
 #include "core/platform/vmm_api.h"
 #include "tests/core/framework/allocator/virtual_memory_test_utils.h"
 #include "tests/npu_test_environment.h"
@@ -83,6 +85,31 @@ class VirtualMemoryTest : public ::testing::Test {
   size_t page_size_ = 0;
   bool resources_initialized_ = false;
 };
+
+TEST_F(VirtualMemoryTest, AllocatorStatsTrackExecutionResidency) {
+  EXPECT_FALSE(
+      Device(torch::Device(torch::kCPU)).allocator_memory_stats().has_value());
+  Device device(device_);
+  const auto before = device.allocator_memory_stats();
+  if (!before.has_value()) {
+    GTEST_SKIP() << "Execution allocator does not expose native statistics";
+  }
+  const int64_t bytes = static_cast<int64_t>(2 * page_size_);
+  torch::Tensor execution_storage = torch::empty(
+      {bytes}, torch::TensorOptions().device(device_).dtype(torch::kUInt8));
+  const auto resident = device.allocator_memory_stats();
+  ASSERT_TRUE(resident.has_value());
+  EXPECT_GE(resident->reserved_bytes, static_cast<size_t>(bytes));
+  EXPECT_GE(resident->peak_reserved_bytes, resident->reserved_bytes);
+  EXPECT_GE(resident->peak_reserved_bytes, before->peak_reserved_bytes);
+
+  execution_storage = torch::Tensor();
+  Device::empty_cache(device_.index());
+  const auto released = device.allocator_memory_stats();
+  ASSERT_TRUE(released.has_value());
+  EXPECT_LE(released->reserved_bytes, resident->reserved_bytes);
+  EXPECT_GE(released->peak_reserved_bytes, resident->peak_reserved_bytes);
+}
 
 TEST_F(VirtualMemoryTest, ShortageAcrossRegionsLeavesBothUnmapped) {
   auto& pool = PhysicalPagePool::get_instance();
@@ -242,6 +269,86 @@ TEST_F(VirtualMemoryTest, RealMapUnmapRemapPreservesContents) {
                         ACL_MEMCPY_DEVICE_TO_HOST),
             ACL_SUCCESS);
   EXPECT_EQ(observed, expected);
+}
+
+TEST_F(VirtualMemoryTest, ArenaGrowthPreservesAddressesAndMappedContents) {
+  VirtualMemoryTestPeer::release_resources();
+  auto& pool = PhysicalPagePool::get_instance();
+  pool.init(device_,
+            kPoolPages,
+            /*initial_num_pages=*/1,
+            page_size_,
+            /*lazy=*/true);
+  auto& global_tensor = GlobalVirtualMemoryRegion::get_instance();
+  global_tensor.init(device_);
+  ASSERT_EQ(pool.num_total(), kPoolPages);
+  ASSERT_EQ(pool.num_active(), 1);
+  ASSERT_EQ(pool.num_committed(), 0);
+  ASSERT_EQ(global_tensor.num_total_pages(), kPoolPages);
+  ASSERT_EQ(global_tensor.total_size(), kPoolPages * page_size_);
+  void* const global_base = global_tensor.base_vaddr();
+
+  MappedVirtualMemoryRegion tensor(
+      kPoolPages * page_size_, device_, page_size_);
+  void* const tensor_base = vir_ptr_to_void_ptr(tensor.vaddr());
+  ASSERT_TRUE(tensor.map(/*offset=*/0));
+  const page_id_t first_page = tensor.get_phy_page_id(/*offset=*/0);
+  ASSERT_GE(first_page, 0);
+  ASSERT_EQ(pool.num_active(), 1);
+  ASSERT_EQ(pool.num_committed(), 1);
+
+  std::vector<std::vector<uint8_t>> expected;
+  expected.reserve(kPoolPages);
+  for (size_t page = 0; page < kPoolPages; ++page) {
+    expected.emplace_back(256, static_cast<uint8_t>(0x42 + page));
+  }
+  ASSERT_EQ(aclrtMemcpy(tensor_base,
+                        expected.front().size(),
+                        expected.front().data(),
+                        expected.front().size(),
+                        ACL_MEMCPY_HOST_TO_DEVICE),
+            ACL_SUCCESS);
+
+  ASSERT_TRUE(tensor.map_all());
+  EXPECT_EQ(pool.num_total(), kPoolPages);
+  EXPECT_EQ(pool.num_active(), kPoolPages);
+  EXPECT_EQ(pool.num_committed(), kPoolPages);
+  EXPECT_EQ(pool.num_available(), 0);
+  EXPECT_EQ(global_tensor.base_vaddr(), global_base);
+  EXPECT_EQ(vir_ptr_to_void_ptr(tensor.vaddr()), tensor_base);
+  EXPECT_EQ(tensor.get_phy_page_id(/*offset=*/0), first_page);
+
+  for (size_t page = 1; page < kPoolPages; ++page) {
+    void* address = vir_ptr_to_void_ptr(
+        add_vir_ptr_offset(tensor.vaddr(), page * page_size_));
+    ASSERT_EQ(aclrtMemcpy(address,
+                          expected[page].size(),
+                          expected[page].data(),
+                          expected[page].size(),
+                          ACL_MEMCPY_HOST_TO_DEVICE),
+              ACL_SUCCESS);
+  }
+  for (size_t page = 0; page < kPoolPages; ++page) {
+    const page_id_t page_id =
+        tensor.get_phy_page_id(static_cast<offset_t>(page * page_size_));
+    ASSERT_GE(page_id, 0);
+    void* alias = global_tensor.get_vaddr_by_page_id(page_id);
+    ASSERT_NE(alias, nullptr);
+    EXPECT_EQ(reinterpret_cast<uintptr_t>(alias),
+              reinterpret_cast<uintptr_t>(global_base) +
+                  static_cast<size_t>(page_id) * page_size_);
+    std::vector<uint8_t> observed(expected[page].size());
+    ASSERT_EQ(aclrtMemcpy(observed.data(),
+                          observed.size(),
+                          alias,
+                          observed.size(),
+                          ACL_MEMCPY_DEVICE_TO_HOST),
+              ACL_SUCCESS);
+    EXPECT_EQ(observed, expected[page]);
+  }
+
+  ASSERT_TRUE(tensor.unmap_all());
+  EXPECT_EQ(pool.num_available(), kPoolPages);
 }
 
 TEST_F(VirtualMemoryTest, TensorViewsRespectByteBoundsAndAlignment) {

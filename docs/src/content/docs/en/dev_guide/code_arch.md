@@ -273,28 +273,42 @@ Idle KV pages are unmapped and their backing is released after their last block
 is returned; live pages, the padding block, weights, and transfer leases remain
 pinned. `vmm_elastic=false` retains the fixed, eagerly resident VMM arena.
 
-`max_memory_utilization` and `max_cache_size` remain optional startup capacity
-ceilings, shared by KV and weight pages. In elastic mode, explicitly setting
-`max_memory_utilization=0` disables the ratio ceiling; `max_cache_size=0` leaves
-the byte ceiling unset. Neither setting preallocates the elastic capacity. A
-small nonzero ratio still deliberately limits virtual capacity. Fixed VMM and
-the original physical cache require a positive ratio.
+`max_memory_utilization` and `max_cache_size` are optional growth ceilings,
+shared by KV and weight pages. Elastic mode reserves stable virtual addresses
+up to total device memory, clipped by an explicitly configured positive ratio
+and the byte ceiling. Only the initially available slots are activated at
+startup; allocations activate more slots as demand grows, without relocating
+live pages. Omitting the ratio or setting `max_memory_utilization=0` disables
+the ratio ceiling; `max_cache_size=0` leaves the byte ceiling unset. Every
+physical growth checks live free memory and keeps the ratio reserve, when set,
+as well as execution headroom. Memory released outside the pool can therefore
+enable growth beyond the startup slot count. Fixed VMM and the original
+physical cache retain their positive default ratio and fixed capacity.
 
 Before serving, elastic VMM warms long and wide prefill shapes and configured
 decode concurrency on every DP rank. Graph startup warmup cannot be disabled in
 this mode. The rounded KV footprint of these shapes must fit the configured
 capacity; otherwise startup fails with a capacity diagnostic. Worker execution
-samples track the minimum of driver-free bytes plus committed pool bytes. This
-keeps KV growth out of the execution watermark and avoids charging resident
-allocator caches twice. If those caches release memory, the pool preserves room
-to recover the observed footprint. `vmm_memory_reserve_bytes` adds explicit free
-headroom, including during bootstrap. Samples after a step cannot measure every
-transient SDK buffer or every workload-specific execution shape; configure the
-extra reserve from device measurements for those cases.
+samples and allocation checks use native NPU/CUDA/ILU/MUSA caching-allocator
+residency statistics when available. The pool preserves the difference between
+the highest recorded allocator reservation and its current reservation, plus
+`vmm_memory_reserve_bytes`. Resident caches are already charged against driver
+free memory, while released caches retain room to recover. A later larger
+allocator peak raises this reserve even after memory is released outside the
+pool. Local peak tracking survives external resets of allocator statistics.
+Other allocator backends retain the conservative minimum of driver-free bytes
+plus committed pool bytes; this can also reserve memory released outside the
+pool. These checks cannot predict unobserved execution shapes or SDK buffers
+allocated directly outside the caching allocator. Configure the extra reserve
+from device measurements for those cases; it also applies during bootstrap.
 
 Admission and DP selection use the minimum live capacity of the target workers,
-bounded by the shared reservation ledger. Mapping performs an authoritative
-device-budget check. KV and weight prepare/commit/abort operations compensate
+bounded by the shared reservation ledger. Mapping checks the device budget
+before allocating backing and again before publishing the new pages. A failed
+check releases unpublished handles and leaves existing mappings intact.
+Allocator and driver samples are separate observations; continuous concurrent
+memory changes still require explicit reserve and can cause allocation failure.
+KV and weight prepare/commit/abort operations compensate
 every participant before a failed allocation returns its ledger reservation.
 An unacknowledged rollback is fatal because page ownership is uncertain.
 

@@ -21,6 +21,7 @@ limitations under the License.
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <vector>
 
 #include "core/framework/allocator/virtual_memory/physical_page.h"
@@ -50,6 +51,13 @@ class PhysicalPagePool final {
             size_t num_pages,
             size_t page_size,
             bool lazy = false);
+  // Reserve num_pages stable slots, activating initial_num_pages at startup.
+  // Lazy allocations activate further slots only after backing succeeds.
+  void init(const torch::Device& device,
+            size_t num_pages,
+            size_t initial_num_pages,
+            size_t page_size,
+            bool lazy);
 
   // Release all pages and make the singleton reusable. Returns false when a
   // caller still owns pages from this pool.
@@ -88,11 +96,13 @@ class PhysicalPagePool final {
   // Put multiple physical pages back to the pool in one lock
   void batch_put(std::vector<std::unique_ptr<PhysicalPage>>& pages);
 
-  // Number of unoccupied logical slots, including uncommitted backing
+  // Number of activated unoccupied slots, including uncommitted backing.
   size_t num_available() const;
 
   // Stable logical capacity; growth and reclamation never renumber these slots
   size_t num_total() const { return num_total_pages_; }
+  // Number of logical slots currently activated for allocation.
+  size_t num_active() const;
   size_t num_committed() const;
   // Snapshot of idle backing plus growth allowed by current device memory.
   size_t num_allocatable() const;
@@ -100,9 +110,11 @@ class PhysicalPagePool final {
   // Leave this many currently free device bytes outside new pool allocations.
   // Existing resident pages are not counted again against the free snapshot.
   void set_allocation_headroom(size_t bytes);
+  // Keep this many device bytes free to enforce a configured utilization cap.
+  void set_growth_reserve(size_t bytes);
 
-  // Observe after execution has allocated its workspace. Pool residency is
-  // removed from the sample so later growth does not inflate execution reserve.
+  // Observe execution allocator residency/peaks and driver availability.
+  // Pool growth is excluded from the fallback driver low watermark.
   void observe_execution_memory();
 
   // Release idle backing while retaining keep_pages resident idle pages.
@@ -133,6 +145,10 @@ class PhysicalPagePool final {
   friend class PhysicalPagePoolTestPeer;
 
   bool materialize_pages_locked(const std::vector<page_id_t>& page_ids);
+  void activate_pages_locked(const std::vector<page_id_t>& page_ids);
+  size_t allocation_headroom_locked(
+      size_t free_bytes,
+      std::optional<AllocatorMemoryStats> allocator_stats) const;
   void reserve_pages_locked(const std::vector<page_id_t>& page_ids);
 
   PhysicalPagePool() = default;
@@ -144,9 +160,12 @@ class PhysicalPagePool final {
   bool lazy_ = false;
   torch::Device device_{torch::kCPU};
   size_t num_total_pages_ = 0;
+  size_t num_active_pages_ = 0;
+  size_t num_allocated_pages_ = 0;
   size_t page_size_ = 0;
   size_t num_committed_pages_ = 0;
   size_t allocation_headroom_bytes_ = 0;
+  size_t growth_reserve_bytes_ = 0;
   VmmMemoryBudget execution_memory_budget_;
 
   mutable std::mutex mtx_;
@@ -157,6 +176,9 @@ class PhysicalPagePool final {
   // Stable logical slots. A null pointer denotes uncommitted backing; live
   // page IDs and addresses never move when other slots grow or shrink.
   std::vector<PhysicalPage*> all_page_ptrs_;
+
+  // A reserved arena can have inactive slots that are activated on demand.
+  std::vector<bool> page_active_;
 
   // Free page indices (page_ids of pages available for allocation)
   // Transferred pages are taken from the front of the free deque.
@@ -169,6 +191,7 @@ class PhysicalPagePool final {
   // Only the slow physical-growth path uses these boundaries. Tests can inject
   // deterministic memory snapshots and partial allocation failures.
   std::function<int64_t()> free_memory_query_;
+  std::function<std::optional<AllocatorMemoryStats>()> allocator_memory_query_;
   std::function<std::unique_ptr<PhysicalPage>(page_id_t)> page_factory_;
 };
 

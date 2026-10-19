@@ -40,6 +40,10 @@ class KVCacheConfig final {
   void initialize();
   void validate() const;
 
+  [[nodiscard]] bool max_memory_utilization_configured() const {
+    return max_memory_utilization_configured_;
+  }
+
   [[nodiscard]] static const OptionCategory& option_category() {
     static const OptionCategory kOptionCategory = {
         "KV CACHE OPTIONS",
@@ -64,7 +68,15 @@ class KVCacheConfig final {
 
   PROPERTY(int64_t, max_cache_size) = 0;
 
-  PROPERTY(double, max_memory_utilization) = 0.8;
+  [[nodiscard]] double max_memory_utilization() const noexcept {
+    return max_memory_utilization_;
+  }
+  KVCacheConfig& max_memory_utilization(double value) & {
+    max_memory_utilization_ = value;
+    max_memory_utilization_configured_ = true;
+    return *this;
+  }
+  void max_memory_utilization(double value) && = delete;
 
   PROPERTY(std::string, kv_cache_dtype) = "auto";
 
@@ -87,6 +99,10 @@ class KVCacheConfig final {
   PROPERTY(int64_t, vmm_memory_reserve_bytes) = 0;
 
   PROPERTY(int64_t, phy_page_granularity_size) = 2 * 1024 * 1024;
+
+ private:
+  double max_memory_utilization_ = 0.8;
+  bool max_memory_utilization_configured_ = false;
 };
 
 }  // namespace xllm

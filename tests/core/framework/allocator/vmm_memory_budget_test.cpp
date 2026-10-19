@@ -98,5 +98,69 @@ TEST(VmmMemoryBudgetTest, ResetDropsPreviousDeviceWatermark) {
             50);
 }
 
+TEST(VmmMemoryBudgetTest,
+     PreserveLargerAllocatorPeakAfterOutsideMemoryRelease) {
+  VmmMemoryBudget budget;
+  budget.observe(600, 0, AllocatorMemoryStats{200, 200});
+  EXPECT_EQ(budget.headroom(800, 0, 50, AllocatorMemoryStats{0, 200}), 250);
+  // A later execution can need more workspace than the first execution.
+  budget.observe(800, 0, AllocatorMemoryStats{400, 400});
+  EXPECT_EQ(budget.headroom(1200, 0, 50, AllocatorMemoryStats{0, 400}), 450);
+}
+
+TEST(VmmMemoryBudgetTest, TrackAllocatorCacheAccumulationAcrossExecutions) {
+  VmmMemoryBudget budget;
+  budget.observe(800, 0, AllocatorMemoryStats{200, 200});
+  budget.observe(600, 0, AllocatorMemoryStats{400, 400});
+  EXPECT_EQ(budget.headroom(700, 0, 50, AllocatorMemoryStats{300, 400}), 150);
+  EXPECT_EQ(budget.headroom(1000, 0, 50, AllocatorMemoryStats{0, 400}), 450);
+}
+
+TEST(VmmMemoryBudgetTest, DoNotChargeResidentAllocatorCachesTwice) {
+  VmmMemoryBudget budget;
+  budget.observe(600, 0, AllocatorMemoryStats{400, 400});
+  EXPECT_EQ(budget.headroom(600, 0, 50, AllocatorMemoryStats{400, 400}), 50);
+  EXPECT_EQ(budget.headroom(800, 0, 50, AllocatorMemoryStats{200, 400}), 250);
+}
+
+TEST(VmmMemoryBudgetTest, BackendPeakResetDoesNotLowerRetainedPeak) {
+  VmmMemoryBudget budget;
+  budget.observe(600, 0, AllocatorMemoryStats{400, 400});
+  budget.observe(900, 0, AllocatorMemoryStats{100, 100});
+  EXPECT_EQ(budget.headroom(1000, 0, 50, AllocatorMemoryStats{0, 0}), 450);
+  // Peak observations on the admission path also survive backend resets.
+  EXPECT_EQ(budget.headroom(500, 0, 50, AllocatorMemoryStats{500, 500}), 50);
+  EXPECT_EQ(budget.headroom(1000, 0, 50, AllocatorMemoryStats{0, 0}), 550);
+}
+
+TEST(VmmMemoryBudgetTest, CurrentAllocatorResidencyIsALowerBoundOnPeak) {
+  VmmMemoryBudget budget;
+  EXPECT_EQ(budget.headroom(600, 0, 50, AllocatorMemoryStats{400, 100}), 50);
+  EXPECT_EQ(budget.headroom(1000, 0, 50, AllocatorMemoryStats{0, 0}), 450);
+}
+
+TEST(VmmMemoryBudgetTest, OutsideMemoryReleaseDoesNotInflateAllocatorReserve) {
+  VmmMemoryBudget budget;
+  budget.observe(600, 200, AllocatorMemoryStats{200, 200});
+  EXPECT_EQ(budget.headroom(800, 200, 50, AllocatorMemoryStats{0, 200}), 250);
+  EXPECT_EQ(budget.headroom(1600, 200, 50, AllocatorMemoryStats{0, 200}), 250);
+  // Missing statistics preserve the lifetime driver-watermark fallback.
+  EXPECT_EQ(budget.headroom(1600, 200, 50), 1050);
+}
+
+TEST(VmmMemoryBudgetTest, SaturateAllocatorReserveWithoutUnsignedOverflow) {
+  VmmMemoryBudget budget;
+  const size_t maximum = std::numeric_limits<size_t>::max();
+  EXPECT_EQ(budget.headroom(0, 0, 1, AllocatorMemoryStats{0, maximum}),
+            maximum);
+}
+
+TEST(VmmMemoryBudgetTest, ResetDropsRetainedAllocatorPeak) {
+  VmmMemoryBudget budget;
+  budget.observe(600, 0, AllocatorMemoryStats{400, 400});
+  budget.reset();
+  EXPECT_EQ(budget.headroom(1000, 0, 50, AllocatorMemoryStats{0, 0}), 50);
+}
+
 }  // namespace
 }  // namespace xllm

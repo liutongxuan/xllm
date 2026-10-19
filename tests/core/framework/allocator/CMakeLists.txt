@@ -5,6 +5,16 @@ include(cc_test)
 
 cc_test(
   NAME
+    vmm_arena_capacity_test
+  NO_NPU_RUNTIME
+  SRCS
+    vmm_arena_capacity_test.cpp
+  DEPS
+    GTest::gtest_main
+)
+
+cc_test(
+  NAME
     vmm_memory_budget_test
   NO_NPU_RUNTIME
   SRCS

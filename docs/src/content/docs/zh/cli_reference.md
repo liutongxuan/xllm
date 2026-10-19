@@ -67,7 +67,7 @@ xLLM 使用 gflags 管理服务启动参数。`--model <PATH>` 是唯一必填�
 |:---------|:-----|:-------|:---------|
 | `block_size` | `int32` | `128` | 每个 KV Cache block 的 slot 数。 |
 | `max_cache_size` | `int64` | `0` | KV Cache 的容量上限，单位 byte；虚拟内存模式下限制 KV 与权重共享池的容量。`0` 表示不设显式字节上限，根据可用显存推导容量。 |
-| `max_memory_utilization` | `double` | `0.8` | 模型推理可使用的设备显存比例，包括模型权重和 KV Cache。取值须在 `(0, 1]` 内；弹性虚拟内存还允许设为 `0`，取消该容量上限。 |
+| `max_memory_utilization` | `double` | `0.8` | 模型推理可使用的设备显存比例，包括模型权重和 KV Cache。原有物理 KV Cache 和固定 VMM 要求取值在 `(0, 1]` 内。弹性 VMM 仅在显式配置时应用该上限；不配置或设为 `0` 时按实时可用显存扩张。 |
 | `kv_cache_dtype` | `string` | `"auto"` | KV Cache 量化数据类型；`auto` 表示与模型 dtype 对齐且不量化，`int8` 表示启用 INT8 量化，仅 MLU 后端支持。 |
 | `indexer_cache_dtype` | `string` | `"auto"` | 带 indexer cache 的模型所使用的 indexer cache 数据类型。支持 `auto` 和 `int8`；`auto` 表示与模型 dtype 对齐且不量化，`int8` 表示启用 INT8 indexer cache 量化。 |
 | `enable_prefix_cache` | `bool` | `true` | 是否在 block manager 中启用 prefix cache；详见 [Prefix Cache](/zh/features/prefix_cache/)。 |
@@ -76,15 +76,15 @@ xLLM 使用 gflags 管理服务启动参数。`--model <PATH>` 是唯一必填�
 | `max_linear_state_cache_slots` | `int64` | `0` | linear-attention state cache 的最大活跃槽位数；`0` 表示根据可用 KV Cache 预算自动推导容量。 |
 | `xxh3_128bits_seed` | `uint32` | `1024` | XXH3 128-bit 哈希的默认 seed。 |
 | `enable_virtual_memory` | `bool` | `false` | 是否为模型权重和 KV Cache 启用共享虚拟内存池；`false` 使用原有物理 KV Cache 实现。 |
-| `vmm_elastic` | `bool` | `true` | 启用虚拟内存后，按需分配物理页并释放空闲页的物理内存；`false` 在启动时整体分配固定池。 |
+| `vmm_elastic` | `bool` | `true` | 启用虚拟内存后，按需扩张活动逻辑槽位及物理页，并释放空闲页的物理内存；`false` 在启动时整体分配固定池。 |
 | `vmm_memory_reserve_bytes` | `int64` | `0` | 弹性虚拟内存增长时额外保留的设备空闲显存，单位 byte，须非负；在运行时执行预留空间之外叠加生效。 |
 | `phy_page_granularity_size` | `int64` | `2097152` | 单个物理页的粒度大小，单位 byte，默认 2 MiB；用于连续 KV Cache。 |
 
 ### 虚拟 KV Cache
 
-同时设置 `enable_virtual_memory=true` 和 `vmm_elastic=true` 时，物理内存随页映射按需增长，KV 页的最后一个 block 归还后释放该页的物理内存。KV 与权重共享池的地址容量仍在启动时根据可用显存及 `max_memory_utilization` / `max_cache_size` 上限确定。弹性模式不会预分配全部容量，但较小的非零比例仍会限制容量。物理页增长及请求准入使用 worker 当前的显存预算，并保留执行所需的空间。
+同时设置 `enable_virtual_memory=true` 和 `vmm_elastic=true` 时，物理内存随页映射按需增长，KV 页的最后一个 block 归还后释放该页的物理内存。KV 与权重共享池在启动时预留稳定虚拟地址，需求超过初始容量时自动激活更多逻辑槽位。显式配置正数 `max_memory_utilization` 时，arena 不超过设备总显存的该比例，物理增长也会在每个 worker 上保留剩余比例的空闲显存。不配置 ratio 或设为 `0` 时，arena 可覆盖设备总显存；`max_cache_size` 仍是可选的字节上限。实际增长和请求准入始终受实时可用显存及执行余量约束，原生 allocator 统计可区分执行缓存回收与池外显存释放，后者可提供新增 KV 容量，无需重启。不支持可靠 allocator 统计的后端保留保守执行水位。未被预热覆盖的执行形状和直接分配的 SDK buffer 需通过 `vmm_memory_reserve_bytes` 预留空间。
 
-可在原有启动命令中加入以下参数，取消两个显式容量上限，并为执行额外预留 1 GiB 空闲显存：
+可在原有启动命令中加入以下参数，取消两个显式容量上限，并为执行额外预留 1 GiB 空闲显存。弹性模式下，不配置 `max_memory_utilization` 与设为 `0` 效果相同：
 
 ```bash
 --enable_virtual_memory=true \

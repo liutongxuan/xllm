@@ -102,6 +102,8 @@ class TransactionTestService final : public proto::ModelMemoryDist {
     brpc::ClosureGuard done_guard(done);
     std::lock_guard<std::mutex> lock(mutex_);
     initialized_pages_ = request->num_pages();
+    initial_pages_ = request->initial_pages();
+    growth_memory_reserve_bytes_ = request->growth_memory_reserve_bytes();
     lazy_ = request->lazy();
     response->set_ok(true);
   }
@@ -184,6 +186,14 @@ class TransactionTestService final : public proto::ModelMemoryDist {
     std::lock_guard<std::mutex> lock(mutex_);
     return initialized_pages_;
   }
+  int64_t initial_pages() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return initial_pages_;
+  }
+  uint64_t growth_memory_reserve_bytes() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return growth_memory_reserve_bytes_;
+  }
   bool lazy() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return lazy_;
@@ -203,6 +213,8 @@ class TransactionTestService final : public proto::ModelMemoryDist {
   bool weights_ = false;
   int32_t abort_calls_ = 0;
   int64_t initialized_pages_ = 0;
+  int64_t initial_pages_ = 0;
+  uint64_t growth_memory_reserve_bytes_ = 0;
   bool lazy_ = false;
   int32_t memory_info_calls_ = 0;
 };
@@ -268,12 +280,17 @@ TEST_F(ElasticPoolInitializationTest,
   DistributedVirtualMemoryCoordinatorTestPeer::connect(
       *coordinator, {first.address(), second.address()});
 
-  EXPECT_EQ(coordinator->init_physical_page_pools(0.8, 0), 4);
-  EXPECT_EQ(first.service().initialized_pages(), 4);
-  EXPECT_EQ(second.service().initialized_pages(), 4);
+  EXPECT_EQ(coordinator->init_physical_page_pools(0.8, 0), 32);
+  EXPECT_EQ(first.service().initialized_pages(), 32);
+  EXPECT_EQ(second.service().initialized_pages(), 32);
+  EXPECT_EQ(first.service().initial_pages(), 4);
+  EXPECT_EQ(second.service().initial_pages(), 4);
+  EXPECT_EQ(first.service().growth_memory_reserve_bytes(), 16 * page_size);
+  EXPECT_EQ(second.service().growth_memory_reserve_bytes(), 8 * page_size);
 }
 
-TEST_F(ElasticPoolInitializationTest, ZeroRatioPreservesLazyAddressCapacity) {
+TEST_F(ElasticPoolInitializationTest,
+       ZeroRatioAllowsFullDeviceAddressCapacity) {
   const int64_t page_size =
       KVCacheConfig::get_instance().phy_page_granularity_size();
   TransactionTestServer first(
@@ -286,11 +303,123 @@ TEST_F(ElasticPoolInitializationTest, ZeroRatioPreservesLazyAddressCapacity) {
   DistributedVirtualMemoryCoordinatorTestPeer::connect(
       *coordinator, {first.address(), second.address()});
 
-  EXPECT_EQ(coordinator->init_physical_page_pools(0.0, 0), 20);
-  EXPECT_EQ(first.service().initialized_pages(), 20);
-  EXPECT_EQ(second.service().initialized_pages(), 20);
+  EXPECT_EQ(coordinator->init_physical_page_pools(0.0, 0), 40);
+  EXPECT_EQ(first.service().initialized_pages(), 40);
+  EXPECT_EQ(second.service().initialized_pages(), 40);
+  EXPECT_EQ(first.service().initial_pages(), 20);
+  EXPECT_EQ(second.service().initial_pages(), 20);
+  EXPECT_EQ(first.service().growth_memory_reserve_bytes(), 0);
+  EXPECT_EQ(second.service().growth_memory_reserve_bytes(), 0);
   EXPECT_TRUE(first.service().lazy());
   EXPECT_TRUE(second.service().lazy());
+}
+
+TEST_F(ElasticPoolInitializationTest,
+       UnconfiguredRatioAllowsFullDeviceAddressCapacity) {
+  const int64_t page_size =
+      KVCacheConfig::get_instance().phy_page_granularity_size();
+  TransactionTestServer first(
+      MappingFailure::NONE, 10, 20 * page_size, 80 * page_size);
+  TransactionTestServer second(
+      MappingFailure::NONE, 10, 36 * page_size, 40 * page_size);
+  ASSERT_EQ(first.start(), 0);
+  ASSERT_EQ(second.start(), 0);
+  auto coordinator = DistributedVirtualMemoryCoordinatorTestPeer::create();
+  DistributedVirtualMemoryCoordinatorTestPeer::connect(
+      *coordinator, {first.address(), second.address()});
+
+  EXPECT_EQ(coordinator->init_physical_page_pools(0.8, 0, false), 40);
+  EXPECT_EQ(first.service().initialized_pages(), 40);
+  EXPECT_EQ(second.service().initialized_pages(), 40);
+  EXPECT_EQ(first.service().initial_pages(), 20);
+  EXPECT_EQ(second.service().initial_pages(), 20);
+  EXPECT_EQ(first.service().growth_memory_reserve_bytes(), 0);
+  EXPECT_EQ(second.service().growth_memory_reserve_bytes(), 0);
+}
+
+TEST_F(ElasticPoolInitializationTest, MaxCacheSizeCapsElasticAddressCapacity) {
+  const int64_t page_size =
+      KVCacheConfig::get_instance().phy_page_granularity_size();
+  TransactionTestServer first(
+      MappingFailure::NONE, 10, 20 * page_size, 80 * page_size);
+  TransactionTestServer second(
+      MappingFailure::NONE, 36 * page_size, 36 * page_size, 40 * page_size);
+  ASSERT_EQ(first.start(), 0);
+  ASSERT_EQ(second.start(), 0);
+  auto coordinator = DistributedVirtualMemoryCoordinatorTestPeer::create();
+  DistributedVirtualMemoryCoordinatorTestPeer::connect(
+      *coordinator, {first.address(), second.address()});
+
+  EXPECT_EQ(coordinator->init_physical_page_pools(0.8, 12 * page_size), 12);
+  EXPECT_EQ(first.service().initialized_pages(), 12);
+  EXPECT_EQ(second.service().initialized_pages(), 12);
+  EXPECT_EQ(first.service().initial_pages(), 4);
+  EXPECT_EQ(second.service().initial_pages(), 4);
+}
+
+TEST_F(ElasticPoolInitializationTest,
+       ExhaustedRatioReserveKeepsArenaForGrowth) {
+  const int64_t page_size =
+      KVCacheConfig::get_instance().phy_page_granularity_size();
+  TransactionTestServer first(
+      MappingFailure::NONE, 0, 8 * page_size, 80 * page_size);
+  TransactionTestServer second(
+      MappingFailure::NONE, 0, 36 * page_size, 40 * page_size);
+  ASSERT_EQ(first.start(), 0);
+  ASSERT_EQ(second.start(), 0);
+  auto coordinator = DistributedVirtualMemoryCoordinatorTestPeer::create();
+  DistributedVirtualMemoryCoordinatorTestPeer::connect(
+      *coordinator, {first.address(), second.address()});
+
+  EXPECT_EQ(coordinator->init_physical_page_pools(0.8, 0), 32);
+  EXPECT_EQ(first.service().initial_pages(), 0);
+  EXPECT_EQ(second.service().initial_pages(), 0);
+  EXPECT_EQ(first.service().growth_memory_reserve_bytes(), 16 * page_size);
+  EXPECT_EQ(second.service().growth_memory_reserve_bytes(), 8 * page_size);
+}
+
+TEST_F(ElasticPoolInitializationTest,
+       FullRatioSeparatesInitialAndMaximumSlots) {
+  const int64_t page_size =
+      KVCacheConfig::get_instance().phy_page_granularity_size();
+  TransactionTestServer first(
+      MappingFailure::NONE, 3, 3 * page_size, 80 * page_size);
+  TransactionTestServer second(
+      MappingFailure::NONE, 10, 36 * page_size, 40 * page_size);
+  ASSERT_EQ(first.start(), 0);
+  ASSERT_EQ(second.start(), 0);
+  auto coordinator = DistributedVirtualMemoryCoordinatorTestPeer::create();
+  DistributedVirtualMemoryCoordinatorTestPeer::connect(
+      *coordinator, {first.address(), second.address()});
+
+  EXPECT_EQ(coordinator->init_physical_page_pools(1.0, 0), 40);
+  EXPECT_EQ(first.service().initialized_pages(), 40);
+  EXPECT_EQ(second.service().initialized_pages(), 40);
+  EXPECT_EQ(first.service().initial_pages(), 3);
+  EXPECT_EQ(second.service().initial_pages(), 3);
+  EXPECT_EQ(first.service().growth_memory_reserve_bytes(), 0);
+  EXPECT_EQ(second.service().growth_memory_reserve_bytes(), 0);
+}
+
+TEST_F(ElasticPoolInitializationTest,
+       FixedPoolRetainsStartupAvailableMemoryLimit) {
+  auto& config = KVCacheConfig::get_instance();
+  config.vmm_elastic(false);
+
+  const int64_t page_size = config.phy_page_granularity_size();
+  TransactionTestServer first(
+      MappingFailure::NONE, 10, 20 * page_size, 80 * page_size);
+  TransactionTestServer second(
+      MappingFailure::NONE, 10, 36 * page_size, 40 * page_size);
+  ASSERT_EQ(first.start(), 0);
+  ASSERT_EQ(second.start(), 0);
+  auto coordinator = DistributedVirtualMemoryCoordinatorTestPeer::create();
+  DistributedVirtualMemoryCoordinatorTestPeer::connect(
+      *coordinator, {first.address(), second.address()});
+
+  EXPECT_EQ(coordinator->init_physical_page_pools(0.8, 0), 4);
+  EXPECT_FALSE(first.service().lazy());
+  EXPECT_FALSE(second.service().lazy());
 }
 
 TEST(DistributedVirtualMemoryCoordinatorTest,

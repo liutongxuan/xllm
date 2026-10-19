@@ -20,7 +20,9 @@ limitations under the License.
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 
+#include "core/platform/allocator_memory_stats.h"
 #include "stream.h"
 
 namespace xllm {
@@ -43,6 +45,8 @@ class Device {
 
   int64_t total_memory();
   int64_t free_memory();
+  // Unsupported allocator backends have no reliable residency statistics.
+  std::optional<AllocatorMemoryStats> allocator_memory_stats() const;
   static void empty_cache(int32_t device_index);
 
   int synchronize_default_stream();

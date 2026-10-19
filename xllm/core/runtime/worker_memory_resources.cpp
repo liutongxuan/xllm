@@ -46,6 +46,7 @@ void WorkerMemoryResources::destroy() {
   weight_transaction_.reset();
   retired_weight_transaction_id_ = 0;
   execution_memory_reserve_bytes_ = 0;
+  growth_memory_reserve_bytes_ = 0;
   weight_memory_.clear();
   kv_cache_memory_.clear();
   GlobalVirtualMemoryRegion::get_instance().reset();
@@ -72,13 +73,30 @@ void WorkerMemoryResources::init(const torch::Device& device) {
 
 void WorkerMemoryResources::init_physical_page_pool(int64_t num_pages,
                                                     bool lazy) {
+  init_physical_page_pool(
+      num_pages, num_pages, lazy, /*growth_memory_reserve_bytes=*/0);
+}
+
+void WorkerMemoryResources::init_physical_page_pool(
+    int64_t max_pages,
+    int64_t initial_pages,
+    bool lazy,
+    size_t growth_memory_reserve_bytes) {
   std::lock_guard<std::mutex> lock(mutex_);
   CHECK(initialized_) << "Worker memory resources must be initialized first";
   const size_t page_size = static_cast<size_t>(
       KVCacheConfig::get_instance().phy_page_granularity_size());
-  CHECK_GT(num_pages, 0);
-  PhysicalPagePool::get_instance().init(
-      device_, static_cast<size_t>(num_pages), page_size, lazy);
+  CHECK_GT(max_pages, 0);
+  CHECK_GE(initial_pages, 0);
+  CHECK_LE(initial_pages, max_pages);
+  PhysicalPagePool::get_instance().init(device_,
+                                        static_cast<size_t>(max_pages),
+                                        static_cast<size_t>(initial_pages),
+                                        page_size,
+                                        lazy);
+  growth_memory_reserve_bytes_ = growth_memory_reserve_bytes;
+  PhysicalPagePool::get_instance().set_growth_reserve(
+      growth_memory_reserve_bytes_);
   const int64_t configured_reserve =
       KVCacheConfig::get_instance().vmm_memory_reserve_bytes();
   CHECK_GE(configured_reserve, 0);
@@ -99,12 +117,14 @@ WorkerMemoryCapacity WorkerMemoryResources::memory_capacity_snapshot() const {
   snapshot.available_memory = device.free_memory();
   snapshot.total_memory = device.total_memory();
   snapshot.execution_memory_reserve_bytes = execution_memory_reserve_bytes_;
+  snapshot.growth_memory_reserve_bytes = growth_memory_reserve_bytes_;
   const auto& pool = PhysicalPagePool::get_instance();
   snapshot.pool_initialized = pool.is_initialized();
   if (snapshot.pool_initialized) {
     snapshot.pool_capacity_pages = pool.num_total();
     snapshot.pool_committed_pages = pool.num_committed();
     snapshot.pool_allocatable_pages = pool.num_allocatable();
+    snapshot.pool_active_pages = pool.num_active();
   }
   return snapshot;
 }

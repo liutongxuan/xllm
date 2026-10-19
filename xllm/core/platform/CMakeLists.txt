@@ -11,6 +11,7 @@ cc_library(
     stream.h
     model_stream_registry.h
     device.h
+    allocator_memory_stats.h
     platform.h
     device_name_utils.h
     vmm_api.h

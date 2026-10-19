@@ -34,8 +34,8 @@ DEFINE_int64(max_cache_size,
 DEFINE_double(max_memory_utilization,
               0.8,
               "The fraction of GPU memory to be used for model inference, "
-              "including model weights and kv cache. Elastic VMM accepts 0 "
-              "to disable this optional utilization ceiling.");
+              "including model weights and kv cache. Elastic VMM applies "
+              "this ceiling only when explicitly configured; 0 disables it.");
 
 DEFINE_bool(vmm_elastic,
             true,
@@ -109,9 +109,14 @@ void KVCacheConfig::from_flags() {
   XLLM_CONFIG_ASSIGN_FROM_FLAG(vmm_elastic);
   XLLM_CONFIG_ASSIGN_FROM_FLAG(vmm_memory_reserve_bytes);
   XLLM_CONFIG_ASSIGN_FROM_FLAG(phy_page_granularity_size);
+  max_memory_utilization_configured_ =
+      config::is_flag_specified("max_memory_utilization");
 }
 
 void KVCacheConfig::from_json(const JsonReader& json) {
+  const bool ratio_configured = max_memory_utilization_configured_;
+  const bool ratio_from_flags =
+      config::is_flag_specified("max_memory_utilization");
   XLLM_CONFIG_ASSIGN_FROM_JSON(block_size);
   XLLM_CONFIG_ASSIGN_FROM_JSON(max_cache_size);
   XLLM_CONFIG_ASSIGN_FROM_JSON(max_memory_utilization);
@@ -126,6 +131,8 @@ void KVCacheConfig::from_json(const JsonReader& json) {
   XLLM_CONFIG_ASSIGN_FROM_JSON(vmm_elastic);
   XLLM_CONFIG_ASSIGN_FROM_JSON(vmm_memory_reserve_bytes);
   XLLM_CONFIG_ASSIGN_FROM_JSON(phy_page_granularity_size);
+  max_memory_utilization_configured_ = ratio_configured || ratio_from_flags ||
+                                       json.contains("max_memory_utilization");
 }
 
 void KVCacheConfig::append_config_json(
@@ -135,8 +142,12 @@ void KVCacheConfig::append_config_json(
       config_json, default_config, block_size);
   APPEND_CONFIG_JSON_VALUE_IF_NOT_DEFAULT(
       config_json, default_config, max_cache_size);
-  APPEND_CONFIG_JSON_VALUE_IF_NOT_DEFAULT(
-      config_json, default_config, max_memory_utilization);
+  if (max_memory_utilization_configured_) {
+    config_json["max_memory_utilization"] = max_memory_utilization();
+  } else {
+    APPEND_CONFIG_JSON_VALUE_IF_NOT_DEFAULT(
+        config_json, default_config, max_memory_utilization);
+  }
   APPEND_CONFIG_JSON_VALUE_IF_NOT_DEFAULT(
       config_json, default_config, kv_cache_dtype);
   APPEND_CONFIG_JSON_VALUE_IF_NOT_DEFAULT(

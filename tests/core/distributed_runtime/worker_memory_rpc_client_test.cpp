@@ -89,13 +89,19 @@ class OffsetTestService final : public proto::ModelMemoryDist {
     response->set_total_memory(8192);
     response->set_pool_initialized(true);
     response->set_pool_allocatable_pages(6);
+    response->set_pool_capacity_pages(32);
+    response->set_pool_active_pages(4);
+    response->set_growth_memory_reserve_bytes(1024);
   }
 
-  void InitPhysicalPagePool(
-      google::protobuf::RpcController* /*controller*/,
-      const proto::InitPhysicalPagePoolRequest* /*request*/,
-      proto::Status* response,
-      google::protobuf::Closure* done) override {
+  void InitPhysicalPagePool(google::protobuf::RpcController* /*controller*/,
+                            const proto::InitPhysicalPagePoolRequest* request,
+                            proto::Status* response,
+                            google::protobuf::Closure* done) override {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      initialization_request_ = *request;
+    }
     complete_mutation(
         MemoryOperation::INIT_POOL, /*transaction_id=*/0, response, done);
   }
@@ -208,6 +214,11 @@ class OffsetTestService final : public proto::ModelMemoryDist {
     return request_;
   }
 
+  proto::InitPhysicalPagePoolRequest initialization_request() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return initialization_request_;
+  }
+
   int32_t hello_calls() {
     std::lock_guard<std::mutex> lock(mutex_);
     return hello_calls_;
@@ -261,6 +272,7 @@ class OffsetTestService final : public proto::ModelMemoryDist {
   const ResponseMode mode_;
   std::mutex mutex_;
   proto::GetVirtualKVCacheOffsetsRequest request_;
+  proto::InitPhysicalPagePoolRequest initialization_request_;
   int32_t hello_calls_ = 0;
   int32_t memory_info_calls_ = 0;
   bool withhold_mutations_;
@@ -478,8 +490,53 @@ TEST_F(WorkerMemoryRpcTimeoutTest, CapacityProbeBypassesBlockedMutationQueue) {
   EXPECT_EQ(info.total_memory, 8192);
   EXPECT_TRUE(info.pool_initialized);
   EXPECT_EQ(info.pool_allocatable_pages, 6u);
+  EXPECT_EQ(info.pool_capacity_pages, 32u);
+  EXPECT_EQ(info.pool_active_pages, 4u);
+  EXPECT_EQ(info.growth_memory_reserve_bytes, 1024u);
   ASSERT_TRUE(wait_until([&] { return initialization.isReady(); }));
   EXPECT_TRUE(std::move(initialization).get());
+}
+
+TEST(WorkerMemoryRpcClientTest,
+     PreservesArenaAndGrowthLimitsDuringInitialization) {
+  OffsetTestServer server;
+  ASSERT_EQ(server.start(), 0);
+  WorkerMemoryRpcClient client(
+      /*global_rank=*/1, server.address(), torch::Device(torch::kCPU));
+
+  EXPECT_TRUE(client
+                  .init_physical_page_pool_async(
+                      /*max_pages=*/32,
+                      /*initial_pages=*/4,
+                      /*lazy=*/true,
+                      /*growth_memory_reserve_bytes=*/4096)
+                  .get());
+  const auto request = server.service().initialization_request();
+  EXPECT_EQ(request.num_pages(), 32);
+  ASSERT_TRUE(request.has_initial_pages());
+  EXPECT_EQ(request.initial_pages(), 4);
+  EXPECT_TRUE(request.lazy());
+  EXPECT_EQ(request.growth_memory_reserve_bytes(), 4096u);
+}
+
+TEST(WorkerMemoryRpcClientTest,
+     PreservesEmptyInitialArenaDuringInitialization) {
+  OffsetTestServer server;
+  ASSERT_EQ(server.start(), 0);
+  WorkerMemoryRpcClient client(
+      /*global_rank=*/1, server.address(), torch::Device(torch::kCPU));
+
+  EXPECT_TRUE(client
+                  .init_physical_page_pool_async(
+                      /*max_pages=*/32,
+                      /*initial_pages=*/0,
+                      /*lazy=*/true,
+                      /*growth_memory_reserve_bytes=*/0)
+                  .get());
+  const auto request = server.service().initialization_request();
+  ASSERT_TRUE(request.has_initial_pages());
+  EXPECT_EQ(request.initial_pages(), 0);
+  EXPECT_EQ(request.growth_memory_reserve_bytes(), 0u);
 }
 
 TEST_F(WorkerMemoryRpcTimeoutTest,

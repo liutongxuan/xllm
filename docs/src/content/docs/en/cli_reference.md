@@ -67,7 +67,7 @@ xLLM uses gflags to manage service startup parameters. `--model <PATH>` is the o
 |:----------|:-----|:--------|:------------|
 | `block_size` | `int32` | `128` | Number of slots per KV Cache block. |
 | `max_cache_size` | `int64` | `0` | Maximum KV Cache size in bytes. With virtual memory, caps the shared KV/weight pool. `0` leaves the explicit byte ceiling unset and derives capacity from available memory. |
-| `max_memory_utilization` | `double` | `0.8` | Fraction of device memory used for model inference, including model weights and KV Cache. Must be in `(0, 1]`; elastic virtual memory additionally accepts `0` to disable this capacity ceiling. |
+| `max_memory_utilization` | `double` | `0.8` | Fraction of device memory used for model inference, including model weights and KV Cache. Must be in `(0, 1]` for physical KV Cache and fixed VMM. Elastic VMM uses this ceiling only when explicitly configured; omitting it or setting `0` allows growth according to live available memory. |
 | `kv_cache_dtype` | `string` | `"auto"` | KV Cache dtype for quantization. `auto` aligns with model dtype and disables quantization. `int8` enables INT8 quantization and is only supported on the MLU backend. |
 | `indexer_cache_dtype` | `string` | `"auto"` | Indexer cache dtype for models with an indexer cache. Supported values are `auto` and `int8`. `auto` aligns with model dtype and disables indexer cache quantization. `int8` enables INT8 indexer cache quantization. |
 | `enable_prefix_cache` | `bool` | `true` | Whether to enable prefix cache in the block manager. See [Prefix Cache](/en/features/prefix_cache/). |
@@ -76,15 +76,15 @@ xLLM uses gflags to manage service startup parameters. `--model <PATH>` is the o
 | `max_linear_state_cache_slots` | `int64` | `0` | Maximum number of active linear-attention state cache slots. `0` derives an automatic capacity from the available KV Cache budget. |
 | `xxh3_128bits_seed` | `uint32` | `1024` | Default XXH3 128-bit hash seed. |
 | `enable_virtual_memory` | `bool` | `false` | Enable a shared virtual memory pool for model weights and KV Cache. `false` uses the original physical KV Cache implementation. |
-| `vmm_elastic` | `bool` | `true` | When virtual memory is enabled, allocate physical pages on demand and release idle backing. `false` allocates the fixed pool at startup. |
+| `vmm_elastic` | `bool` | `true` | When virtual memory is enabled, grow active logical slots and physical backing on demand, and release idle backing. `false` allocates the fixed pool at startup. |
 | `vmm_memory_reserve_bytes` | `int64` | `0` | Additional device memory to keep free when elastic virtual memory grows, in bytes. Supplements runtime execution headroom; must be nonnegative. |
 | `phy_page_granularity_size` | `int64` | `2097152` | Granularity size of one physical page in bytes, default 2 MiB, for continuous KV Cache. |
 
 ### Virtual KV Cache
 
-With `enable_virtual_memory=true` and `vmm_elastic=true`, physical backing grows as pages are mapped. Idle KV backing is released after the last block on a page is returned. The shared KV/weight pool's address capacity is established at startup from available device memory and the `max_memory_utilization` / `max_cache_size` ceilings. Elastic mode does not preallocate all of that capacity; a small nonzero utilization ratio still limits it. Growth and request admission use current worker memory budgets while preserving execution headroom.
+With `enable_virtual_memory=true` and `vmm_elastic=true`, physical backing grows as pages are mapped. Idle KV backing is released after the last block on a page is returned. The shared KV/weight pool reserves a stable virtual address arena at startup, then activates logical slots automatically as demand exceeds the initial capacity. With an explicitly configured positive `max_memory_utilization`, the arena is bounded by that fraction of total device memory, and physical growth also keeps the remaining fraction free on each worker. Omitting the ratio or setting it to `0` lets the arena cover total device memory. `max_cache_size` remains an optional byte limit. Actual growth and request admission always use live available memory and preserve execution headroom, so native allocator statistics allow memory released outside the pool to provide additional KV capacity without restarting. Backends without reliable allocator statistics retain conservative execution watermarks. Use `vmm_memory_reserve_bytes` for direct SDK buffers and execution shapes not covered by warmup.
 
-Append the following flags to an existing launch command to disable both explicit capacity ceilings and keep an additional 1 GiB free for execution:
+Append the following flags to an existing launch command to disable both explicit capacity ceilings and keep an additional 1 GiB free for execution. In elastic mode, omitting `max_memory_utilization` has the same effect as setting it to `0`:
 
 ```bash
 --enable_virtual_memory=true \

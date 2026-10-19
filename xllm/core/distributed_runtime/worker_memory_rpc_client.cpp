@@ -110,7 +110,9 @@ folly::SemiFuture<MemoryInfo> WorkerMemoryRpcClient::get_memory_info_async(
             static_cast<size_t>(resp.pool_capacity_pages()),
             static_cast<size_t>(resp.pool_committed_pages()),
             static_cast<size_t>(resp.pool_allocatable_pages()),
-            static_cast<size_t>(resp.execution_memory_reserve_bytes())});
+            static_cast<size_t>(resp.execution_memory_reserve_bytes()),
+            static_cast<size_t>(resp.pool_active_pages()),
+            static_cast<size_t>(resp.growth_memory_reserve_bytes())});
       });
   return future;
 }
@@ -118,23 +120,38 @@ folly::SemiFuture<MemoryInfo> WorkerMemoryRpcClient::get_memory_info_async(
 folly::SemiFuture<bool> WorkerMemoryRpcClient::init_physical_page_pool_async(
     int64_t num_pages,
     bool lazy) {
+  return init_physical_page_pool_async(
+      num_pages, num_pages, lazy, /*growth_memory_reserve_bytes=*/0);
+}
+
+folly::SemiFuture<bool> WorkerMemoryRpcClient::init_physical_page_pool_async(
+    int64_t max_pages,
+    int64_t initial_pages,
+    bool lazy,
+    size_t growth_memory_reserve_bytes) {
   folly::Promise<bool> promise;
   auto future = promise.getSemiFuture();
-  threadpool_.schedule(
-      [this, num_pages, lazy, promise = std::move(promise)]() mutable {
-        proto::InitPhysicalPagePoolRequest req;
-        req.set_num_pages(num_pages);
-        req.set_lazy(lazy);
-        proto::Status resp;
-        brpc::Controller cntl;
-        stub_->InitPhysicalPagePool(&cntl, &req, &resp, nullptr);
-        if (cntl.Failed()) {
-          LOG(ERROR) << "InitPhysicalPagePool failed: " << cntl.ErrorText();
-          promise.setValue(false);
-          return;
-        }
-        promise.setValue(resp.ok());
-      });
+  threadpool_.schedule([this,
+                        max_pages,
+                        initial_pages,
+                        lazy,
+                        growth_memory_reserve_bytes,
+                        promise = std::move(promise)]() mutable {
+    proto::InitPhysicalPagePoolRequest req;
+    req.set_num_pages(max_pages);
+    req.set_lazy(lazy);
+    req.set_initial_pages(initial_pages);
+    req.set_growth_memory_reserve_bytes(growth_memory_reserve_bytes);
+    proto::Status resp;
+    brpc::Controller cntl;
+    stub_->InitPhysicalPagePool(&cntl, &req, &resp, nullptr);
+    if (cntl.Failed()) {
+      LOG(ERROR) << "InitPhysicalPagePool failed: " << cntl.ErrorText();
+      promise.setValue(false);
+      return;
+    }
+    promise.setValue(resp.ok());
+  });
   return future;
 }
 

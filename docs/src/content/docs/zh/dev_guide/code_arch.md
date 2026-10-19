@@ -245,22 +245,30 @@ rank 0 再连接这些地址，派发内存操作。这套注册服务独立于 
 释放物理 backing；活跃页、padding block、权重及持有传输 lease 的页仍被固定。
 `vmm_elastic=false` 保留原有启动时整体驻留的 VMM 池。
 
-`max_memory_utilization` 和 `max_cache_size` 作为 KV 与权重共享的可选启动容量上限。
-弹性模式显式设置 `max_memory_utilization=0` 可取消比例上限，`max_cache_size=0`
-表示不设字节上限；这些容量不会预分配为物理显存。较小的非零 ratio 仍会有意限制
-虚拟容量。固定 VMM 及原有物理 cache 要求 ratio 大于零。
+`max_memory_utilization` 和 `max_cache_size` 是 KV 与权重共享的可选扩张上限。
+弹性模式预留最多覆盖设备总显存的稳定虚拟地址，再按显式配置的正数 ratio 和字节
+上限裁剪。启动时只激活当时可用的槽位；分配需求增长时自动激活更多槽位，已有页
+地址保持不变。不配置 ratio 或设为 `max_memory_utilization=0` 可取消比例上限，
+`max_cache_size=0` 表示不设字节上限。每次物理增长均检查实时空闲显存，并同时保留
+配置 ratio 要求的空闲比例和执行余量。因此池外显存释放后，可扩张到超过启动槽位数。
+固定 VMM 及原有物理 cache 保持正数默认 ratio 和固定容量。
 
 进入服务前，弹性 VMM 在每个 DP rank 预热长序列及宽 batch 的 prefill，并覆盖配置的
 decode 并发；该模式不能关闭启动时的 graph warmup。预热形状按 block 向上取整后的
-KV 占用必须能放入配置容量，否则启动明确报错。worker 执行后采样
-“driver 空闲字节 + 池已提交字节”的最低水位，将 KV 增长从执行预算中剔除，
-也不会重复扣除已驻留的 allocator cache。cache 释放显存后，池会保留恢复到已观察
-执行占用所需的空间。`vmm_memory_reserve_bytes` 增加显式空闲余量，启动预热前也
-生效。step 结束采样不能覆盖所有瞬态 SDK buffer 或所有工作负载形状，相关额外
-余量需要根据设备实测配置。
+KV 占用必须能放入配置容量，否则启动明确报错。worker 执行采样和分配检查在原生
+NPU/CUDA/ILU/MUSA caching allocator 提供统计时，使用其历史最大保留量与当前
+保留量的差值作为恢复余量，再加上 `vmm_memory_reserve_bytes`。已驻留的 cache
+已经计入 driver 已用显存；cache 释放后仍保留恢复空间。池外显存释放后若执行产生
+更大峰值，预留会相应提高；本地记录的峰值不会随外部统计重置而降低。其他 allocator
+后端保留“driver 空闲字节 + 池已提交字节”的保守最低水位策略，这可能同时预留
+池外释放的显存。上述检查无法预测未观测的执行形状，以及绕过 caching allocator
+直接分配的 SDK buffer；这些额外余量需要根据设备实测配置。显式 reserve 在启动
+预热前也生效。
 
 请求准入和 DP 选择取目标 worker 的最小实时容量，并受共享预留账本约束；实际
-映射再次检查设备预算。KV 与权重的 prepare/commit/abort 对全部参与 worker
+映射在创建物理页前及发布前复核设备预算，检查失败时释放未发布的 handle，已有
+映射保持不变。allocator 与 driver 采样并非原子快照；持续并发显存变化仍需显式
+余量保护，也可能导致分配失败。KV 与权重的 prepare/commit/abort 对全部参与 worker
 补偿完成后才归还失败分配的账本。回滚无法确认时直接终止，避免复用所有权不明确的页。
 
 当前 Mooncake 协议整段注册稠密共享 arena，尚不能注册稀疏弹性 extent。KV 与权重

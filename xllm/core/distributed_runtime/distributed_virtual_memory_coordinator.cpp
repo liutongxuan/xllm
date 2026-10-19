@@ -30,6 +30,7 @@ limitations under the License.
 #include "core/distributed_runtime/collective_service.h"
 #include "core/distributed_runtime/worker_memory_rpc_client.h"
 #include "core/distributed_runtime/worker_memory_rpc_server.h"
+#include "core/framework/allocator/vmm_arena_capacity.h"
 #include "core/framework/config/distributed_config.h"
 #include "core/framework/config/kv_cache_config.h"
 #include "core/kv_cache/storage/vmm_kv_page_allocator_impl.h"
@@ -157,12 +158,16 @@ void DistributedVirtualMemoryCoordinator::setup_worker_memory_rpc(
 
 int64_t DistributedVirtualMemoryCoordinator::init_physical_page_pools(
     double max_memory_utilization,
-    int64_t max_cache_size) {
+    int64_t max_cache_size,
+    bool max_memory_utilization_configured) {
   CHECK(std::isfinite(max_memory_utilization));
   CHECK_GE(max_memory_utilization, 0.0);
   CHECK_LE(max_memory_utilization, 1.0);
+  CHECK_GE(max_cache_size, 0);
+  const int64_t page_size =
+      KVCacheConfig::get_instance().phy_page_granularity_size();
+  CHECK_GT(page_size, 0);
   const bool lazy = KVCacheConfig::get_instance().vmm_elastic();
-  const bool has_ratio_cap = max_memory_utilization > 0.0 || !lazy;
   if (world_size_ <= 1) {
     // Single process single GPU, initialize locally
     auto& resources = WorkerMemoryResources::get_instance();
@@ -172,44 +177,55 @@ int64_t DistributedVirtualMemoryCoordinator::init_physical_page_pools(
 
     const int64_t available_memory = device.free_memory();
     const int64_t total_memory = device.total_memory();
-
-    int64_t cache_size = available_memory;
-    if (has_ratio_cap && max_memory_utilization < 1.0) {
-      const int64_t buffer_memory = static_cast<int64_t>(
-          std::ceil(total_memory * (1.0 - max_memory_utilization)));
-      cache_size -= buffer_memory;
-    }
-    if (max_cache_size > 0) {
-      cache_size = std::min(cache_size, max_cache_size);
+    if (available_memory < 0 || total_memory <= 0 ||
+        available_memory > total_memory) {
+      LOG(ERROR) << "Local worker returned invalid memory info";
+      return 0;
     }
 
-    int64_t num_pages =
-        cache_size /
-        ::xllm::KVCacheConfig::get_instance().phy_page_granularity_size();
+    const VmmArenaCapacity capacity =
+        calculate_vmm_arena_capacity(available_memory,
+                                     total_memory,
+                                     max_memory_utilization,
+                                     max_memory_utilization_configured,
+                                     lazy,
+                                     max_cache_size);
+
+    const int64_t num_pages = capacity.maximum_bytes / page_size;
+    const int64_t initial_pages = capacity.initial_bytes / page_size;
     LOG(INFO) << "init_physical_page_pools (local): available_memory="
               << available_memory << ", total_memory=" << total_memory
-              << ", cache_size=" << cache_size << ", num_pages=" << num_pages;
+              << ", cache_size=" << capacity.maximum_bytes
+              << ", num_pages=" << num_pages
+              << ", initial_pages=" << initial_pages;
 
     if (num_pages <= 0) {
       LOG(ERROR) << "Insufficient memory for physical page address capacity";
       return 0;
     }
-    // Elastic pools reserve stable address slots without allocating backing
-    // pages; subsequent mapping checks current device pressure atomically.
-    resources.init_physical_page_pool(num_pages, lazy);
+    // Elastic pools reserve the maximum stable address arena without
+    // allocating backing pages; mapping checks live device pressure later.
+    resources.init_physical_page_pool(
+        num_pages,
+        initial_pages,
+        lazy,
+        static_cast<size_t>(capacity.growth_memory_reserve_bytes));
     LOG(INFO) << "GlobalVirtualMemoryRegion initialized (local)";
 
     {
       std::lock_guard<std::mutex> lock(mutex_);
-      worker_allocatable_pages_.assign(
-          static_cast<size_t>(std::max<int32_t>(world_size_, 1)),
-          static_cast<size_t>(num_pages));
+      worker_allocatable_pages_.assign(1, static_cast<size_t>(num_pages));
     }
+    refresh_worker_capacity_snapshot();
     start_worker_capacity_refresh();
     return num_pages;
   }
 
   // Step 1: Query available memory from all workers via RPC
+  if (clients_.size() != static_cast<size_t>(world_size_)) {
+    LOG(ERROR) << "Worker memory RPC client count does not match world size";
+    return 0;
+  }
   std::vector<folly::SemiFuture<MemoryInfo>> memory_futures;
   memory_futures.reserve(clients_.size());
   for (auto& client : clients_) {
@@ -222,6 +238,9 @@ int64_t DistributedVirtualMemoryCoordinator::init_physical_page_pools(
   int64_t min_available_memory = std::numeric_limits<int64_t>::max();
   int64_t min_total_memory = std::numeric_limits<int64_t>::max();
   int64_t min_capacity_bytes = std::numeric_limits<int64_t>::max();
+  int64_t min_initial_bytes = std::numeric_limits<int64_t>::max();
+  std::vector<int64_t> growth_memory_reserves;
+  growth_memory_reserves.reserve(memory_results.size());
 
   for (size_t i = 0; i < memory_results.size(); ++i) {
     if (!memory_results[i].hasValue()) {
@@ -229,7 +248,8 @@ int64_t DistributedVirtualMemoryCoordinator::init_physical_page_pools(
       return 0;
     }
     auto& info = memory_results[i].value();
-    if (info.available_memory == 0 && info.total_memory == 0) {
+    if (info.available_memory < 0 || info.total_memory <= 0 ||
+        info.available_memory > info.total_memory) {
       LOG(ERROR) << "Worker " << i << " returned invalid memory info";
       return 0;
     }
@@ -241,28 +261,29 @@ int64_t DistributedVirtualMemoryCoordinator::init_physical_page_pools(
     min_available_memory =
         std::min(min_available_memory, info.available_memory);
     min_total_memory = std::min(min_total_memory, info.total_memory);
-    int64_t worker_capacity = info.available_memory;
-    if (has_ratio_cap && max_memory_utilization < 1.0) {
-      worker_capacity -= static_cast<int64_t>(
-          std::ceil(info.total_memory * (1.0 - max_memory_utilization)));
-    }
-    // Apply the ratio on each worker before reducing. Combining independent
-    // minima of free and total memory can exceed a heterogeneous worker's cap.
-    min_capacity_bytes = std::min(min_capacity_bytes, worker_capacity);
+    const VmmArenaCapacity capacity =
+        calculate_vmm_arena_capacity(info.available_memory,
+                                     info.total_memory,
+                                     max_memory_utilization,
+                                     max_memory_utilization_configured,
+                                     lazy,
+                                     max_cache_size);
+    // Apply each worker's ratio before reducing so heterogeneous devices keep
+    // their own configured arena ceiling.
+    min_capacity_bytes = std::min(min_capacity_bytes, capacity.maximum_bytes);
+    min_initial_bytes = std::min(min_initial_bytes, capacity.initial_bytes);
+    growth_memory_reserves.emplace_back(capacity.growth_memory_reserve_bytes);
   }
 
-  // Step 2: Calculate num_pages based on min available memory
-  int64_t cache_size = min_capacity_bytes;
-  if (max_cache_size > 0) {
-    cache_size = std::min(cache_size, max_cache_size);
-  }
+  // Step 2: Convert the smallest worker capacity to the stable arena size.
+  const int64_t cache_size = min_capacity_bytes;
 
-  int64_t num_pages =
-      cache_size /
-      ::xllm::KVCacheConfig::get_instance().phy_page_granularity_size();
+  const int64_t num_pages = cache_size / page_size;
+  const int64_t initial_pages = min_initial_bytes / page_size;
   LOG(INFO) << "init_physical_page_pools: min_available_memory="
             << min_available_memory << ", min_total_memory=" << min_total_memory
-            << ", cache_size=" << cache_size << ", num_pages=" << num_pages;
+            << ", cache_size=" << cache_size << ", num_pages=" << num_pages
+            << ", initial_pages=" << initial_pages;
 
   if (num_pages <= 0) {
     LOG(ERROR) << "Insufficient memory for PhysicalPagePool";
@@ -272,9 +293,12 @@ int64_t DistributedVirtualMemoryCoordinator::init_physical_page_pools(
   // Step 3: Broadcast InitPhysicalPagePool to all workers
   std::vector<folly::SemiFuture<bool>> init_futures;
   init_futures.reserve(clients_.size());
-  for (auto& client : clients_) {
-    init_futures.emplace_back(
-        client->init_physical_page_pool_async(num_pages, lazy));
+  for (size_t worker = 0; worker < clients_.size(); ++worker) {
+    init_futures.emplace_back(clients_[worker]->init_physical_page_pool_async(
+        num_pages,
+        initial_pages,
+        lazy,
+        static_cast<size_t>(growth_memory_reserves[worker])));
   }
 
   // Wait for all init responses

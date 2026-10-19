@@ -43,6 +43,8 @@ struct MemoryInfo {
   size_t pool_committed_pages = 0;
   size_t pool_allocatable_pages = 0;
   size_t execution_memory_reserve_bytes = 0;
+  size_t pool_active_pages = 0;
+  size_t growth_memory_reserve_bytes = 0;
 };
 
 // Sends memory resource commands to a worker via brpc.
@@ -63,6 +65,11 @@ class WorkerMemoryRpcClient final {
   // Initialize PhysicalPagePool on remote worker with specified number of pages
   folly::SemiFuture<bool> init_physical_page_pool_async(int64_t num_pages,
                                                         bool lazy = true);
+  folly::SemiFuture<bool> init_physical_page_pool_async(
+      int64_t max_pages,
+      int64_t initial_pages,
+      bool lazy,
+      size_t growth_memory_reserve_bytes);
 
   folly::SemiFuture<bool> prepare_kv_mapping_async(
       uint64_t transaction_id,

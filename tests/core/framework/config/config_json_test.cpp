@@ -758,11 +758,13 @@ TEST(ConfigPrecedenceTest, CommandLineFlagOverridesJson) {
 
   // Simulate `--block_size=64 --max_tokens_per_batch=2048 --model_impl=native`.
   google::SetCommandLineOption("block_size", "64");
+  google::SetCommandLineOption("max_memory_utilization", "0.7");
   google::SetCommandLineOption("max_tokens_per_batch", "2048");
   google::SetCommandLineOption("model_impl", "native");
 
-  // kInlineConfig sets block_size=16, max_tokens_per_batch=8192,
-  // model_impl="py": all conflict with the command-line values above.
+  // kInlineConfig sets block_size=16, max_memory_utilization=0.5,
+  // max_tokens_per_batch=8192, and model_impl="py": all conflict with the
+  // command-line values above.
   const JsonReader json = config::parse_json_string(kInlineConfig);
 
   KVCacheConfig kv_cache_config;
@@ -779,6 +781,8 @@ TEST(ConfigPrecedenceTest, CommandLineFlagOverridesJson) {
 
   // CLI > Config: the command-line value wins over the JSON entry.
   EXPECT_EQ(kv_cache_config.block_size(), 64);
+  EXPECT_DOUBLE_EQ(kv_cache_config.max_memory_utilization(), 0.7);
+  EXPECT_TRUE(kv_cache_config.max_memory_utilization_configured());
   EXPECT_EQ(scheduler_config.max_tokens_per_batch(), 2048);
   EXPECT_EQ(model_config.model_impl(), "native");
 
@@ -810,8 +814,86 @@ TEST(ConfigPrecedenceTest, JsonOverridesDefaultWhenFlagUnspecified) {
   // Config > Defaults.
   EXPECT_EQ(kv_cache_config.block_size(), 16);
   EXPECT_DOUBLE_EQ(kv_cache_config.max_memory_utilization(), 0.5);
+  EXPECT_TRUE(kv_cache_config.max_memory_utilization_configured());
   EXPECT_FALSE(kv_cache_config.enable_prefix_cache());
   EXPECT_EQ(scheduler_config.max_seqs_per_batch(), 64);
+}
+
+TEST(ConfigPrecedenceTest, SerializesExplicitDefaultMemoryUtilization) {
+  google::FlagSaver flag_saver;
+  KVCacheConfig kv_cache_config;
+  const JsonReader json =
+      config::parse_json_string(R"json({"max_memory_utilization":0.8})json");
+
+  kv_cache_config.from_flags();
+  kv_cache_config.from_json(json);
+
+  EXPECT_TRUE(kv_cache_config.max_memory_utilization_configured());
+  nlohmann::ordered_json serialized = nlohmann::ordered_json::object();
+  kv_cache_config.append_config_json(serialized);
+  ASSERT_TRUE(serialized.contains("max_memory_utilization"));
+  EXPECT_DOUBLE_EQ(serialized.at("max_memory_utilization"), 0.8);
+}
+
+TEST(ConfigPrecedenceTest, PreservesExplicitCommandLineDefaultMemoryCap) {
+  google::FlagSaver flag_saver;
+  google::SetCommandLineOption("max_memory_utilization", "0.8");
+  KVCacheConfig kv_cache_config;
+  kv_cache_config.from_flags();
+  kv_cache_config.from_json(config::parse_json_string(R"json({})json"));
+
+  EXPECT_TRUE(kv_cache_config.max_memory_utilization_configured());
+  nlohmann::ordered_json serialized = nlohmann::ordered_json::object();
+  kv_cache_config.append_config_json(serialized);
+  ASSERT_TRUE(serialized.contains("max_memory_utilization"));
+  EXPECT_DOUBLE_EQ(serialized.at("max_memory_utilization"), 0.8);
+}
+
+TEST(ConfigPrecedenceTest, LeavesMemoryUtilizationUnconfiguredWhenAbsent) {
+  google::FlagSaver flag_saver;
+  KVCacheConfig kv_cache_config;
+  const JsonReader json = config::parse_json_string(R"json({})json");
+
+  kv_cache_config.from_flags();
+  kv_cache_config.from_json(json);
+
+  EXPECT_FALSE(kv_cache_config.max_memory_utilization_configured());
+  nlohmann::ordered_json serialized = nlohmann::ordered_json::object();
+  kv_cache_config.append_config_json(serialized);
+  EXPECT_FALSE(serialized.contains("max_memory_utilization"));
+}
+
+TEST(ConfigPrecedenceTest, PreservesProgrammaticDefaultMemoryUtilizationCap) {
+  google::FlagSaver flag_saver;
+  KVCacheConfig kv_cache_config;
+  kv_cache_config.max_memory_utilization(0.8);
+  kv_cache_config.from_json(config::parse_json_string(R"json({})json"));
+
+  EXPECT_TRUE(kv_cache_config.max_memory_utilization_configured());
+  nlohmann::ordered_json serialized = nlohmann::ordered_json::object();
+  kv_cache_config.append_config_json(serialized);
+  ASSERT_TRUE(serialized.contains("max_memory_utilization"));
+  EXPECT_DOUBLE_EQ(serialized.at("max_memory_utilization"), 0.8);
+}
+
+TEST(ConfigPrecedenceTest, PreservesDisabledMemoryUtilizationCapOnRoundTrip) {
+  nlohmann::ordered_json serialized = nlohmann::ordered_json::object();
+  {
+    google::FlagSaver flag_saver;
+    KVCacheConfig kv_cache_config;
+    kv_cache_config.from_flags();
+    kv_cache_config.from_json(
+        config::parse_json_string(R"json({"max_memory_utilization":0})json"));
+    kv_cache_config.append_config_json(serialized);
+  }
+
+  // Reload as a new startup, before JSON values have been written to gflags.
+  google::FlagSaver flag_saver;
+  KVCacheConfig restored;
+  restored.from_flags();
+  restored.from_json(config::parse_json_string(serialized.dump()));
+  EXPECT_TRUE(restored.max_memory_utilization_configured());
+  EXPECT_DOUBLE_EQ(restored.max_memory_utilization(), 0.0);
 }
 
 TEST(ConfigPrecedenceTest, KeepsDefaultWhenNeitherCliNorJson) {

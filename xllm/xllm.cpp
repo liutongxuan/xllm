@@ -477,7 +477,8 @@ int run() {
     // Initialize PhysicalPagePool on all workers
     int64_t num_pages = memory_coordinator.init_physical_page_pools(
         kv_cache_config.max_memory_utilization(),
-        kv_cache_config.max_cache_size());
+        kv_cache_config.max_cache_size(),
+        kv_cache_config.max_memory_utilization_configured());
     if (num_pages <= 0) {
       LOG(FATAL) << "Failed to initialize PhysicalPagePool";
     }

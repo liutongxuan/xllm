@@ -38,12 +38,18 @@ message MemoryInfoResponse {
   uint64 pool_committed_pages = 5;
   uint64 pool_allocatable_pages = 6;
   uint64 execution_memory_reserve_bytes = 7;
+  uint64 pool_active_pages = 8;
+  uint64 growth_memory_reserve_bytes = 9;
 }
 
 // Request for initializing PhysicalPagePool
 message InitPhysicalPagePoolRequest {
   int64 num_pages = 1;  // Stable virtual-address capacity in pages.
   bool lazy = 2;  // Reserve address slots without allocating physical pages.
+  // Omission preserves the original behavior of activating every slot.
+  optional int64 initial_pages = 3;
+  // Device memory kept outside physical growth, independently of execution.
+  uint64 growth_memory_reserve_bytes = 4;
 }
 
 message PrepareKvMappingRequest {
