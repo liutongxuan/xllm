@@ -338,7 +338,7 @@ bool BlockManagerPool::exceeds_total_capacity(
     can_aggregate = can_aggregate && !sequence->check_beam_search() &&
                     !sequence->has_any_blocks();
   }
-  if (!can_aggregate) {
+  if (reservations.size() == 1 || !can_aggregate) {
     return false;
   }
 

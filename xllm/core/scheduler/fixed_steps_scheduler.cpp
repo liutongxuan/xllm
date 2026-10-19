@@ -264,13 +264,13 @@ bool FixedStepsScheduler::handle_prefill_requests(
     bool exceeds_total_kv_capacity = false;
     std::vector<Sequence*> prefill_sequences;
     std::vector<size_t> prefill_sequences_budget;
-    std::vector<Sequence*> allocated_sequences;
     std::vector<int32_t> allocation_dp_ranks;
     std::vector<KVCacheManager::KVCacheReservation> prefill_reservations;
     prefill_sequences.reserve(request->sequences().size());
     prefill_sequences_budget.reserve(request->sequences().size());
-    allocated_sequences.reserve(request->sequences().size());
-    prefill_reservations.reserve(request->sequences().size());
+    if (requires_kv_cache) {
+      prefill_reservations.reserve(request->sequences().size());
+    }
     for (auto& prefill_sequence : request->sequences()) {
       if (prefill_sequence->finished()) {
         continue;
@@ -311,29 +311,24 @@ bool FixedStepsScheduler::handle_prefill_requests(
       exceeds_total_kv_capacity = true;
     }
 
+    size_t num_allocated_sequences = 0;
     if (can_schedule && requires_kv_cache) {
-      allocation_dp_ranks.reserve(prefill_sequences.size());
-      for (auto* prefill_sequence : prefill_sequences) {
-        allocation_dp_ranks.emplace_back(prefill_sequence->dp_rank());
-        const KVCacheAllocationResult allocation_result =
-            scheduler_pipeline_->allocate_kv_cache(kv_cache_manager_,
-                                                   prefill_sequence);
-        if (allocation_result != KVCacheAllocationResult::SUCCESS) {
+      allocation_dp_ranks.reserve(prefill_reservations.size());
+      // Total capacity was checked for the complete request above. Allocate
+      // the same reservations; any failure here is temporary cache pressure.
+      for (const auto& [sequence, num_tokens] : prefill_reservations) {
+        allocation_dp_ranks.emplace_back(sequence->dp_rank());
+        if (!kv_cache_manager_->allocate(sequence, num_tokens)) {
           can_schedule = false;
-          exceeds_total_kv_capacity =
-              allocation_result ==
-              KVCacheAllocationResult::EXCEEDS_TOTAL_CAPACITY;
           break;
         }
-        allocated_sequences.emplace_back(prefill_sequence);
+        ++num_allocated_sequences;
       }
     }
 
     if (!can_schedule) {
-      for (auto* seq : allocated_sequences) {
-        if (requires_kv_cache) {
-          kv_cache_manager_->deallocate(seq);
-        }
+      for (size_t i = 0; i < num_allocated_sequences; ++i) {
+        kv_cache_manager_->deallocate(prefill_sequences[i]);
       }
       // Failed allocation may also select a rank. Restore every attempted
       // sequence so temporary pressure cannot pin the request to one pool.
@@ -636,39 +631,11 @@ void FixedStepsScheduler::generate() {
 }
 
 // Pipeline implementations
-FixedStepsScheduler::KVCacheAllocationResult
-FixedStepsScheduler::LlmRecSchedulerPipeline::allocate_kv_cache(
-    KVCacheManager* kv_cache_manager,
-    Sequence* sequence) {
-  const size_t max_generated_tokens =
-      sequence->stopping_checker()->get_max_generated_tokens();
-  return FixedStepsScheduler::allocate_kv_cache(
-      kv_cache_manager, sequence, max_generated_tokens);
-}
-
 std::optional<KVCacheManager::KVCacheReservation>
 FixedStepsScheduler::LlmRecSchedulerPipeline::kv_cache_reservation(
     Sequence* sequence) const {
   return FixedStepsScheduler::make_kv_cache_reservation(
       sequence, sequence->stopping_checker()->get_max_generated_tokens());
-}
-
-FixedStepsScheduler::KVCacheAllocationResult
-FixedStepsScheduler::OneRecXAttentionSchedulerPipeline::allocate_kv_cache(
-    KVCacheManager* kv_cache_manager,
-    Sequence* sequence) {
-  size_t max_generated_tokens =
-      ::xllm::RecConfig::get_instance().max_decode_rounds() > 0
-          ? static_cast<size_t>(
-                ::xllm::RecConfig::get_instance().max_decode_rounds())
-          : kRecDecodeSteps;
-  if (const auto* stopping_checker = sequence->stopping_checker()) {
-    max_generated_tokens = std::max(
-        max_generated_tokens, stopping_checker->get_max_generated_tokens());
-  }
-
-  return FixedStepsScheduler::allocate_kv_cache(
-      kv_cache_manager, sequence, max_generated_tokens);
 }
 
 std::optional<KVCacheManager::KVCacheReservation>
@@ -686,26 +653,6 @@ FixedStepsScheduler::OneRecXAttentionSchedulerPipeline::kv_cache_reservation(
 
   return FixedStepsScheduler::make_kv_cache_reservation(sequence,
                                                         max_generated_tokens);
-}
-
-FixedStepsScheduler::KVCacheAllocationResult
-FixedStepsScheduler::allocate_kv_cache(KVCacheManager* kv_cache_manager,
-                                       Sequence* sequence,
-                                       size_t max_generated_tokens) {
-  const auto reservation =
-      make_kv_cache_reservation(sequence, max_generated_tokens);
-  if (!reservation.has_value()) {
-    LOG(ERROR) << "Integer overflow detected in KV cache allocation";
-    return KVCacheAllocationResult::EXCEEDS_TOTAL_CAPACITY;
-  }
-  const size_t requested_tokens = reservation->second;
-  if (kv_cache_manager->exceeds_total_capacity(sequence, requested_tokens)) {
-    return KVCacheAllocationResult::EXCEEDS_TOTAL_CAPACITY;
-  }
-  if (!kv_cache_manager->allocate(sequence, requested_tokens)) {
-    return KVCacheAllocationResult::TEMPORARY_FAILURE;
-  }
-  return KVCacheAllocationResult::SUCCESS;
 }
 
 std::optional<KVCacheManager::KVCacheReservation>
