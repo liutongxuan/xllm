@@ -102,23 +102,16 @@ void WorkerMemoryRpcService::InitPhysicalPagePool(
   threadpool_.schedule([this, request, response, done]() mutable {
     brpc::ClosureGuard done_guard(done);
 
-    int64_t num_pages = request->num_pages();
+    const int64_t num_pages = request->num_pages();
     LOG(INFO) << "InitPhysicalPagePool: global_rank=" << global_rank_
               << ", num_pages=" << num_pages;
 
-    try {
-      WorkerMemoryResources::get_instance().init_physical_page_pool(
-          num_pages, request->lazy());
-      LOG(INFO) << "GlobalVirtualMemoryRegion initialized on worker "
-                << global_rank_;
+    WorkerMemoryResources::get_instance().init_physical_page_pool(
+        num_pages, request->lazy());
+    LOG(INFO) << "GlobalVirtualMemoryRegion initialized on worker "
+              << global_rank_;
 
-      response->set_ok(true);
-    } catch (const std::exception& e) {
-      LOG(ERROR)
-          << "Failed to init PhysicalPagePool/GlobalVirtualMemoryRegion: "
-          << e.what();
-      response->set_ok(false);
-    }
+    response->set_ok(true);
   });
 }
 
