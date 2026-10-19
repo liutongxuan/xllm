@@ -25,13 +25,12 @@ limitations under the License.
 #include <thread>
 #include <vector>
 
-#include "common/macros.h"
 #include "core/framework/eplb/eplb_info.h"
-#include "core/framework/model/expert_weight_access.h"
-#include "platform/device.h"
-#include "runtime/forward_params.h"
+#include "core/platform/device.h"
 
 namespace xllm {
+
+class CausalLM;
 
 class EplbExecutor final {
  public:
@@ -40,7 +39,7 @@ class EplbExecutor final {
   // this executor before dropping the model. Passed by reference so the
   // executor cannot silently be constructed with a nullptr, and so the
   // ownership story is unambiguous (executor never claims the pointer).
-  EplbExecutor(ExpertWeightAccess& model, const torch::Device& device);
+  EplbExecutor(CausalLM& model, const torch::Device& device);
 
   virtual ~EplbExecutor();
 
@@ -73,7 +72,7 @@ class EplbExecutor final {
                                    int64_t prepare_token,
                                    const std::vector<int32_t>& expert_ids,
                                    Callback callback = nullptr);
-  ExpertWeightAccess& model_;
+  CausalLM& model_;
   Device device_;
   std::unique_ptr<Stream> stream_;
   std::queue<Task> tasks_;

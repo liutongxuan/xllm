@@ -168,7 +168,7 @@ class MluGraphExecutorImpl final : public ExecutorImpl,
                        const torch::Device& device,
                        const runtime::Options& options);
 
-  MluGraphExecutorImpl(RecCausalLM* model,
+  MluGraphExecutorImpl(RecModel* model,
                        const ModelArgs& args,
                        const torch::Device& device,
                        const runtime::Options& options);
@@ -203,8 +203,8 @@ class MluGraphExecutorImpl final : public ExecutorImpl,
   void init_param_once();
   void log_memory_after_capture();
 
-  CausalLM* model_;                   // not owned
-  RecCausalLM* rec_model_ = nullptr;  // not owned
+  CausalLM* model_;                // not owned
+  RecModel* rec_model_ = nullptr;  // not owned
   ModelArgs args_;
   torch::Device device_;
   runtime::Options options_;

@@ -70,12 +70,12 @@ class OxygenModelImpl : public QWen3ModelImpl {
     std::optional<torch::Tensor> residual;
     for (size_t i = 0; i < layers_.size(); i++) {
       auto& layer = layers_[i];
-      h = layer(h,
-                residual,
-                positions,
-                attn_metadata,
-                kv_caches[i],
-                input_params_new);
+      h = layer->forward(h,
+                         residual,
+                         positions,
+                         attn_metadata,
+                         kv_caches[i],
+                         input_params_new);
       if (!input_params_new.record_layer(static_cast<uint32_t>(i),
                                          h.device())) {
         return ModelOutput();

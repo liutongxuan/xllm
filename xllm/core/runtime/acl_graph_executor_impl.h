@@ -31,7 +31,7 @@ limitations under the License.
 #include "core/common/macros.h"
 #include "core/framework/model/causal_lm.h"
 #include "core/framework/model/model_input_params.h"
-#include "core/framework/model/rec_causal_lm.h"
+#include "core/framework/model/rec_model.h"
 #include "core/kv_cache/storage/kv_cache.h"
 #include "core/runtime/acl_graph_persistent_param.h"
 #include "core/runtime/rec_executor_backend.h"
@@ -114,7 +114,7 @@ class AclGraph {
                uint32_t bucket_num_tokens,
                c10_npu::MempoolId_t graph_pool);
 
-  bool capture(RecCausalLM* model,
+  bool capture(RecModel* model,
                const runtime::Options& options,
                const torch::Tensor& tokens,
                const torch::Tensor& positions,
@@ -130,7 +130,7 @@ class AclGraph {
                      std::vector<KVCache>& kv_cache,
                      const ModelInputParams& params);
 
-  ModelOutput replay(RecCausalLM* model,
+  ModelOutput replay(RecModel* model,
                      const torch::Tensor& tokens,
                      const torch::Tensor& positions,
                      std::vector<KVCache>& kv_cache,
@@ -221,7 +221,7 @@ class AclGraphExecutorImpl final : public ExecutorImpl,
                        const torch::Device& device,
                        const runtime::Options& options);
 
-  AclGraphExecutorImpl(RecCausalLM* model,
+  AclGraphExecutorImpl(RecModel* model,
                        const ModelArgs& args,
                        const torch::Device& device,
                        const runtime::Options& options);
@@ -266,7 +266,7 @@ class AclGraphExecutorImpl final : public ExecutorImpl,
  private:
   // not own
   CausalLM* model_ = nullptr;
-  RecCausalLM* rec_model_ = nullptr;
+  RecModel* rec_model_ = nullptr;
 
   void initialize(bool need_update_attn_mask,
                   bool is_hybrid_linear_attention,

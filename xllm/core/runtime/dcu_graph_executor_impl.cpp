@@ -845,7 +845,7 @@ DcuGraphExecutorImpl::DcuGraphExecutorImpl(CausalLM* model,
           << " bytes (" << (persistent_bytes / (1024 * 1024)) << " MB)";
 }
 
-DcuGraphExecutorImpl::DcuGraphExecutorImpl(RecCausalLM* model,
+DcuGraphExecutorImpl::DcuGraphExecutorImpl(RecModel* model,
                                            const ModelArgs& args,
                                            const torch::Device& device,
                                            const runtime::Options& options)

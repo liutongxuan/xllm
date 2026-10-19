@@ -30,6 +30,7 @@ limitations under the License.
 #include "core/framework/model/model_input_params.h"
 #include "core/framework/model/model_output.h"
 #include "core/framework/model/model_traits.h"
+#include "core/framework/model/rec_model_params.h"
 #include "core/framework/model_context/model_context.h"
 #include "core/kv_cache/storage/kv_cache.h"
 #include "core/layers/common/attention_mask.h"
@@ -41,7 +42,6 @@ limitations under the License.
 #include "core/layers/npu/npu_pos_embedding_impl.h"
 #include "core/layers/npu/npu_rms_norm_impl.h"
 #include "core/layers/npu/npu_word_embedding_impl.h"
-#include "models/llm/qwen_execution_input.h"
 #include "models/model_registry.h"
 #include "xllm_atb_layers/core/include/atb_speed/log.h"
 
@@ -77,15 +77,15 @@ class LlmDecoderLayerImplBase : public torch::nn::Module {
                   0);
     }
 
-    return decoder_layer_(x,
-                          cos_pos,
-                          sin_pos,
-                          attn_mask,
-                          kv_cache,
-                          input_params,
-                          event,
-                          event_flag,
-                          layer_id_);
+    return decoder_layer_->forward(x,
+                                   cos_pos,
+                                   sin_pos,
+                                   attn_mask,
+                                   kv_cache,
+                                   input_params,
+                                   event,
+                                   event_flag,
+                                   layer_id_);
   }
 
   torch::Tensor forward(torch::Tensor& x,
@@ -104,15 +104,15 @@ class LlmDecoderLayerImplBase : public torch::nn::Module {
                   input_params.block_copy.cum_sum,
                   0);
     }
-    return decoder_layer_(x,
-                          cos_pos,
-                          sin_pos,
-                          attn_mask,
-                          kv_cache,
-                          input_params,
-                          event,
-                          event_flag,
-                          layer_id_);
+    return decoder_layer_->forward(x,
+                                   cos_pos,
+                                   sin_pos,
+                                   attn_mask,
+                                   kv_cache,
+                                   input_params,
+                                   event,
+                                   event_flag,
+                                   layer_id_);
   }
 
   virtual void verify_loaded_weights(const std::string& prefix) const {
@@ -287,14 +287,14 @@ class LlmModelImplBase : public torch::nn::Module {
       const int32_t layer_index = i;
       rolling_guard.before_layer(layer_index);
 
-      layer(h,
-            cos_pos,
-            sin_pos,
-            attn_mask,
-            kv_caches[i],
-            input_params_new,
-            event,
-            event_flag);
+      layer->forward(h,
+                     cos_pos,
+                     sin_pos,
+                     attn_mask,
+                     kv_caches[i],
+                     input_params_new,
+                     event,
+                     event_flag);
 
       rolling_guard.after_layer(layer_index);
     }
@@ -462,7 +462,7 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
                               const torch::Tensor& positions,
                               std::vector<KVCache>& kv_caches,
                               const ModelInputParams& input_params) {
-    return model_(tokens, positions, kv_caches, input_params);
+    return model_->forward(tokens, positions, kv_caches, input_params);
   }
 
   template <typename InputParams>
@@ -470,7 +470,7 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
                       const InputParams& input_params) {
-    return model_(tokens, positions, kv_caches, input_params);
+    return model_->forward(tokens, positions, kv_caches, input_params);
   }
 
   // hidden_states: [num_tokens, hidden_size]

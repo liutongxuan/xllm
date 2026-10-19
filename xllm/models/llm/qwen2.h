@@ -84,7 +84,7 @@ TORCH_MODULE(QWen2ForCausalLM);
 // register the causal model
 REGISTER_CAUSAL_MODEL(qwen2, QWen2ForCausalLM);
 
-REGISTER_REC_MODEL(qwen2, QWen2ForCausalLM);
+REGISTER_CAUSAL_REC_MODEL(qwen2, QWen2ForCausalLM);
 
 // register the model args
 // example config:

@@ -7,6 +7,18 @@ cc_test(
   DEPS :model GTest::gtest_main
 )
 
+if(USE_ILU)
+  cc_test(
+    NAME rec_executor_test
+    SRCS rec_executor_test.cpp
+    DEPS :runtime GTest::gtest_main
+  )
+  target_link_options(rec_executor_test PRIVATE
+    "-Wl,--whole-archive"
+    "${CMAKE_BINARY_DIR}/third_party/spdlog/libspdlog.a"
+    "-Wl,--no-whole-archive")
+endif()
+
 cc_test(
   NO_NPU_RUNTIME
   NAME forward_shared_memory_output_test

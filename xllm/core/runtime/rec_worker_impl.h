@@ -23,7 +23,7 @@ limitations under the License.
 #include <optional>
 #include <vector>
 
-#include "core/framework/model/rec_causal_lm.h"
+#include "core/framework/model/rec_model.h"
 #include "runtime/rec_executor.h"
 #include "runtime/rec_forward_params.h"
 #include "runtime/worker_impl.h"
@@ -47,10 +47,6 @@ class RecWorkerImpl : public WorkerImpl {
 
   ~RecWorkerImpl() override = default;
 
-  bool init_model(const std::string& model_weights_path,
-                  int32_t random_seed,
-                  MasterStatus master_status) override;
-
   bool init_model(ModelContext& context) override;
 
   void load_model(std::unique_ptr<ModelLoader> loader) override;
@@ -69,7 +65,7 @@ class RecWorkerImpl : public WorkerImpl {
       const LlmForwardInput& input) override;
 
  private:
-  ModelLifecycle* model_lifecycle() const override;
+  Model* model() const override;
 
   struct RecPipelineRuntime {
     RecPipelineRuntime(RecWorkerImpl& worker) : worker(worker) {}
@@ -78,15 +74,11 @@ class RecWorkerImpl : public WorkerImpl {
       model = std::move(other.model);
       executor = std::move(other.executor);
       context = std::move(other.context);
-      eplb_executor = std::move(other.eplb_executor);
-      expert_load_data = std::move(other.expert_load_data);
     }
     std::unique_ptr<Stream> stream;
-    std::unique_ptr<RecCausalLM> model;
+    std::unique_ptr<RecModel> model;
     std::unique_ptr<RecExecutor> executor;
     std::unique_ptr<ModelContext> context;
-    std::unique_ptr<EplbExecutor> eplb_executor;
-    torch::Tensor expert_load_data;
 
     RecWorkerImpl& worker;  // not owned
   };

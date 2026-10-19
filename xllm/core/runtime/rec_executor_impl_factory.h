@@ -21,7 +21,7 @@ limitations under the License.
 #include <unordered_map>
 
 #include "core/common/macros.h"
-#include "core/framework/model/rec_causal_lm.h"
+#include "core/framework/model/rec_model.h"
 #include "core/runtime/options.h"
 #include "core/runtime/rec_executor_backend.h"
 
@@ -30,7 +30,7 @@ namespace xllm {
 class RecExecutorImplFactory final {
  public:
   using Creator = std::function<std::unique_ptr<RecExecutorBackend>(
-      RecCausalLM*,
+      RecModel*,
       const ModelArgs&,
       const torch::Device&,
       const runtime::Options&)>;
@@ -38,7 +38,7 @@ class RecExecutorImplFactory final {
   static RecExecutorImplFactory& get_instance();
   bool register_creator(const std::string& name, Creator creator);
   std::unique_ptr<RecExecutorBackend> create_executor_impl(
-      RecCausalLM* model,
+      RecModel* model,
       const ModelArgs& args,
       const torch::Device& device,
       const runtime::Options& options,
@@ -56,7 +56,7 @@ class RecExecutorImplFactory final {
   const bool class_type##_rec_registered = []() {                            \
     return RecExecutorImplFactory::get_instance().register_creator(          \
         backend,                                                             \
-        [](RecCausalLM* model,                                               \
+        [](RecModel* model,                                                  \
            const ModelArgs& args,                                            \
            const torch::Device& device,                                      \
            const runtime::Options& options)                                  \

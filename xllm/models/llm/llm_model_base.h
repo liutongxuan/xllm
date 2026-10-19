@@ -23,16 +23,43 @@ limitations under the License.
 
 #include "core/framework/model/model_input_params.h"
 #include "core/framework/model/model_output.h"
+#include "core/framework/model/rec_model_params.h"
 #include "core/framework/model_context/model_context.h"
 #include "core/kv_cache/storage/kv_cache.h"
+#include "core/layers/common/attention_metadata.h"
 #include "core/layers/common/attention_metadata_builder.h"
 #include "core/layers/common/lm_head.h"
 #include "core/layers/common/rms_norm.h"
 #include "core/util/rec_model_utils.h"
-#include "models/llm/qwen_execution_input.h"
 #include "models/model_registry.h"
 
 namespace xllm {
+
+template <typename InputParams>
+inline void prepare_qwen_rec_layer(const InputParams&,
+                                   layer::AttentionMetadata&,
+                                   size_t,
+                                   size_t) {}
+
+template <>
+inline void prepare_qwen_rec_layer<RecModelParams>(
+    const RecModelParams& params,
+    layer::AttentionMetadata& metadata,
+    size_t layer_id,
+    size_t layer_count) {
+  const auto* rec = params.llmrec_params();
+  if (rec == nullptr) {
+    return;
+  }
+  CHECK_EQ(rec->full_k_caches.size(), layer_count);
+  CHECK_EQ(rec->full_v_caches.size(), layer_count);
+  CHECK_EQ(rec->unshared_k_caches.size(), layer_count);
+  CHECK_EQ(rec->unshared_v_caches.size(), layer_count);
+  metadata.full_k_cache = rec->full_k_caches[layer_id];
+  metadata.full_v_cache = rec->full_v_caches[layer_id];
+  metadata.unshared_k_cache = rec->unshared_k_caches[layer_id];
+  metadata.unshared_v_cache = rec->unshared_v_caches[layer_id];
+}
 
 template <typename DecoderLayerType>
 class LlmModelImplBase : public torch::nn::Module {
@@ -114,12 +141,12 @@ class LlmModelImplBase : public torch::nn::Module {
       attn_metadata.plan_info->layer_id = i;
 #endif
       auto& layer = layers_[i];
-      h = layer(h,
-                residual,
-                positions,
-                attn_metadata,
-                kv_caches[i],
-                modified_input_params);
+      h = layer->forward(h,
+                         residual,
+                         positions,
+                         attn_metadata,
+                         kv_caches[i],
+                         modified_input_params);
       if (!modified_input_params.record_layer(static_cast<uint32_t>(i),
                                               h.device())) {
         return ModelOutput();
@@ -198,7 +225,7 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
                               const torch::Tensor& positions,
                               std::vector<KVCache>& kv_caches,
                               const ModelInputParams& input_params) {
-    return model_(tokens, positions, kv_caches, input_params);
+    return model_->forward(tokens, positions, kv_caches, input_params);
   }
 
   template <typename InputParams>
@@ -206,7 +233,7 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
                       const InputParams& input_params) {
-    return model_(tokens, positions, kv_caches, input_params);
+    return model_->forward(tokens, positions, kv_caches, input_params);
   }
 
   // hidden_states: [num_tokens, hidden_size]

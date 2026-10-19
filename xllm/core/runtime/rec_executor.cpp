@@ -24,7 +24,7 @@ limitations under the License.
 
 namespace xllm {
 
-RecExecutor::RecExecutor(RecCausalLM* model,
+RecExecutor::RecExecutor(RecModel* model,
                          const ModelArgs& args,
                          const torch::Device& device,
                          const runtime::Options& options) {
@@ -34,6 +34,9 @@ RecExecutor::RecExecutor(RecCausalLM* model,
       << "Rec execution requires a native Rec model implementation.";
   CHECK_NE(options.npu_kernel_backend(), "XLITE")
       << "XLITE does not support native Rec inputs.";
+  CHECK(!Platform::is_ilu() || !options.enable_graph())
+      << "ILU does not support native Rec graph execution. "
+         "Set --enable_graph=false.";
   if (options.backend() != "vlm" && options.enable_graph()) {
     backend = Platform::type_str();
   } else {

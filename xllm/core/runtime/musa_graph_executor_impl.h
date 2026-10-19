@@ -46,7 +46,7 @@ using c10::musa::MUSAStream;
 #include "core/common/macros.h"
 #include "core/framework/model/causal_lm.h"
 #include "core/framework/model/model_input_params.h"
-#include "core/framework/model/rec_causal_lm.h"
+#include "core/framework/model/rec_model.h"
 #include "core/kernels/musa/llm_decode_metadata_update.h"
 #include "core/kv_cache/storage/kv_cache.h"
 #include "core/runtime/executor_impl.h"
@@ -302,7 +302,7 @@ class MusaGraph final {
                const c10::musa::MempoolId_t& pool,
                MusaMemPool* pool_ptr = nullptr);
 
-  bool capture(RecCausalLM* model,
+  bool capture(RecModel* model,
                const ModelArgs& args,
                const runtime::Options& options,
                const torch::Tensor& tokens,
@@ -450,7 +450,7 @@ class MusaGraphExecutorImpl final : public ExecutorImpl,
                         const ModelArgs& args,
                         const torch::Device& device,
                         const runtime::Options& options);
-  MusaGraphExecutorImpl(RecCausalLM* model,
+  MusaGraphExecutorImpl(RecModel* model,
                         const ModelArgs& args,
                         const torch::Device& device,
                         const runtime::Options& options);
@@ -477,7 +477,7 @@ class MusaGraphExecutorImpl final : public ExecutorImpl,
  private:
   // not own
   CausalLM* model_;
-  RecCausalLM* rec_model_ = nullptr;
+  RecModel* rec_model_ = nullptr;
 
   template <typename Model, typename Params>
   ModelOutput run_typed(Model* model,

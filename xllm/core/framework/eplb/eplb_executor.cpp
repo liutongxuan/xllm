@@ -15,6 +15,8 @@ limitations under the License.
 
 #include "core/framework/eplb/eplb_executor.h"
 
+#include <glog/logging.h>
+
 #include <condition_variable>
 #include <functional>
 #include <memory>
@@ -22,12 +24,11 @@ limitations under the License.
 #include <queue>
 #include <thread>
 
-#include "runtime/forward_params.h"
+#include "core/framework/model/causal_lm.h"
 
 namespace xllm {
 
-EplbExecutor::EplbExecutor(ExpertWeightAccess& model,
-                           const torch::Device& device)
+EplbExecutor::EplbExecutor(CausalLM& model, const torch::Device& device)
     : model_(model),
       device_(device),
       stream_(device_.get_stream_from_pool()),

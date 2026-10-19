@@ -17,7 +17,7 @@ limitations under the License.
 
 #include <utility>
 
-#include "common/macros.h"
+#include "core/common/macros.h"
 #include "core/framework/model/domain_attention_input.h"
 #include "core/framework/model/rec_strategy_params.h"
 

@@ -32,7 +32,7 @@ limitations under the License.
 #include "core/framework/model/causal_lm.h"
 #include "core/framework/model/model_args.h"
 #include "core/framework/model/model_input_params.h"
-#include "core/framework/model/rec_causal_lm.h"
+#include "core/framework/model/rec_model.h"
 #include "core/layers/cuda/attention.h"
 #include "core/layers/cuda/flashinfer_workspace.h"
 #include "core/platform/device.h"
@@ -243,12 +243,14 @@ class FakeAttnCausalLM final : public CausalLM {
   std::unique_ptr<layer::AttentionImpl> attn_;
 };
 
-class NativeRecGraphModel final : public RecCausalLM {
+class NativeRecGraphModel final : public RecModel {
  public:
   NativeRecGraphModel(int64_t hidden_size, const torch::Device& device)
       : hidden_size_(hidden_size),
         options_(torch::TensorOptions().dtype(torch::kFloat32).device(device)) {
   }
+
+  RecModelKind model_kind() const override { return RecModelKind::kOneRec; }
 
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
@@ -268,8 +270,6 @@ class NativeRecGraphModel final : public RecCausalLM {
     return hidden_states;
   }
   void load_model(std::unique_ptr<ModelLoader>) override {}
-  void prepare_expert_weight(int32_t, const std::vector<int32_t>&) override {}
-  void update_expert_weight(int32_t) override {}
   torch::Device device() const override { return options_.device(); }
   const torch::TensorOptions& options() const override { return options_; }
   int64_t forward_count() const { return forward_count_; }

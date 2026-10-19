@@ -36,7 +36,7 @@ limitations under the License.
 #include "core/common/macros.h"
 #include "core/framework/model/causal_lm.h"
 #include "core/framework/model/model_input_params.h"
-#include "core/framework/model/rec_causal_lm.h"
+#include "core/framework/model/rec_model.h"
 #include "core/kernels/cuda/llm_decode_metadata_update.h"
 #include "core/kernels/cuda/piecewise_graphs.h"
 #include "core/kv_cache/storage/kv_cache.h"
@@ -268,7 +268,7 @@ class CudaGraph {
                uint32_t bucket_num_tokens,
                const at::cuda::MempoolId_t& pool,
                TorchMemPool* pool_ptr = nullptr);
-  bool capture(RecCausalLM* model,
+  bool capture(RecModel* model,
                const ModelArgs& args,
                const runtime::Options& options,
                const torch::Tensor& tokens,
@@ -343,7 +343,7 @@ class CudaGraphExecutorImpl final : public ExecutorImpl,
                         const torch::Device& device,
                         const runtime::Options& options);
 
-  CudaGraphExecutorImpl(RecCausalLM* model,
+  CudaGraphExecutorImpl(RecModel* model,
                         const ModelArgs& args,
                         const torch::Device& device,
                         const runtime::Options& options);
@@ -371,7 +371,7 @@ class CudaGraphExecutorImpl final : public ExecutorImpl,
  private:
   // not own
   CausalLM* model_ = nullptr;
-  RecCausalLM* rec_model_ = nullptr;
+  RecModel* rec_model_ = nullptr;
 
   template <typename Model, typename Params>
   ModelOutput run_typed(Model* model,

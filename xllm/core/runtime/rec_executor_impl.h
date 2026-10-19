@@ -21,7 +21,7 @@ limitations under the License.
 
 #include "core/kv_cache/storage/kv_cache.h"
 #include "framework/model/model_output.h"
-#include "framework/model/rec_causal_lm.h"
+#include "framework/model/rec_model.h"
 #include "framework/model/rec_model_params.h"
 #include "runtime/options.h"
 #include "runtime/rec_executor_backend.h"
@@ -31,7 +31,7 @@ namespace xllm {
 
 class RecExecutorImpl final : public RecExecutorBackend {
  public:
-  RecExecutorImpl(RecCausalLM* model,
+  RecExecutorImpl(RecModel* model,
                   const ModelArgs& args,
                   const torch::Device& device,
                   const runtime::Options& options);
@@ -44,7 +44,7 @@ class RecExecutorImpl final : public RecExecutorBackend {
                   const RecModelParams& params) override;
 
  private:
-  RecCausalLM* model_;  // not owned
+  RecModel* model_;  // not owned
 };
 
 REGISTER_REC_EXECUTOR("rec", RecExecutorImpl);

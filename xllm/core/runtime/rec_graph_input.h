@@ -49,6 +49,8 @@ inline bool rec_graph_tensors_match(const std::vector<torch::Tensor>& captured,
 
 inline bool rec_graph_strategy_matches(const OneRecModelInputParams& captured,
                                        const OneRecModelInputParams& current) {
+  // seq_len and generated_tokens only drive worker-side decoding. Keep
+  // is_first_prefill because it selects the model's cross-attention path.
   return captured.rec_stage == current.rec_stage &&
          captured.is_hybrid_mode == current.is_hybrid_mode &&
          captured.is_encoder_forward == current.is_encoder_forward &&
@@ -58,8 +60,6 @@ inline bool rec_graph_strategy_matches(const OneRecModelInputParams& captured,
          captured.is_first_prefill == current.is_first_prefill &&
          captured.bs == current.bs &&
          captured.group_width == current.group_width &&
-         captured.seq_len == current.seq_len &&
-         captured.generated_tokens == current.generated_tokens &&
          captured.cross_attn_kv_cu_seq_lens_vec ==
              current.cross_attn_kv_cu_seq_lens_vec &&
          rec_graph_tensor_matches(captured.encoder_seq_lens_tensor,
@@ -105,6 +105,8 @@ inline bool rec_graph_strategy_matches(const OneRecXAttentionParams& captured,
 
 inline bool rec_graph_strategy_matches(const LlmRecMultiRoundParams& captured,
                                        const LlmRecMultiRoundParams& current) {
+  // The worker selects decode_positions_tensor_list into input.positions,
+  // which replay copies into the graph's persistent position buffer.
   return captured.batch_size == current.batch_size &&
          captured.beam_width == current.beam_width &&
          captured.total_round == current.total_round &&
@@ -120,8 +122,6 @@ inline bool rec_graph_strategy_matches(const LlmRecMultiRoundParams& captured,
                                  current.shared_k_caches) &&
          rec_graph_tensors_match(captured.shared_v_caches,
                                  current.shared_v_caches) &&
-         rec_graph_tensors_match(captured.decode_positions_tensor_list,
-                                 current.decode_positions_tensor_list) &&
          rec_graph_tensor_matches(captured.beam_width_tensor,
                                   current.beam_width_tensor) &&
          rec_graph_tensor_matches(captured.current_round_tensor,

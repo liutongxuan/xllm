@@ -322,7 +322,7 @@ ModelOutput forward_eager(CausalLM* model,
   return model->forward(materialized_tokens, positions, kv_cache, params);
 }
 
-ModelOutput forward_eager(RecCausalLM* model,
+ModelOutput forward_eager(RecModel* model,
                           const torch::Tensor& tokens,
                           const torch::Tensor& positions,
                           std::vector<KVCache>& kv_cache,
@@ -571,7 +571,7 @@ bool AclGraph::capture(CausalLM* model,
   return true;
 }
 
-bool AclGraph::capture(RecCausalLM* model,
+bool AclGraph::capture(RecModel* model,
                        const runtime::Options& options,
                        const torch::Tensor& tokens,
                        const torch::Tensor& positions,
@@ -610,27 +610,45 @@ bool AclGraph::capture(RecCausalLM* model,
     c10_npu::NPUStreamGuard stream_guard(selected_stream);
     graph_stream_ = selected_stream.stream();
     CHECK_EQ(aclrtSynchronizeStream(graph_stream_), ACL_SUCCESS);
-    graph_.capture_begin(
-        graph_pool,
-        aclmdlRICaptureMode::ACL_MODEL_RI_CAPTURE_MODE_THREAD_LOCAL);
-    auto output =
-        model->forward(persistent_param_.persistent_tokens(num_tokens_),
-                       persistent_param_.persistent_positions(num_tokens_),
-                       kv_cache,
-                       *rec_capture_params_);
-    persistent_param_.set_hidden_states(output.hidden_states);
-    if (options.enable_graph_aux_hidden_states() &&
-        output.aux_hidden_states.defined()) {
-      persistent_param_.set_aux_hidden_states(output.aux_hidden_states);
+    bool capture_started = false;
+    try {
+      graph_.capture_begin(
+          graph_pool,
+          aclmdlRICaptureMode::ACL_MODEL_RI_CAPTURE_MODE_THREAD_LOCAL);
+      capture_started = true;
+      auto output =
+          model->forward(persistent_param_.persistent_tokens(num_tokens_),
+                         persistent_param_.persistent_positions(num_tokens_),
+                         kv_cache,
+                         *rec_capture_params_);
+      persistent_param_.set_hidden_states(output.hidden_states);
+      if (options.enable_graph_aux_hidden_states() &&
+          output.aux_hidden_states.defined()) {
+        persistent_param_.set_aux_hidden_states(output.aux_hidden_states);
+      }
+      graph_.capture_end();
+      capture_started = false;
+    } catch (...) {
+      if (capture_started) {
+        try {
+          graph_.capture_end();
+        } catch (const std::exception& cleanup_error) {
+          LOG(ERROR) << "Rec ACL graph capture_end during cleanup failed: "
+                     << cleanup_error.what();
+        } catch (...) {
+          LOG(ERROR) << "Rec ACL graph capture_end during cleanup failed.";
+        }
+        graph_.reset();
+      }
+      throw;
     }
-    graph_.capture_end();
   }
   CHECK_EQ(aclrtSynchronizeStream(graph_stream_), ACL_SUCCESS);
   replay(model, tokens, positions, kv_cache, params);
   return true;
 }
 
-ModelOutput AclGraph::replay(RecCausalLM* /*model*/,
+ModelOutput AclGraph::replay(RecModel* /*model*/,
                              const torch::Tensor& tokens,
                              const torch::Tensor& positions,
                              std::vector<KVCache>& kv_cache,
@@ -1127,7 +1145,7 @@ AclGraphExecutorImpl::AclGraphExecutorImpl(CausalLM* model,
              model->supports_mla_graph_kv_bucketing());
 }
 
-AclGraphExecutorImpl::AclGraphExecutorImpl(RecCausalLM* model,
+AclGraphExecutorImpl::AclGraphExecutorImpl(RecModel* model,
                                            const ModelArgs& args,
                                            const torch::Device& device,
                                            const runtime::Options& options)

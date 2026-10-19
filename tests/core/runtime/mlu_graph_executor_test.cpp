@@ -30,7 +30,7 @@ limitations under the License.
 #include "core/framework/config/execution_config.h"
 #include "core/framework/model/model_args.h"
 #include "core/framework/model/model_output.h"
-#include "core/framework/model/rec_causal_lm.h"
+#include "core/framework/model/rec_model.h"
 #include "core/kv_cache/storage/kv_cache.h"
 #include "mlu_graph_executor_impl.h"
 #include "models/llm/mlu/mtp_topk_state.h"
@@ -149,10 +149,12 @@ class MockCausalLM : public CausalLM {
 
 namespace {
 
-class CountingRecCausalLM final : public RecCausalLM {
+class CountingRecModel final : public RecModel {
  public:
-  explicit CountingRecCausalLM(torch::TensorOptions options)
+  explicit CountingRecModel(torch::TensorOptions options)
       : options_(std::move(options)) {}
+
+  RecModelKind model_kind() const override { return RecModelKind::kOneRec; }
 
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
@@ -173,9 +175,6 @@ class CountingRecCausalLM final : public RecCausalLM {
   void load_model(std::unique_ptr<ModelLoader> loader) override {}
   torch::Device device() const override { return options_.device(); }
   const torch::TensorOptions& options() const override { return options_; }
-  void prepare_expert_weight(int32_t layer_id,
-                             const std::vector<int32_t>& expert_ids) override {}
-  void update_expert_weight(int32_t layer_id) override {}
   int32_t forward_count() const { return forward_count_; }
 
  private:
@@ -455,7 +454,7 @@ TEST_F(MluGraphExecutorTest, DraftEagerPreservesTypedTopkWhenAuxIsDisabled) {
 
 TEST_F(MluGraphExecutorTest, NativeRecReplaysAndRecapturesChangedKvStorage) {
   const torch::Device device("mlu:0");
-  CountingRecCausalLM model(tensor_options_);
+  CountingRecModel model(tensor_options_);
   ::xllm::mlu::MluGraphExecutorImpl executor(
       &model, model_args_, device, options_);
   RecModelParams params;

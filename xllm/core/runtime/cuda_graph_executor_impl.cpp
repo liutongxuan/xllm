@@ -940,7 +940,7 @@ bool CudaGraph::capture(CausalLM* model,
                        pool_ptr);
 }
 
-bool CudaGraph::capture(RecCausalLM* model,
+bool CudaGraph::capture(RecModel* model,
                         const ModelArgs& args,
                         const runtime::Options& options,
                         const torch::Tensor& tokens,
@@ -1234,7 +1234,7 @@ CudaGraphExecutorImpl::CudaGraphExecutorImpl(CausalLM* model,
   initialize();
 }
 
-CudaGraphExecutorImpl::CudaGraphExecutorImpl(RecCausalLM* model,
+CudaGraphExecutorImpl::CudaGraphExecutorImpl(RecModel* model,
                                              const ModelArgs& args,
                                              const torch::Device& device,
                                              const runtime::Options& options)

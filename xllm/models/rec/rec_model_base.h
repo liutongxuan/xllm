@@ -33,9 +33,9 @@ limitations under the License.
 namespace xllm {
 
 template <typename ModelType>
-class RecForCausalLMImplBase : public torch::nn::Module {
+class GenericRecImplBase : public torch::nn::Module {
  public:
-  explicit RecForCausalLMImplBase(const ModelContext& context) {
+  explicit GenericRecImplBase(const ModelContext& context) {
     const auto& args = context.get_model_args();
     tie_word_embeddings_ = args.tie_word_embeddings();
     const float denom =
@@ -85,14 +85,6 @@ class RecForCausalLMImplBase : public torch::nn::Module {
       }
     }
   }
-
-  virtual void prepare_expert_weight(int32_t layer_id,
-                                     const std::vector<int32_t>& expert_ids) {
-    (void)layer_id;
-    (void)expert_ids;
-  }
-
-  virtual void update_expert_weight(int32_t layer_id) { (void)layer_id; }
 
   virtual layer::LmHead get_lm_head() { return lm_head_; }
 

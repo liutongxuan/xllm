@@ -14,21 +14,21 @@ limitations under the License.
 ==============================================================================*/
 
 #pragma once
-
-#include <torch/torch.h>
-
-#include <memory>
-#include <string>
-
-#include "common/macros.h"
-#include "core/framework/model/expert_weight_access.h"
-#include "core/framework/model_loader/model_loader.h"
-#include "core/layers/common/lm_head.h"
-#include "core/layers/common/word_embedding.h"
 #if defined(USE_NPU)
 #include "core/layers/npu/npu_lm_head_impl.h"
 #include "core/layers/npu/npu_word_embedding_impl.h"
 #endif
+#include "core/layers/common/lm_head.h"
+#include "core/layers/common/word_embedding.h"
+
+#include <torch/torch.h>
+
+#include <cstdint>
+#include <memory>
+#include <string>
+
+#include "common/macros.h"
+#include "core/framework/model_loader/model_loader.h"
 
 namespace xllm {
 
@@ -36,9 +36,9 @@ class Stream;
 
 // Input-independent model weights and runtime resources. Forward contracts stay
 // on the language-model and recommendation-model interfaces.
-class ModelLifecycle : public ExpertWeightAccess {
+class Model {
  public:
-  ~ModelLifecycle() override = default;
+  virtual ~Model() = default;
 
   virtual void load_model(std::unique_ptr<ModelLoader> loader) = 0;
 

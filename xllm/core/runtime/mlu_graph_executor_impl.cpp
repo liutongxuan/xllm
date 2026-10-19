@@ -505,7 +505,7 @@ void MluGraph::capture(ModelType* model,
                        const torch_mlu::MempoolId_t& pool,
                        const torch_mlu::MLUStream& capture_stream,
                        const runtime::Options& options) {
-  using Params = std::conditional_t<std::is_same_v<ModelType, RecCausalLM>,
+  using Params = std::conditional_t<std::is_same_v<ModelType, RecModel>,
                                     RecModelParams,
                                     ModelInputParams>;
   Params& graph_params = persistent_param_->capture_params<Params>();
@@ -591,7 +591,7 @@ MluGraphExecutorImpl::MluGraphExecutorImpl(CausalLM* model,
   }
 }
 
-MluGraphExecutorImpl::MluGraphExecutorImpl(RecCausalLM* model,
+MluGraphExecutorImpl::MluGraphExecutorImpl(RecModel* model,
                                            const ModelArgs& args,
                                            const torch::Device& device,
                                            const runtime::Options& options)

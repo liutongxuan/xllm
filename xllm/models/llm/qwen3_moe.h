@@ -15,6 +15,8 @@ limitations under the License.
 
 #pragma once
 
+#include <type_traits>
+
 #include "core/framework/model/model_output.h"
 #if defined(USE_NPU)
 #include "core/common/global_flags.h"
@@ -22,8 +24,7 @@ limitations under the License.
 #endif
 #include "core/layers/qwen3_moe_decoder_layer.h"
 #include "core/util/rec_model_utils.h"
-#include "llm_model_base.h"
-#include "models/llm/qwen_execution_input.h"
+#include "models/llm/llm_model_base.h"
 
 namespace xllm {
 
@@ -135,8 +136,6 @@ class Qwen3MoeModelImpl : public LlmModelImplBase<layer::Qwen3MoeDecoderLayer> {
       h = embed_tokens_(tokens);
     }
 
-    const auto& deep_stacks = qwen_deep_stacks(input_params);
-    const int32_t deep_stack_size = static_cast<int32_t>(deep_stacks.size());
     if (!modified_input_params.attn_metadata) {
       modified_input_params.attn_metadata =
           std::make_shared<layer::AttentionMetadata>(
@@ -169,19 +168,24 @@ class Qwen3MoeModelImpl : public LlmModelImplBase<layer::Qwen3MoeDecoderLayer> {
       }
 #endif
       auto& layer = layers_[i];
-      h = layer(h,
-                residual,
-                positions,
-                attn_metadata,
-                kv_caches[i],
-                modified_input_params);
+      h = layer->forward(h,
+                         residual,
+                         positions,
+                         attn_metadata,
+                         kv_caches[i],
+                         modified_input_params);
       if (!modified_input_params.record_layer(static_cast<uint32_t>(i),
                                               h.device())) {
         return ModelOutput();
       }
 
-      if (deep_stack_size && i < deep_stack_size) {
-        h = h + deep_stacks[i];
+      if constexpr (std::is_same_v<InputParams, ModelInputParams>) {
+        if (input_params.has_multimodal()) {
+          const auto& deep_stacks = input_params.multimodal().deep_stacks;
+          if (i < deep_stacks.size()) {
+            h = h + deep_stacks[i];
+          }
+        }
       }
     }
     auto [hidden_states, residual_out] = norm_(h, residual);
@@ -291,7 +295,7 @@ TORCH_MODULE(Qwen3MoeForCausalLM);
 // register the causal model
 REGISTER_CAUSAL_MODEL(qwen3_moe, Qwen3MoeForCausalLM);
 
-REGISTER_REC_MODEL(qwen3_moe, Qwen3MoeForCausalLM);
+REGISTER_CAUSAL_REC_MODEL(qwen3_moe, Qwen3MoeForCausalLM);
 
 // register the model args
 // example config:

@@ -1513,7 +1513,7 @@ bool MusaGraph::capture(CausalLM* model,
                        pool_ptr);
 }
 
-bool MusaGraph::capture(RecCausalLM* model,
+bool MusaGraph::capture(RecModel* model,
                         const ModelArgs& args,
                         const runtime::Options& options,
                         const torch::Tensor& tokens,
@@ -1690,7 +1690,7 @@ MusaGraphExecutorImpl::MusaGraphExecutorImpl(CausalLM* model,
       get_allocator_reserved_bytes(device_.index());
 }
 
-MusaGraphExecutorImpl::MusaGraphExecutorImpl(RecCausalLM* model,
+MusaGraphExecutorImpl::MusaGraphExecutorImpl(RecModel* model,
                                              const ModelArgs& args,
                                              const torch::Device& device,
                                              const runtime::Options& options)

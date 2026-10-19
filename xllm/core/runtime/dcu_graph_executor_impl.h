@@ -244,7 +244,7 @@ class DcuGraphExecutorImpl final : public ExecutorImpl,
                        const torch::Device& device,
                        const runtime::Options& options);
 
-  DcuGraphExecutorImpl(RecCausalLM* model,
+  DcuGraphExecutorImpl(RecModel* model,
                        const ModelArgs& args,
                        const torch::Device& device,
                        const runtime::Options& options);
@@ -283,8 +283,8 @@ class DcuGraphExecutorImpl final : public ExecutorImpl,
   static DcuStream get_capture_stream(c10::DeviceIndex device_index);
 
  private:
-  CausalLM* model_;                   // not owned
-  RecCausalLM* rec_model_ = nullptr;  // not owned
+  CausalLM* model_;                // not owned
+  RecModel* rec_model_ = nullptr;  // not owned
 
   ModelArgs args_;
   torch::Device device_;

@@ -21,6 +21,7 @@ limitations under the License.
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <unordered_set>
 #include <vector>
 
@@ -31,8 +32,7 @@ limitations under the License.
 #include "core/framework/model/model_output.h"
 #include "core/framework/state_dict/state_dict.h"
 #include "core/layers/npu/npu_qwen3_decoder_layer_impl.h"
-#include "llm_model_base.h"
-#include "models/llm/qwen_execution_input.h"
+#include "models/llm/npu/llm_model_base.h"
 
 namespace xllm::npu::model {
 
@@ -185,9 +185,6 @@ class QWen3ModelImpl : public LlmModelImplBase<QWen3DecoderLayer> {
                            torch::Tensor positions,
                            std::vector<KVCache>& kv_caches,
                            InputParams& input_params) {
-    const bool use_deepstack = !qwen_deep_stacks(input_params).empty();
-    const auto& deep_stacks = qwen_deep_stacks(input_params);
-
     if (tokens.numel() == 0) {
       tokens = torch::tensor({1}).to(torch::kInt32).to(tokens.device());
       positions = torch::tensor({0}).to(torch::kInt32).to(tokens.device());
@@ -294,19 +291,22 @@ class QWen3ModelImpl : public LlmModelImplBase<QWen3DecoderLayer> {
       const int32_t layer_index = i;
       rolling_guard.before_layer(layer_index);
 
-      layer(h,
-            cos_pos,
-            sin_pos,
-            attn_mask,
-            kv_caches[i],
-            input_params_new,
-            event,
-            event_flag);
+      layer->forward(h,
+                     cos_pos,
+                     sin_pos,
+                     attn_mask,
+                     kv_caches[i],
+                     input_params_new,
+                     event,
+                     event_flag);
 
       rolling_guard.after_layer(layer_index);
-      if (use_deepstack) {
-        if (deep_stacks.size() > 0 && i < deep_stacks.size()) {
-          h = h + deep_stacks[i];
+      if constexpr (std::is_same_v<InputParams, ModelInputParams>) {
+        if (input_params.has_multimodal()) {
+          const auto& deep_stacks = input_params.multimodal().deep_stacks;
+          if (i < deep_stacks.size()) {
+            h = h + deep_stacks[i];
+          }
         }
       }
       // ATB keeps `h` as the full residual stream, so no separate residual.
@@ -490,7 +490,7 @@ TORCH_MODULE(QWen3ForCausalLM);
 // register the causal model
 REGISTER_CAUSAL_MODEL_WITH_VARNAME(qwen3_atb, qwen3_atb, QWen3ForCausalLM);
 
-REGISTER_REC_MODEL(qwen3_atb, QWen3ForCausalLM);
+REGISTER_CAUSAL_REC_MODEL(qwen3_atb, QWen3ForCausalLM);
 
 // register the model args
 REGISTER_MODEL_ARGS_WITH_VARNAME(qwen3_atb, qwen3_atb, [&] {

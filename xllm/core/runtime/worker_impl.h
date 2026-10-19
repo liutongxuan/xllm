@@ -31,7 +31,6 @@ limitations under the License.
 #include "core/kv_cache/transfer/kv_cache_transfer.h"
 #include "executor.h"
 #include "forward_params.h"
-#include "framework/eplb/eplb_executor.h"
 #include "framework/model/causal_lm.h"
 #include "framework/model/model_input_params.h"
 #include "framework/model_context/model_context.h"
@@ -309,48 +308,46 @@ class WorkerImpl {
 
 #if defined(USE_NPU)
   virtual layer::NpuLmHead get_npu_lm_head() {
-    return model_lifecycle()->get_npu_lm_head();
+    return model()->get_npu_lm_head();
   }
 
   virtual void set_npu_lm_head(layer::NpuLmHead& head) {
-    model_lifecycle()->set_npu_lm_head(head);
+    model()->set_npu_lm_head(head);
   }
 
   virtual layer::NpuWordEmbedding get_npu_word_embedding() {
-    return model_lifecycle()->get_npu_word_embedding();
+    return model()->get_npu_word_embedding();
   }
 
   virtual bool has_restored_npu_word_embedding() {
-    return model_lifecycle()->has_restored_npu_word_embedding();
+    return model()->has_restored_npu_word_embedding();
   }
 
   virtual void set_npu_word_embedding(layer::NpuWordEmbedding& embedding) {
-    model_lifecycle()->set_npu_word_embedding(embedding);
+    model()->set_npu_word_embedding(embedding);
   }
 
   virtual void set_restored_npu_word_embedding(
       layer::NpuWordEmbedding& embedding) {
-    model_lifecycle()->set_restored_npu_word_embedding(embedding);
+    model()->set_restored_npu_word_embedding(embedding);
   }
 #endif
 
-  virtual layer::LmHead get_lm_head() {
-    return model_lifecycle()->get_lm_head();
-  }
+  virtual layer::LmHead get_lm_head() { return model()->get_lm_head(); }
 
-  virtual void set_lm_head(layer::LmHead& head) {
-    model_lifecycle()->set_lm_head(head);
-  }
+  virtual void set_lm_head(layer::LmHead& head) { model()->set_lm_head(head); }
 
   virtual layer::WordEmbedding get_word_embedding() {
-    return model_lifecycle()->get_word_embedding();
+    return model()->get_word_embedding();
   }
 
   virtual void set_word_embedding(layer::WordEmbedding& embedding) {
-    model_lifecycle()->set_word_embedding(embedding);
+    model()->set_word_embedding(embedding);
   }
 
   bool share_weights_from(WorkerImpl& source) {
+    // Weight sharing is specific to CausalLM. Rec workers own their models in
+    // pipelines, so use model_ rather than the virtual model() accessor here.
     if (model_ == nullptr || source.model_ == nullptr) {
       return false;
     }
@@ -379,6 +376,8 @@ class WorkerImpl {
   }
 
  protected:
+  virtual void prepare_expert_input(ExpertInput& /*input*/) const {}
+
   torch::Tensor select_hidden_states_for_embedding(
       const ModelOutput& model_output) const;
 
@@ -538,9 +537,8 @@ class WorkerImpl {
 #endif
 
  protected:
-  // Borrowed lifecycle access; specialized workers retain their own model
-  // owner.
-  virtual ModelLifecycle* model_lifecycle() const { return model_.get(); }
+  // Borrowed model access; specialized workers retain ownership.
+  virtual Model* model() const { return model_.get(); }
 
   // runtime options
   runtime::Options options_;
@@ -596,8 +594,6 @@ class WorkerImpl {
 
   std::unique_ptr<Sampler> sampler_;
 
-  std::unique_ptr<EplbExecutor> eplb_executor_;
-
   // params for enable_schedule_overlap case
   // an output to store the result of last step
   ForwardOutput last_step_output_;
@@ -635,8 +631,6 @@ class WorkerImpl {
   bool is_spec_draft_ = false;
 
   Status status_ = Status::UNINITIALIZED;
-
-  torch::Tensor expert_load_data_;
 
   std::string model_weights_path_;
 };

@@ -32,7 +32,7 @@ limitations under the License.
 #include "core/framework/model/causal_lm.h"
 #include "core/framework/model/model_args.h"
 #include "core/framework/model/model_input_params.h"
-#include "core/framework/model/rec_causal_lm.h"
+#include "core/framework/model/rec_model.h"
 #include "core/kv_cache/storage/kv_cache.h"
 #include "core/platform/device.h"
 #include "core/runtime/dcu_graph_executor_impl.h"
@@ -166,10 +166,12 @@ class FakeSimpleCausalLM final : public CausalLM {
   torch::nn::Linear proj_{nullptr};
 };
 
-class CountingRecCausalLM final : public RecCausalLM {
+class CountingRecModel final : public RecModel {
  public:
-  explicit CountingRecCausalLM(torch::TensorOptions options)
+  explicit CountingRecModel(torch::TensorOptions options)
       : options_(std::move(options)) {}
+
+  RecModelKind model_kind() const override { return RecModelKind::kOneRec; }
 
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
@@ -190,9 +192,6 @@ class CountingRecCausalLM final : public RecCausalLM {
   void load_model(std::unique_ptr<ModelLoader> loader) override {}
   torch::Device device() const override { return options_.device(); }
   const torch::TensorOptions& options() const override { return options_; }
-  void prepare_expert_weight(int32_t layer_id,
-                             const std::vector<int32_t>& expert_ids) override {}
-  void update_expert_weight(int32_t layer_id) override {}
   int32_t forward_count() const { return forward_count_; }
 
  private:
@@ -381,7 +380,7 @@ TEST(DcuGraphExecutorTest, NativeRecReplaysAndRecapturesChangedKvStorage) {
   const auto int_options = tensor_options.dtype(torch::kInt32);
   const ModelArgs args = MakeFakeModelArgs(64);
   const runtime::Options options = MakeRuntimeOptions(8);
-  CountingRecCausalLM model(tensor_options);
+  CountingRecModel model(tensor_options);
   runtime::dcu::DcuGraphExecutorImpl executor(&model, args, device, options);
   auto params = MakeDecodeParams<RecModelParams>(device, 1);
   params.embedding.input_embedding = torch::ones({1, 64}, tensor_options);

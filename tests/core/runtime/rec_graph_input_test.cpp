@@ -39,6 +39,75 @@ TEST(RecGraphInputTest, ReusesBindingsAfterInPlaceRoundUpdate) {
   EXPECT_EQ(captured.llmrec_params()->current_round_tensor.item<int32_t>(), 1);
 }
 
+TEST(RecGraphInputTest, ReusesBindingsAfterOneRecDecodeBookkeepingUpdate) {
+  RecModelParams params;
+  auto& strategy = params.mutable_onerec_params();
+  strategy.rec_stage = OneRecModelInputParams::RecStage::DECODE;
+  strategy.is_first_prefill = false;
+  strategy.seq_len = 1;
+  strategy.generated_tokens = {{10}};
+  RecModelParams captured = params.clone();
+
+  strategy.seq_len = 2;
+  strategy.generated_tokens = {{10, 20}};
+
+  EXPECT_TRUE(rec_graph_bindings_match(captured, params));
+}
+
+TEST(RecGraphInputTest, ReusesXAttentionBindingsAfterDecodeBookkeepingUpdate) {
+  RecModelParams params;
+  auto& strategy = params.mutable_onerec_xattention_params();
+  strategy.rec_stage = OneRecModelInputParams::RecStage::DECODE;
+  strategy.is_first_prefill = false;
+  strategy.seq_len = 1;
+  strategy.generated_tokens = {{10}};
+  strategy.unshared_k_caches = {torch::ones({2, 4})};
+  strategy.unshared_v_caches = {torch::zeros({2, 4})};
+  RecModelParams captured = params.clone();
+
+  strategy.seq_len = 2;
+  strategy.generated_tokens = {{10, 20}};
+
+  EXPECT_TRUE(rec_graph_bindings_match(captured, params));
+}
+
+TEST(RecGraphInputTest, ReusesBindingsAfterWorkerPositionTableChanges) {
+  RecModelParams params;
+  auto& strategy = params.mutable_llmrec_params();
+  strategy.decode_positions_tensor_list = {torch::tensor({4, 4})};
+  RecModelParams captured = params.clone();
+
+  strategy.decode_positions_tensor_list = {torch::tensor({8, 8}),
+                                           torch::tensor({9, 9})};
+
+  EXPECT_TRUE(rec_graph_bindings_match(captured, params));
+}
+
+TEST(RecGraphInputTest, RejectsChangedOneRecExecutionStrategy) {
+  RecModelParams params;
+  auto& strategy = params.mutable_onerec_params();
+  strategy.encoder_seq_lens = {4};
+  RecModelParams captured = params.clone();
+
+  strategy.is_first_prefill = false;
+  EXPECT_FALSE(rec_graph_bindings_match(captured, params));
+
+  strategy.is_first_prefill = true;
+  strategy.encoder_seq_lens = {8};
+  EXPECT_FALSE(rec_graph_bindings_match(captured, params));
+
+  strategy.encoder_seq_lens = {4};
+  strategy.rec_stage = OneRecModelInputParams::RecStage::DECODE;
+  EXPECT_FALSE(rec_graph_bindings_match(captured, params));
+
+  RecModelParams xattention_params;
+  xattention_params.mutable_onerec_xattention_params();
+  RecModelParams captured_xattention = xattention_params.clone();
+  xattention_params.mutable_onerec_xattention_params().is_first_prefill = false;
+  EXPECT_FALSE(
+      rec_graph_bindings_match(captured_xattention, xattention_params));
+}
+
 TEST(RecGraphInputTest, RejectsEqualShapeKvWithNewStorage) {
   RecModelParams params;
   auto& strategy = params.mutable_onerec_xattention_params();

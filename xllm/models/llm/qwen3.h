@@ -17,14 +17,15 @@ limitations under the License.
 
 #include <torch/nn/functional/normalization.h>
 
+#include <type_traits>
+
 #include "core/framework/model/model_output.h"
 #include "core/util/rec_model_utils.h"
 #if defined(USE_NPU)
 #include "core/layers/common/attention_mask.h"
 #endif
 #include "core/layers/qwen3_decoder_layer.h"
-#include "llm_model_base.h"
-#include "models/llm/qwen_execution_input.h"
+#include "models/llm/llm_model_base.h"
 
 namespace xllm {
 
@@ -109,7 +110,7 @@ class QWen3ModelImpl : public LlmModelImplBase<layer::Qwen3DecoderLayer> {
                       torch::Tensor positions,
                       std::vector<KVCache>& kv_caches,
                       const ModelInputParams& input_params) override {
-    auto local_params = input_params;
+    auto local_params = input_params.clone().view();
     return forward_impl(tokens, positions, kv_caches, local_params);
   }
 
@@ -126,9 +127,7 @@ class QWen3ModelImpl : public LlmModelImplBase<layer::Qwen3DecoderLayer> {
                            torch::Tensor positions,
                            std::vector<KVCache>& kv_caches,
                            InputParams& input_params) {
-    const bool use_deepstack = !qwen_deep_stacks(input_params).empty();
     auto& input_params_new = input_params;
-    const auto& deep_stacks = qwen_deep_stacks(input_params);
 
     if (tokens.numel() == 0) {
       tokens = torch::tensor({1}).to(torch::kInt32).to(tokens.device());
@@ -175,20 +174,23 @@ class QWen3ModelImpl : public LlmModelImplBase<layer::Qwen3DecoderLayer> {
       }
 #endif
       auto& layer = layers_[i];
-      h = layer(h,
-                residual,
-                positions,
-                attn_metadata,
-                kv_caches[i],
-                input_params_new);
+      h = layer->forward(h,
+                         residual,
+                         positions,
+                         attn_metadata,
+                         kv_caches[i],
+                         input_params_new);
       if (!input_params_new.record_layer(static_cast<uint32_t>(i),
                                          h.device())) {
         return ModelOutput();
       }
 
-      if (use_deepstack) {
-        if (deep_stacks.size() > 0 && i < deep_stacks.size()) {
-          h = h + deep_stacks[i];
+      if constexpr (std::is_same_v<InputParams, ModelInputParams>) {
+        if (input_params.has_multimodal()) {
+          const auto& deep_stacks = input_params.multimodal().deep_stacks;
+          if (i < deep_stacks.size()) {
+            h = h + deep_stacks[i];
+          }
         }
       }
     }
@@ -217,9 +219,12 @@ class QWen3ModelImpl : public LlmModelImplBase<layer::Qwen3DecoderLayer> {
           params, model_args_.enable_mla(), params.graph.attn_mask);
     }
     max_seq_len_ = std::max(params.meta.kv_max_seq_len, max_seq_len_);
+    bool is_spec_verify = false;
+    if constexpr (std::is_same_v<InputParams, ModelInputParams>) {
+      is_spec_verify = params.is_spec_verify;
+    }
     const bool use_append_mask =
-        qwen_is_spec_verify(params) ||
-        params.meta.batch_forward_type.is_mixed() ||
+        is_spec_verify || params.meta.batch_forward_type.is_mixed() ||
         params.meta.batch_forward_type.is_chunked_prefill();
     if (!use_append_mask) {
       return layer::AttentionMetadataBuilder::build(
@@ -292,7 +297,7 @@ TORCH_MODULE(QWen3ForCausalLM);
 // register the causal model
 REGISTER_CAUSAL_MODEL(qwen3, QWen3ForCausalLM);
 
-REGISTER_REC_MODEL(qwen3, QWen3ForCausalLM);
+REGISTER_CAUSAL_REC_MODEL(qwen3, QWen3ForCausalLM);
 
 // register the model args
 REGISTER_MODEL_ARGS(qwen3, [&] {
