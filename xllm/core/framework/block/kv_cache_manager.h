@@ -16,6 +16,7 @@ limitations under the License.
 #pragma once
 
 #include <functional>
+#include <utility>
 #include <vector>
 
 #include "common/macros.h"
@@ -34,6 +35,8 @@ struct HostCacheRestorePoint {
 
 class KVCacheManager {
  public:
+  using KVCacheReservation = std::pair<Sequence*, size_t>;
+
   using PrefetchDoneCallback = std::function<void(std::shared_ptr<Request>)>;
   using PrefetchCompletionCallback = std::function<void()>;
 
@@ -47,6 +50,15 @@ class KVCacheManager {
   // false so callers can preserve the request for a later allocation retry.
   virtual bool exceeds_total_capacity(Sequence* sequence,
                                       size_t num_tokens) const {
+    return false;
+  }
+  virtual bool exceeds_total_capacity(
+      const std::vector<KVCacheReservation>& reservations) const {
+    for (const auto& [sequence, num_tokens] : reservations) {
+      if (exceeds_total_capacity(sequence, num_tokens)) {
+        return true;
+      }
+    }
     return false;
   }
   virtual bool try_allocate(Sequence* sequence) = 0;

@@ -28,6 +28,22 @@ limitations under the License.
 
 namespace xllm {
 
+namespace {
+
+size_t total_admission_blocks(const BlockManager& manager,
+                              BlockType type,
+                              bool enable_virtual_memory) {
+  size_t total_blocks = manager.num_total_blocks();
+  if (type == BlockType::KV && enable_virtual_memory && total_blocks > 0) {
+    // VMM includes the padding block in its configured total. Ordinary
+    // BlockManagerImpl leaves already exclude that block.
+    --total_blocks;
+  }
+  return total_blocks;
+}
+
+}  // namespace
+
 BlockManagerPool::BlockManagerPool(const Options& options,
                                    int32_t dp_size,
                                    VirtualKVCachePageAllocator* page_allocator)
@@ -261,33 +277,128 @@ bool BlockManagerPool::allocate(Sequence* sequence, size_t num_tokens) {
 bool BlockManagerPool::exceeds_total_capacity(Sequence* sequence,
                                               size_t num_tokens) const {
   DCHECK(sequence != nullptr);
-  const int32_t dp_rank = get_dp_rank(sequence);
-  const auto* composite =
-      static_cast<const CompositeBlockManager*>(block_managers_[dp_rank].get());
-  for (const auto& [type, entry] : composite->leaf_entries()) {
-    if (!entry.participates_in_admission) {
+  if (sequence == nullptr || block_managers_.empty()) {
+    return false;
+  }
+  const int32_t assigned_rank = sequence->dp_rank();
+  if (assigned_rank >= 0 &&
+      static_cast<size_t>(assigned_rank) >= block_managers_.size()) {
+    return false;
+  }
+  for (size_t dp_rank = 0; dp_rank < block_managers_.size(); ++dp_rank) {
+    if (assigned_rank >= 0 && dp_rank != static_cast<size_t>(assigned_rank)) {
       continue;
     }
-
-    const BlockManager& manager = *entry.leaf;
-    const size_t block_size = manager.block_size();
-    if (block_size == 0) {
-      continue;
+    const auto* composite = static_cast<const CompositeBlockManager*>(
+        block_managers_[dp_rank].get());
+    bool fits_rank = true;
+    for (const auto& [type, entry] : composite->leaf_entries()) {
+      if (!entry.participates_in_admission || entry.leaf->block_size() == 0) {
+        continue;
+      }
+      const size_t block_size = entry.leaf->block_size();
+      const size_t required_blocks =
+          num_tokens / block_size + (num_tokens % block_size != 0);
+      if (required_blocks >
+          total_admission_blocks(
+              *entry.leaf, type, options_.enable_virtual_memory())) {
+        fits_rank = false;
+        break;
+      }
     }
-    const size_t required_blocks =
-        num_tokens / block_size + (num_tokens % block_size != 0);
-    size_t total_blocks = manager.num_total_blocks();
-    if (type == BlockType::KV && options_.enable_virtual_memory() &&
-        total_blocks > 0) {
-      // VMM reports the configured total, including block 0 reserved for
-      // padding. Ordinary BlockManagerImpl leaves already exclude that block.
-      --total_blocks;
-    }
-    if (required_blocks > total_blocks) {
-      return true;
+    if (fits_rank) {
+      return false;
     }
   }
-  return false;
+  return true;
+}
+
+bool BlockManagerPool::exceeds_total_capacity(
+    const std::vector<KVCacheReservation>& reservations) const {
+  if (reservations.empty() || block_managers_.empty()) {
+    return false;
+  }
+
+  bool can_aggregate = !options_.enable_prefix_cache();
+  for (const auto& [sequence, num_tokens] : reservations) {
+    DCHECK(sequence != nullptr);
+    if (sequence == nullptr) {
+      return false;
+    }
+    if (exceeds_total_capacity(sequence, num_tokens)) {
+      return true;
+    }
+    const int32_t assigned_rank = sequence->dp_rank();
+    if (assigned_rank >= 0 &&
+        static_cast<size_t>(assigned_rank) >= block_managers_.size()) {
+      return false;
+    }
+    // Prefix hits and beam/preempted states can share physical blocks. Their
+    // combined token footprint is not an exact physical reservation.
+    can_aggregate = can_aggregate && !sequence->check_beam_search() &&
+                    !sequence->has_any_blocks();
+  }
+  if (!can_aggregate) {
+    return false;
+  }
+
+  const size_t num_tokens = reservations.front().second;
+  if (std::any_of(reservations.begin(),
+                  reservations.end(),
+                  [num_tokens](const auto& reservation) {
+                    return reservation.second != num_tokens;
+                  })) {
+    // Different footprints require an assignment strategy across DP ranks.
+    // Preserve those requests when only individual bounds are known.
+    return false;
+  }
+
+  // Fresh best_of sequences have identical, independent reservations. Count
+  // how many whole reservations fit each rank without binding their ranks or
+  // consulting transient usage by unrelated requests.
+  std::vector<size_t> remaining_slots(block_managers_.size(),
+                                      std::numeric_limits<size_t>::max());
+  for (size_t dp_rank = 0; dp_rank < block_managers_.size(); ++dp_rank) {
+    const auto* composite = static_cast<const CompositeBlockManager*>(
+        block_managers_[dp_rank].get());
+    for (const auto& [type, entry] : composite->leaf_entries()) {
+      if (!entry.participates_in_admission) {
+        continue;
+      }
+      const size_t block_size = entry.leaf->block_size();
+      if (block_size == 0) {
+        return false;
+      }
+      const size_t required_blocks =
+          num_tokens / block_size + (num_tokens % block_size != 0);
+      if (required_blocks == 0) {
+        continue;
+      }
+      const size_t capacity = total_admission_blocks(
+          *entry.leaf, type, options_.enable_virtual_memory());
+      remaining_slots[dp_rank] =
+          std::min(remaining_slots[dp_rank], capacity / required_blocks);
+    }
+  }
+
+  size_t unassigned_sequences = 0;
+  for (const auto& reservation : reservations) {
+    const Sequence* sequence = reservation.first;
+    const int32_t assigned_rank = sequence->dp_rank();
+    if (assigned_rank < 0) {
+      ++unassigned_sequences;
+      continue;
+    }
+    size_t& slots = remaining_slots[static_cast<size_t>(assigned_rank)];
+    if (slots == 0) {
+      return true;
+    }
+    --slots;
+  }
+  for (const size_t slots : remaining_slots) {
+    unassigned_sequences -= std::min(unassigned_sequences, slots);
+  }
+  return unassigned_sequences > 0;
 }
 
 std::vector<Block> BlockManagerPool::allocate(size_t num_tokens,

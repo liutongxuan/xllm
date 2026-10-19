@@ -24,6 +24,7 @@ limitations under the License.
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <semaphore>
 #include <vector>
 
@@ -116,6 +117,8 @@ class FixedStepsScheduler : public Scheduler {
     virtual KVCacheAllocationResult allocate_kv_cache(
         KVCacheManager* kv_cache_manager,
         Sequence* sequence) = 0;
+    virtual std::optional<KVCacheManager::KVCacheReservation>
+    kv_cache_reservation(Sequence* sequence) const = 0;
   };
 
   class LlmRecSchedulerPipeline final : public SchedulerPipeline {
@@ -126,6 +129,8 @@ class FixedStepsScheduler : public Scheduler {
     bool requires_kv_cache() const override { return true; }
     KVCacheAllocationResult allocate_kv_cache(KVCacheManager* kv_cache_manager,
                                               Sequence* sequence) override;
+    std::optional<KVCacheManager::KVCacheReservation> kv_cache_reservation(
+        Sequence* sequence) const override;
   };
 
   class OneRecSchedulerPipeline final : public SchedulerPipeline {
@@ -139,6 +144,10 @@ class FixedStepsScheduler : public Scheduler {
         Sequence* /*sequence*/) override {
       return KVCacheAllocationResult::SUCCESS;
     }
+    std::optional<KVCacheManager::KVCacheReservation> kv_cache_reservation(
+        Sequence* /*sequence*/) const override {
+      return std::nullopt;
+    }
   };
 
   class OneRecXAttentionSchedulerPipeline final : public SchedulerPipeline {
@@ -149,6 +158,8 @@ class FixedStepsScheduler : public Scheduler {
     bool requires_kv_cache() const override { return true; }
     KVCacheAllocationResult allocate_kv_cache(KVCacheManager* kv_cache_manager,
                                               Sequence* sequence) override;
+    std::optional<KVCacheManager::KVCacheReservation> kv_cache_reservation(
+        Sequence* sequence) const override;
   };
 
   class RecMultiRoundSchedulerPipeline final : public SchedulerPipeline {
@@ -163,6 +174,10 @@ class FixedStepsScheduler : public Scheduler {
       // RecMultiRound mode does not need KV cache allocation.
       return KVCacheAllocationResult::SUCCESS;
     }
+    std::optional<KVCacheManager::KVCacheReservation> kv_cache_reservation(
+        Sequence* /*sequence*/) const override {
+      return std::nullopt;
+    }
   };
 
   // Factory method to create scheduler pipeline
@@ -174,6 +189,8 @@ class FixedStepsScheduler : public Scheduler {
       KVCacheManager* kv_cache_manager,
       Sequence* sequence,
       size_t max_generated_tokens);
+  static std::optional<KVCacheManager::KVCacheReservation>
+  make_kv_cache_reservation(Sequence* sequence, size_t max_generated_tokens);
 
   ScheduleResult schedule_request(const absl::Duration& timeout);
 
