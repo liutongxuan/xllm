@@ -1324,16 +1324,23 @@ TEST_F(MooncakeVirtualKVCachePullTest,
   WorkerCacheLayoutManifest changed_destination =
       transfer_->local_cache_layout_;
   ++changed_destination.layout_generation;
+  EXPECT_FALSE(engine_->set_local_cache_layout(changed_destination).ok());
+
+  EXPECT_TRUE(engine_->close_session(kSourceClusterId - 1, "owner-source"));
+  EXPECT_EQ(engine_->closed_sessions,
+            std::vector<std::string>({"source", "owner-source"}));
   EXPECT_TRUE(engine_->set_local_cache_layout(changed_destination).ok());
 
   const size_t peer_calls_after_first_close = engine_->peer_calls.size();
   EXPECT_FALSE(engine_->close_session(kSourceClusterId, "source"));
   EXPECT_EQ(engine_->peer_calls.size(), peer_calls_after_first_close + 1);
-  EXPECT_EQ(engine_->closed_sessions, std::vector<std::string>({"source"}));
+  EXPECT_EQ(engine_->closed_sessions,
+            std::vector<std::string>({"source", "owner-source"}));
 
   engine_->failed_absent_peer.clear();
   EXPECT_TRUE(engine_->close_session(kSourceClusterId, "source"));
-  EXPECT_EQ(engine_->closed_sessions, std::vector<std::string>{"source"});
+  EXPECT_EQ(engine_->closed_sessions,
+            std::vector<std::string>({"source", "owner-source"}));
   EXPECT_EQ(engine_->peer_calls.size(), peer_calls_after_first_close + 2);
 }
 

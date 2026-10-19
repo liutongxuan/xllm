@@ -581,7 +581,7 @@ TEST(FixedStepsSchedulerTest,
                                /*max_seqs_per_batch=*/1);
   options.priority_strategy("priority");
   FixedStepsScheduler scheduler(engine.get(), options);
-  auto requests = GenRequests({128, 32}, {10, 10}, RecType::kOneRec);
+  auto requests = GenRequests({128, 32}, {10, 10}, RecType::kLlmRec);
   requests[0]->state().scheduler_param.priority = RequestPriority::HIGH;
   requests[0]->state().output_func = [&failure](const RequestOutput& output) {
     if (output.status.has_value()) {

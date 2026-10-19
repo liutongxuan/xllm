@@ -228,7 +228,7 @@ bool FixedStepsScheduler::handle_prefill_requests(
   //
   // NOTE: preempted requests will be pushed in waiting_priority_queue,
   // they may contain many sequences, so we should check here.
-  bool budget_exhausted = false;
+  bool rejected_oversized_request = false;
   bool blocks_exhausted = false;
   const bool requires_kv_cache =
       scheduler_pipeline_ && scheduler_pipeline_->requires_kv_cache();
@@ -278,7 +278,6 @@ bool FixedStepsScheduler::handle_prefill_requests(
       if (remaining_token_budget < allocated_tokens + num_tokens ||
           remaining_seq_budget < allocated_seqs + 1) {
         can_schedule = false;
-        budget_exhausted = true;
         break;
       }
 
@@ -334,9 +333,9 @@ bool FixedStepsScheduler::handle_prefill_requests(
         request,
         {StatusCode::RESOURCE_EXHAUSTED,
          "No enough budget to schedule single sequence."});
-    return budget_exhausted && !prefill_queue_->empty();
+    rejected_oversized_request = true;
   }
-  return false;
+  return rejected_oversized_request && !prefill_queue_->empty();
 }
 
 RecBatchGroup FixedStepsScheduler::prepare_rec_batch() {
