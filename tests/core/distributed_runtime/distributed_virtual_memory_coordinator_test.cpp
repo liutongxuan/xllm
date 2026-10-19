@@ -51,6 +51,11 @@ class DistributedVirtualMemoryCoordinatorTestPeer final {
           delete coordinator;
         });
   }
+
+  static void refresh_worker_capacity_snapshot(
+      DistributedVirtualMemoryCoordinator& coordinator) {
+    coordinator.refresh_worker_capacity_snapshot();
+  }
 };
 
 namespace {
@@ -82,10 +87,12 @@ class TransactionTestService final : public proto::ModelMemoryDist {
                      proto::MemoryInfoResponse* response,
                      google::protobuf::Closure* done) override {
     brpc::ClosureGuard done_guard(done);
+    std::lock_guard<std::mutex> lock(mutex_);
     response->set_available_memory(available_memory_);
     response->set_total_memory(total_memory_);
     response->set_pool_initialized(true);
     response->set_pool_allocatable_pages(allocatable_pages_);
+    ++memory_info_calls_;
   }
 
   void InitPhysicalPagePool(google::protobuf::RpcController* /*controller*/,
@@ -181,6 +188,10 @@ class TransactionTestService final : public proto::ModelMemoryDist {
     std::lock_guard<std::mutex> lock(mutex_);
     return lazy_;
   }
+  int32_t memory_info_calls() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return memory_info_calls_;
+  }
 
  private:
   const MappingFailure failure_;
@@ -193,6 +204,7 @@ class TransactionTestService final : public proto::ModelMemoryDist {
   int32_t abort_calls_ = 0;
   int64_t initialized_pages_ = 0;
   bool lazy_ = false;
+  int32_t memory_info_calls_ = 0;
 };
 
 class TransactionTestServer final {
@@ -450,10 +462,24 @@ TEST(DistributedVirtualMemoryCoordinatorTest,
                                 /*enable_prealloc=*/false);
   DistributedVirtualMemoryCoordinatorTestPeer::connect(
       *coordinator, {first.address(), second.address()});
+  auto& config = KVCacheConfig::get_instance();
+  const bool previous_elastic = config.vmm_elastic();
+  config.vmm_elastic(true);
+  struct ElasticConfigGuard final {
+    KVCacheConfig& config;
+    bool previous_elastic;
+    ~ElasticConfigGuard() { config.vmm_elastic(previous_elastic); }
+  } config_guard{config, previous_elastic};
+  DistributedVirtualMemoryCoordinatorTestPeer::refresh_worker_capacity_snapshot(
+      *coordinator);
   EXPECT_EQ(coordinator->available_pages("model", /*dp_rank=*/0), 3);
+  const int32_t first_calls = first.service().memory_info_calls();
+  const int32_t second_calls = second.service().memory_info_calls();
   ASSERT_TRUE(coordinator->try_reserve_pages(
       "model", /*dp_rank=*/0, /*physical_pages=*/8));
   EXPECT_EQ(coordinator->available_pages("model", /*dp_rank=*/0), 2);
+  EXPECT_EQ(first.service().memory_info_calls(), first_calls);
+  EXPECT_EQ(second.service().memory_info_calls(), second_calls);
 }
 
 TEST(DistributedVirtualMemoryCoordinatorTest,

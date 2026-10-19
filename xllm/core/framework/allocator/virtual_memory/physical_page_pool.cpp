@@ -452,7 +452,8 @@ std::shared_ptr<void> PhysicalPagePool::acquire_shared_mapping_lease(
   std::lock_guard<std::mutex> lock(mtx_);
   auto mapping = shared_mapping_.lock();
   if (mapping == nullptr ||
-      (require_contiguous && num_committed_pages_ != num_total_pages_)) {
+      (require_contiguous &&
+       (lazy_ || num_committed_pages_ != num_total_pages_))) {
     return nullptr;
   }
   return std::shared_ptr<void>(mapping, mapping->base_vaddr());

@@ -15,11 +15,13 @@ limitations under the License.
 
 #pragma once
 
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -129,6 +131,9 @@ class DistributedVirtualMemoryCoordinator final : public KVCachePageBackend {
 
   void configure_workers(int32_t world_size, int32_t dp_size, int32_t tp_size);
   void destroy();
+  void refresh_worker_capacity_snapshot();
+  void start_worker_capacity_refresh();
+  void stop_worker_capacity_refresh();
   std::pair<int32_t, int32_t> parallel_strategy_locked(
       const std::string& model_id) const;
   std::pair<int32_t, int32_t> dp_worker_range_locked(
@@ -159,6 +164,10 @@ class DistributedVirtualMemoryCoordinator final : public KVCachePageBackend {
   int32_t tp_size_ = 1;
   std::vector<std::shared_ptr<WorkerMemoryRpcClient>> clients_;
   std::vector<std::unique_ptr<WorkerMemoryRpcServer>> servers_;
+  std::vector<size_t> worker_allocatable_pages_;
+  bool capacity_refresh_running_ = false;
+  std::condition_variable capacity_refresh_cv_;
+  std::thread capacity_refresh_thread_;
   std::string collective_server_name_{"WorkerMemoryRpcCollectiveServer"};
   std::unique_ptr<VmmKVPageAllocatorImpl> kv_cache_pages_;
 };

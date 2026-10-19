@@ -353,7 +353,8 @@ TEST_F(VirtualMemoryTest, LazyBackingGrowsAndTrimsWithoutMovingLiveAliases) {
   EXPECT_NE(global.get_vaddr_by_page_id(first_id), nullptr);
 }
 
-TEST_F(VirtualMemoryTest, RegistrationLeasePinsResidentBackingAgainstTrim) {
+TEST_F(VirtualMemoryTest,
+       ElasticPoolRejectsContiguousLeaseEvenWhenFullyResident) {
   auto& pool = PhysicalPagePool::get_instance();
   ASSERT_TRUE(pool.reset());
   pool.init(device_, kPoolPages, page_size_, /*lazy=*/true);
@@ -363,14 +364,25 @@ TEST_F(VirtualMemoryTest, RegistrationLeasePinsResidentBackingAgainstTrim) {
       kPoolPages * page_size_, device_, page_size_);
   ASSERT_TRUE(region.map_all());
   ASSERT_TRUE(region.unmap_all());
+  EXPECT_EQ(global.try_acquire_contiguous_mapping_lease(), nullptr);
+  EXPECT_EQ(pool.trim_idle(/*keep_pages=*/0), kPoolPages);
+  EXPECT_EQ(pool.num_committed(), 0);
+  EXPECT_EQ(global.try_acquire_contiguous_mapping_lease(), nullptr);
+}
+
+TEST_F(VirtualMemoryTest, FixedPoolContiguousLeasePinsResidentBacking) {
+  auto& pool = PhysicalPagePool::get_instance();
+  ASSERT_TRUE(pool.reset());
+  pool.init(device_, kPoolPages, page_size_, /*lazy=*/false);
+  auto& global = GlobalVirtualMemoryRegion::get_instance();
+  global.init(device_);
   auto lease = global.try_acquire_contiguous_mapping_lease();
   ASSERT_NE(lease, nullptr);
   EXPECT_EQ(pool.trim_idle(/*keep_pages=*/0), 0);
   EXPECT_EQ(pool.num_committed(), kPoolPages);
   lease.reset();
-  EXPECT_EQ(pool.trim_idle(/*keep_pages=*/0), kPoolPages);
-  EXPECT_EQ(pool.num_committed(), 0);
-  EXPECT_EQ(global.try_acquire_contiguous_mapping_lease(), nullptr);
+  EXPECT_EQ(pool.trim_idle(/*keep_pages=*/0), 0);
+  EXPECT_EQ(pool.num_committed(), kPoolPages);
 }
 
 TEST_F(VirtualMemoryTest, LazyGrowthHeadroomFailureMapsNoKvPages) {

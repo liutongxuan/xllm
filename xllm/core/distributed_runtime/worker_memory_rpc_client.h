@@ -57,7 +57,8 @@ class WorkerMemoryRpcClient final {
   bool wait_for_server_ready(const std::string& server_address);
 
   // Get memory info from remote worker (available/total memory)
-  folly::SemiFuture<MemoryInfo> get_memory_info_async();
+  folly::SemiFuture<MemoryInfo> get_memory_info_async(
+      int32_t timeout_ms = 1000);
 
   // Initialize PhysicalPagePool on remote worker with specified number of pages
   folly::SemiFuture<bool> init_physical_page_pool_async(int64_t num_pages,

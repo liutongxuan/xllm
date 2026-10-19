@@ -72,29 +72,32 @@ bool WorkerMemoryRpcClient::wait_for_server_ready(
   return true;
 }
 
-folly::SemiFuture<MemoryInfo> WorkerMemoryRpcClient::get_memory_info_async() {
+folly::SemiFuture<MemoryInfo> WorkerMemoryRpcClient::get_memory_info_async(
+    int32_t timeout_ms) {
   folly::Promise<MemoryInfo> promise;
   auto future = promise.getSemiFuture();
-  threadpool_.schedule([this, promise = std::move(promise)]() mutable {
-    proto::Status req;
-    proto::MemoryInfoResponse resp;
-    brpc::Controller cntl;
-    stub_->GetMemoryInfo(&cntl, &req, &resp, nullptr);
-    if (cntl.Failed()) {
-      LOG(ERROR) << "GetMemoryInfo failed: " << cntl.ErrorText();
-      promise.setValue(MemoryInfo{0, 0});
-      return;
-    }
-    // Returns 0 for both fields on failure
-    promise.setValue(
-        MemoryInfo{resp.available_memory(),
-                   resp.total_memory(),
-                   resp.pool_initialized(),
-                   static_cast<size_t>(resp.pool_capacity_pages()),
-                   static_cast<size_t>(resp.pool_committed_pages()),
-                   static_cast<size_t>(resp.pool_allocatable_pages()),
-                   static_cast<size_t>(resp.execution_memory_reserve_bytes())});
-  });
+  threadpool_.schedule(
+      [this, timeout_ms, promise = std::move(promise)]() mutable {
+        proto::Status req;
+        proto::MemoryInfoResponse resp;
+        brpc::Controller cntl;
+        cntl.set_timeout_ms(timeout_ms);
+        stub_->GetMemoryInfo(&cntl, &req, &resp, nullptr);
+        if (cntl.Failed()) {
+          LOG(ERROR) << "GetMemoryInfo failed: " << cntl.ErrorText();
+          promise.setValue(MemoryInfo{0, 0});
+          return;
+        }
+        // Returns 0 for both fields on failure
+        promise.setValue(MemoryInfo{
+            resp.available_memory(),
+            resp.total_memory(),
+            resp.pool_initialized(),
+            static_cast<size_t>(resp.pool_capacity_pages()),
+            static_cast<size_t>(resp.pool_committed_pages()),
+            static_cast<size_t>(resp.pool_allocatable_pages()),
+            static_cast<size_t>(resp.execution_memory_reserve_bytes())});
+      });
   return future;
 }
 

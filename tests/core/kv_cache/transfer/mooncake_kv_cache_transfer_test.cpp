@@ -461,6 +461,7 @@ TEST(MooncakeVirtualKVCacheTransferTest,
 
 TEST(MooncakeVirtualKVCacheTransferDeathTest,
      RejectsSparseArenaBeforeRegisteringReservedAddresses) {
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
   auto state = std::make_shared<SharedTransferMemoryState>();
   state->fully_resident = false;
   MooncakeVirtualKVCacheTransfer transfer(
