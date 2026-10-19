@@ -169,6 +169,8 @@ class BlockManager {
 
   // get number of total blocks
   virtual size_t num_total_blocks() const = 0;
+  // Physical KV keeps its static capacity; VmmKV supplies a live budget.
+  virtual size_t admission_capacity() const { return num_total_blocks(); }
 
   // True only for CompositeBlockManager. Leaves and flat managers return false.
   virtual bool is_composite() const { return false; }

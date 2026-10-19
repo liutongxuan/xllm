@@ -117,6 +117,9 @@ class KVCacheManager {
   get_swap_block_transfer_infos() = 0;
 
   virtual uint32_t num_blocks() const = 0;
+  virtual size_t admission_capacity(int32_t /*dp_rank*/) const {
+    return num_blocks();
+  }
   virtual int32_t block_size() const = 0;
   virtual std::vector<size_t> num_blocks_in_prefix_cache() const = 0;
   virtual std::vector<size_t> num_free_blocks() const = 0;

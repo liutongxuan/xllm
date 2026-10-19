@@ -54,7 +54,8 @@ class VmmKVPageAllocatorImpl final : public VmmKVPageAllocator {
   void init(size_t total_pages,
             size_t page_size,
             int32_t dp_size,
-            bool enable_prealloc = true);
+            bool enable_prealloc = true,
+            size_t max_reserved_pages = kMaxReservedPages);
   bool is_initialized() const override;
   // Explicit geometry is supplied after cache shapes are known. Zero values
   // retain the symmetric K/V geometry for callers without tensor metadata.
@@ -83,9 +84,11 @@ class VmmKVPageAllocatorImpl final : public VmmKVPageAllocator {
   bool is_suspended(const std::string& model_id) const;
 
   // Execute mappings only; the caller owns lifecycle budget transactions.
-  void map_pages(const std::string& model_id, const KVCacheMappingPlan& plan);
+  bool map_pages(const std::string& model_id, const KVCacheMappingPlan& plan);
   void unmap_pages(const std::string& model_id, const KVCacheMappingPlan& plan);
 
+  size_t get_num_available_virt_pages(const std::string& model_id,
+                                      int32_t dp_rank) const override;
   size_t get_num_free_virt_pages(const std::string& model_id,
                                  int32_t dp_rank) const;
   size_t get_num_inuse_virt_pages(const std::string& model_id,
@@ -139,7 +142,7 @@ class VmmKVPageAllocatorImpl final : public VmmKVPageAllocator {
                                  std::unique_lock<std::mutex>& lock);
   KVCacheMappingPlan snapshot_pages(const ModelState& state) const;
   void validate_dp_rank(int32_t dp_rank) const;
-  void map_virtual_pages(const std::string& model_id,
+  bool map_virtual_pages(const std::string& model_id,
                          int32_t dp_rank,
                          const std::vector<int64_t>& virtual_page_ids);
   void unmap_virtual_pages(const std::string& model_id,
@@ -154,6 +157,7 @@ class VmmKVPageAllocatorImpl final : public VmmKVPageAllocator {
   size_t page_size_ = 0;
   int32_t dp_size_ = 1;
   bool enable_prealloc_ = true;
+  size_t max_reserved_pages_ = kMaxReservedPages;
   std::unordered_map<std::string, ModelState> model_states_;
   mutable std::mutex mtx_;
   std::condition_variable cond_;

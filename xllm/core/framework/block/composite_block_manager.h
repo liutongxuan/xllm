@@ -133,6 +133,7 @@ class CompositeBlockManager : public BlockManager {
   void free(int32_t block_id) override;
   Block allocate() override;
   size_t num_total_blocks() const override;
+  size_t admission_capacity() const override;
 
   void reserve_virtual_memory_padding_blocks() override;
 

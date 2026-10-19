@@ -111,6 +111,7 @@ class VmmKVBlockManager final : public BlockManager {
 
   // Get total number of blocks
   size_t num_total_blocks() const override;
+  size_t admission_capacity() const override;
 
   // Get available size (free blocks that can be allocated)
   size_t available_size() const;

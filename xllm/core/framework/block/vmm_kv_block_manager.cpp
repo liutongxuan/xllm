@@ -77,12 +77,6 @@ VmmKVBlockManager::~VmmKVBlockManager() {
 std::vector<int32_t> VmmKVBlockManager::alloc_internal(size_t need_size) {
   std::lock_guard<std::mutex> lock(mtx_);
 
-  size_t avail = available_size_internal();
-  if (avail < need_size) {
-    LOG(WARNING) << "available_size()=" << avail
-                 << " < need_size=" << need_size;
-  }
-
   std::vector<int32_t> ret_index;
   ret_index.reserve(need_size);
 
@@ -318,17 +312,22 @@ size_t VmmKVBlockManager::num_total_blocks() const {
   return options_.num_blocks();
 }
 
+size_t VmmKVBlockManager::admission_capacity() const {
+  std::lock_guard<std::mutex> lock(mtx_);
+  return std::min(static_cast<size_t>(options_.num_blocks()),
+                  get_num_allocated_blocks() + available_size_internal());
+}
+
 size_t VmmKVBlockManager::available_size_internal() const {
   // Note: Caller must hold mtx_
   size_t avail_blocks = num_avail_blocks_.load() + reserved_blocks_.size();
 
-  // Conservative approach: only count reserved pages (already mapped to
-  // physical memory). free_page_list_ pages are not counted because they
-  // require physical memory mapping which may fail if GPU memory is
-  // insufficient.
+  // An empty elastic pool can grow within its live execution budget. The
+  // snapshot is advisory: alloc_internal commits mappings and rolls back the
+  // complete block batch if the actual reservation fails.
   auto& page_allocator = page_allocator_;
   size_t reserved_pages =
-      page_allocator.get_num_reserved_virt_pages(model_id_, dp_rank_);
+      page_allocator.get_num_available_virt_pages(model_id_, dp_rank_);
   size_t blocks_from_reserved_pages =
       reserved_pages *
       VirtualKVCachePageState::get_num_blocks(page_size_, block_mem_size_);
@@ -349,7 +348,10 @@ bool VmmKVBlockManager::try_to_reserve(size_t need_size) {
 
   // alloc_internal will acquire mtx_ internally
   auto reserved = alloc_internal(need_size);
-  if (reserved.empty()) {
+  if (reserved.size() != need_size) {
+    // The live device budget can shrink after the advisory capacity check.
+    // A failed reservation must not retain a partially allocated block batch.
+    free_blocks(reserved);
     LOG(WARNING) << "Failed to reserve blocks.";
     return false;
   }
@@ -401,11 +403,10 @@ size_t VmmKVBlockManager::get_num_allocated_blocks() const {
   size_t blocks_from_avail_pages =
       avail_pages_.size() * blocks_per_page - num_avail_blocks_.load();
 
-  // Blocks from reserved blocks
-  size_t blocks_from_reserved = reserved_blocks_.size();
-
-  return blocks_from_full_pages + blocks_from_avail_pages +
-         blocks_from_reserved;
+  // Page state has already marked reserved blocks occupied, but they remain
+  // available to the next allocation. Count them only in available_size().
+  return blocks_from_full_pages + blocks_from_avail_pages -
+         reserved_blocks_.size();
 }
 
 }  // namespace xllm

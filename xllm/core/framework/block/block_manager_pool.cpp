@@ -142,16 +142,18 @@ int32_t BlockManagerPool::get_manager_with_max_available_blocks() const {
   }
 
   // Prefix-cache entries consume physical free blocks but remain evictable.
-  // Rank by effective headroom instead of the raw free-list size so a DP group
-  // with an idle, full prefix cache is not mistaken for a busy group.
+  // Rank by admissible headroom so an idle prefix cache remains evictable and
+  // an empty virtual arena without live physical headroom is not preferred.
   size_t max_available = 0;
   std::vector<size_t> candidate_indices;
   candidate_indices.reserve(block_managers_.size());
   for (size_t i = 0; i < block_managers_.size(); ++i) {
-    const size_t total_blocks = block_managers_[i]->num_total_blocks();
+    const size_t total_blocks = block_managers_[i]->admission_capacity();
     const size_t used_blocks = block_managers_[i]->num_used_blocks();
-    CHECK_LE(used_blocks, total_blocks);
-    const size_t available_blocks = total_blocks - used_blocks;
+    // Capacity and usage are advisory snapshots from separate calls. A
+    // concurrent allocation can consume headroom between the two reads.
+    const size_t available_blocks =
+        total_blocks > used_blocks ? total_blocks - used_blocks : 0;
     if (candidate_indices.empty() || available_blocks > max_available) {
       max_available = available_blocks;
       candidate_indices.clear();
@@ -518,6 +520,16 @@ float BlockManagerPool::get_gpu_cache_usage_perc() const {
 }
 
 uint32_t BlockManagerPool::num_blocks() const { return options_.num_blocks(); }
+
+size_t BlockManagerPool::admission_capacity(int32_t dp_rank) const {
+  CHECK_GE(dp_rank, 0);
+  CHECK_LT(static_cast<size_t>(dp_rank), block_managers_.size());
+  if (!options_.enable_virtual_memory()) {
+    // Preserve the original physical-cache scheduler's configured capacity.
+    return num_blocks();
+  }
+  return block_managers_[dp_rank]->admission_capacity();
+}
 
 int32_t BlockManagerPool::block_size() const { return options_.block_size(); }
 

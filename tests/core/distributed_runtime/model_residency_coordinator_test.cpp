@@ -188,7 +188,7 @@ class ModelResidencyCoordinatorTest : public ::testing::Test {
   void register_model_for_test(const std::string& model_id,
                                int32_t num_layers) {
     ASSERT_TRUE(DistributedVirtualMemoryCoordinator::get_instance()
-                    .virtual_kv_cache_page_allocator()
+                    .vmm_kv_page_allocator()
                     .register_model(model_id, num_layers));
   }
 

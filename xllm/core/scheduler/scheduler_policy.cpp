@@ -288,8 +288,6 @@ void SchedulerPolicy::schedule_prefill_from_queue(
         request->sequences()[0]->kv_state().kv_cache_tokens_num() == 0) {
       const size_t block_size =
           static_cast<size_t>(state.kv_cache_manager->block_size());
-      const size_t total_blocks =
-          static_cast<size_t>(state.kv_cache_manager->num_blocks());
       const size_t full_footprint =
           (request->sequences()[0]->num_tokens() + block_size - 1) / block_size;
       // Predict and pre-assign the target DP rank so that the subsequent
@@ -298,6 +296,10 @@ void SchedulerPolicy::schedule_prefill_from_queue(
       // and round-robin tie-break, see KVCacheManager::select_dp_rank).
       const int32_t dp_rank = state.kv_cache_manager->select_dp_rank();
       request->sequences()[0]->set_dp_rank(dp_rank);
+      // The cache implementation owns static versus elastic capacity. Virtual
+      // address space is not evidence of currently admissible physical memory.
+      const size_t total_blocks =
+          state.kv_cache_manager->admission_capacity(dp_rank);
       if (reserved_full_footprint[dp_rank] + full_footprint > total_blocks) {
         blocks_exhausted = true;
         break;

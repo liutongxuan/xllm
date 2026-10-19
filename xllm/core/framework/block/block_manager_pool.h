@@ -122,6 +122,7 @@ class BlockManagerPool : public KVCacheManager {
   virtual float get_gpu_cache_usage_perc() const;
 
   uint32_t num_blocks() const override;
+  size_t admission_capacity(int32_t dp_rank) const override;
   int32_t block_size() const override;
   std::vector<size_t> num_blocks_in_prefix_cache() const override;
   std::vector<size_t> num_free_blocks() const override;

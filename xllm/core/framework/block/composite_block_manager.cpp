@@ -990,6 +990,11 @@ Block CompositeBlockManager::allocate() {
   return Block();
 }
 
+size_t CompositeBlockManager::admission_capacity() const {
+  const auto* leaf = capacity_leaf();
+  return leaf == nullptr ? 0 : leaf->leaf->admission_capacity();
+}
+
 size_t CompositeBlockManager::num_total_blocks() const {
   const LeafEntry* leaf = capacity_leaf();
   return leaf == nullptr ? 0 : leaf->leaf->num_total_blocks();
