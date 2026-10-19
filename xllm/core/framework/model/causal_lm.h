@@ -15,15 +15,9 @@ limitations under the License.
 ==============================================================================*/
 
 #pragma once
-// clang-format off
 #if defined(USE_NPU)
 #include "graph/types.h"
-#include "layers/npu/npu_lm_head_impl.h"
-#include "layers/npu/npu_word_embedding_impl.h"
 #endif
-#include "layers/common/lm_head.h"
-#include "layers/common/word_embedding.h"
-// clang-format on
 #include <c10/core/Device.h>
 #include <torch/torch.h>
 
@@ -34,7 +28,7 @@ limitations under the License.
 #include <vector>
 
 #include "common/macros.h"
-#include "core/framework/model_loader/model_loader.h"
+#include "core/framework/model/model_lifecycle.h"
 #include "core/framework/quantization/quant_args.h"
 #include "core/framework/state_dict/state_dict.h"
 #include "core/kv_cache/storage/kv_cache.h"
@@ -65,7 +59,7 @@ struct DFlash2CandidateOutput {
   torch::Tensor edge_logits;
 };
 
-class CausalLM : public torch::nn::Module {
+class CausalLM : public torch::nn::Module, public ModelLifecycle {
  public:
   ~CausalLM() override = default;
 
@@ -126,72 +120,10 @@ class CausalLM : public torch::nn::Module {
     return logits(hidden_states, seleted_idxes);
   }
 
-  virtual void load_model(std::unique_ptr<ModelLoader> loader) = 0;
-
-  virtual torch::Device device() const = 0;
-
-  virtual void prepare_expert_weight(
-      int32_t layer_id,
-      const std::vector<int32_t>& expert_ids) = 0;
-  virtual void start_expert_weight_transfer(int32_t /*layer_id*/) {}
-  virtual void update_expert_weight(int32_t layer_id) = 0;
-
-  // Returns whether the last prepare_expert_weight() call for the given layer
-  // succeeded. Default is true so models that do not fail-report keep the old
-  // behavior; DSV4 (npu_torch) overrides this to expose real prepare status
-  // so EplbExecutor does not advance ready_layer_id on silent failures.
-  virtual bool last_prepare_expert_weight_ok(int32_t /*layer_id*/) const {
-    return true;
-  }
-
-  virtual const torch::TensorOptions& options() const = 0;
-
-  // MTP-specific interface.
 #if defined(USE_NPU)
-  virtual layer::NpuLmHead get_npu_lm_head() {
-    NOT_IMPLEMENTED();
-    return nullptr;
-  }
-  virtual void set_npu_lm_head(layer::NpuLmHead& head) { NOT_IMPLEMENTED(); }
-  virtual layer::NpuWordEmbedding get_npu_word_embedding() {
-    NOT_IMPLEMENTED();
-    return nullptr;
-  }
-  virtual bool has_restored_npu_word_embedding() { return false; }
-  virtual void set_npu_word_embedding(layer::NpuWordEmbedding& embedding) {
-    NOT_IMPLEMENTED();
-  }
-  virtual void set_restored_npu_word_embedding(
-      layer::NpuWordEmbedding& embedding) {
-    set_npu_word_embedding(embedding);
-  }
-
-  virtual bool init_or_refresh_rolling_runtime(Stream* load_stream,
-                                               Stream* compute_stream,
-                                               int32_t num_cached_slots,
-                                               int32_t requested_rolling_slots,
-                                               const std::string& model_id) {
-    NOT_IMPLEMENTED();
-    return false;
-  }
-
   // xlite runtime access, nullptr for non-xlite models.
   virtual xlite::XliteModelHolder* get_xlite_holder() { return nullptr; }
 #endif
-
-  virtual layer::LmHead get_lm_head() {
-    NOT_IMPLEMENTED();
-    return nullptr;
-  }
-  virtual void set_lm_head(layer::LmHead& head) { NOT_IMPLEMENTED(); }
-  virtual layer::WordEmbedding get_word_embedding() {
-    NOT_IMPLEMENTED();
-    return nullptr;
-  }
-
-  virtual void set_word_embedding(layer::WordEmbedding& embedding) {
-    NOT_IMPLEMENTED();
-  }
 
   virtual bool share_weights_from(CausalLM& /*source*/) { return false; }
 
@@ -238,16 +170,6 @@ class CausalLM : public torch::nn::Module {
     return {};
   }
   virtual bool has_dspark_confidence_head() const { return false; }
-
-  virtual void lazy_load_model(std::unique_ptr<ModelLoader> loader) {
-    NOT_IMPLEMENTED();
-  }
-
-  virtual void free_model_weights() { NOT_IMPLEMENTED(); }
-
-  virtual void reload_model_weights() { NOT_IMPLEMENTED(); }
-
-  virtual void reload_model_weights_from_device() { NOT_IMPLEMENTED(); }
 };
 
 template <typename Model>

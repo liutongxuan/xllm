@@ -309,44 +309,51 @@ class WorkerImpl {
 
 #if defined(USE_NPU)
   virtual layer::NpuLmHead get_npu_lm_head() {
-    return model_->get_npu_lm_head();
+    return model_lifecycle()->get_npu_lm_head();
   }
 
   virtual void set_npu_lm_head(layer::NpuLmHead& head) {
-    model_->set_npu_lm_head(head);
+    model_lifecycle()->set_npu_lm_head(head);
   }
 
   virtual layer::NpuWordEmbedding get_npu_word_embedding() {
-    return model_->get_npu_word_embedding();
+    return model_lifecycle()->get_npu_word_embedding();
   }
 
   virtual bool has_restored_npu_word_embedding() {
-    return model_->has_restored_npu_word_embedding();
+    return model_lifecycle()->has_restored_npu_word_embedding();
   }
 
   virtual void set_npu_word_embedding(layer::NpuWordEmbedding& embedding) {
-    model_->set_npu_word_embedding(embedding);
+    model_lifecycle()->set_npu_word_embedding(embedding);
   }
 
   virtual void set_restored_npu_word_embedding(
       layer::NpuWordEmbedding& embedding) {
-    model_->set_restored_npu_word_embedding(embedding);
+    model_lifecycle()->set_restored_npu_word_embedding(embedding);
   }
 #endif
 
-  virtual layer::LmHead get_lm_head() { return model_->get_lm_head(); }
+  virtual layer::LmHead get_lm_head() {
+    return model_lifecycle()->get_lm_head();
+  }
 
-  virtual void set_lm_head(layer::LmHead& head) { model_->set_lm_head(head); }
+  virtual void set_lm_head(layer::LmHead& head) {
+    model_lifecycle()->set_lm_head(head);
+  }
 
   virtual layer::WordEmbedding get_word_embedding() {
-    return model_->get_word_embedding();
+    return model_lifecycle()->get_word_embedding();
   }
 
   virtual void set_word_embedding(layer::WordEmbedding& embedding) {
-    model_->set_word_embedding(embedding);
+    model_lifecycle()->set_word_embedding(embedding);
   }
 
   bool share_weights_from(WorkerImpl& source) {
+    if (model_ == nullptr || source.model_ == nullptr) {
+      return false;
+    }
     return model_->share_weights_from(*source.model_);
   }
 
@@ -531,6 +538,10 @@ class WorkerImpl {
 #endif
 
  protected:
+  // Borrowed lifecycle access; specialized workers retain their own model
+  // owner.
+  virtual ModelLifecycle* model_lifecycle() const { return model_.get(); }
+
   // runtime options
   runtime::Options options_;
 

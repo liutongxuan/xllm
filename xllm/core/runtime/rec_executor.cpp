@@ -18,28 +18,28 @@ limitations under the License.
 #include <string>
 
 #include "core/framework/config/model_config.h"
-#include "core/framework/model/model_input_params.h"
+#include "core/framework/model/rec_model_params.h"
 #include "platform/platform.h"
-#include "runtime/executor_impl_factory.h"
+#include "runtime/rec_executor_impl_factory.h"
 
 namespace xllm {
 
-RecExecutor::RecExecutor(CausalLM* model,
+RecExecutor::RecExecutor(RecCausalLM* model,
                          const ModelArgs& args,
                          const torch::Device& device,
                          const runtime::Options& options) {
   const auto& model_config = ModelConfig::get_instance();
   std::string backend;
-  if (ModelConfig::is_python_model_impl(model_config.model_impl())) {
-    backend = "python";
-  } else if (options.npu_kernel_backend() == "XLITE") {
-    backend = "xlite";
-  } else if (options.backend() != "vlm" && options.enable_graph()) {
+  CHECK(!ModelConfig::is_python_model_impl(model_config.model_impl()))
+      << "Rec execution requires a native Rec model implementation.";
+  CHECK_NE(options.npu_kernel_backend(), "XLITE")
+      << "XLITE does not support native Rec inputs.";
+  if (options.backend() != "vlm" && options.enable_graph()) {
     backend = Platform::type_str();
   } else {
     backend = options.backend();
   }
-  impl_ = ExecutorImplFactory::get_instance().create_executor_impl(
+  impl_ = RecExecutorImplFactory::get_instance().create_executor_impl(
       model, args, device, options, backend);
 }
 
@@ -47,10 +47,7 @@ ModelOutput RecExecutor::forward(const torch::Tensor& tokens,
                                  const torch::Tensor& positions,
                                  std::vector<KVCache>& kv_caches,
                                  RecModelParams& params) {
-  // Graph backends still consume the shared execution projection. The view
-  // borrows RecModelParams and does not copy the input payload.
-  ModelInputParams projection(params);
-  return impl_->run(tokens, positions, kv_caches, projection);
+  return impl_->run(tokens, positions, kv_caches, params);
 }
 
 }  // namespace xllm

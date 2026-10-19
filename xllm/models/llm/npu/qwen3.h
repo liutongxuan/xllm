@@ -32,6 +32,7 @@ limitations under the License.
 #include "core/framework/state_dict/state_dict.h"
 #include "core/layers/npu/npu_qwen3_decoder_layer_impl.h"
 #include "llm_model_base.h"
+#include "models/llm/qwen_execution_input.h"
 
 namespace xllm::npu::model {
 
@@ -163,13 +164,29 @@ class QWen3ModelImpl : public LlmModelImplBase<QWen3DecoderLayer> {
     return LlmModelImplBase<QWen3DecoderLayer>::get_npu_word_embedding();
   }
 
-  virtual ModelOutput forward(torch::Tensor tokens,
-                              torch::Tensor positions,
-                              std::vector<KVCache>& kv_caches,
-                              const ModelInputParams& input_params) {
-    const bool use_deepstack = input_params.has_multimodal() &&
-                               !input_params.multimodal().deep_stacks.empty();
-    std::vector<torch::Tensor> deep_stacks;
+  ModelOutput forward(torch::Tensor tokens,
+                      torch::Tensor positions,
+                      std::vector<KVCache>& kv_caches,
+                      const ModelInputParams& input_params) override {
+    auto local_params = input_params;
+    return forward_impl(tokens, positions, kv_caches, local_params);
+  }
+
+  ModelOutput forward(torch::Tensor tokens,
+                      torch::Tensor positions,
+                      std::vector<KVCache>& kv_caches,
+                      const RecModelParams& input_params) {
+    auto local_params = input_params.clone();
+    return forward_impl(tokens, positions, kv_caches, local_params);
+  }
+
+  template <typename InputParams>
+  ModelOutput forward_impl(torch::Tensor tokens,
+                           torch::Tensor positions,
+                           std::vector<KVCache>& kv_caches,
+                           InputParams& input_params) {
+    const bool use_deepstack = !qwen_deep_stacks(input_params).empty();
+    const auto& deep_stacks = qwen_deep_stacks(input_params);
 
     if (tokens.numel() == 0) {
       tokens = torch::tensor({1}).to(torch::kInt32).to(tokens.device());
@@ -193,10 +210,6 @@ class QWen3ModelImpl : public LlmModelImplBase<QWen3DecoderLayer> {
       set_residual(residual);
     }
 
-    if (use_deepstack) {
-      deep_stacks = input_params.multimodal()
-                        .deep_stacks;  // [num_deepstack, hidden_size]
-    }
     auto target_cos_sin = atb_pos_emb_(cos_sin_, positions, 0);
     auto target_cos_sin_chunks = target_cos_sin.chunk(/*chunks=*/2, /*dim=*/-1);
     auto cos_pos = target_cos_sin_chunks[0].contiguous();
@@ -262,8 +275,7 @@ class QWen3ModelImpl : public LlmModelImplBase<QWen3DecoderLayer> {
       }
     }
 
-    ModelInputParams& input_params_new =
-        const_cast<ModelInputParams&>(input_params);
+    auto& input_params_new = input_params;
     RollingLayerGuard rolling_guard(rolling_mgr_);
     for (size_t i = 0; i < layers_.size(); i++) {
       aclrtEvent* event{nullptr};
@@ -477,6 +489,8 @@ TORCH_MODULE(QWen3ForCausalLM);
 
 // register the causal model
 REGISTER_CAUSAL_MODEL_WITH_VARNAME(qwen3_atb, qwen3_atb, QWen3ForCausalLM);
+
+REGISTER_REC_MODEL(qwen3_atb, QWen3ForCausalLM);
 
 // register the model args
 REGISTER_MODEL_ARGS_WITH_VARNAME(qwen3_atb, qwen3_atb, [&] {

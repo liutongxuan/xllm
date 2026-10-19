@@ -30,16 +30,18 @@ limitations under the License.
 #include "core/framework/config/beam_search_config.h"
 #include "core/framework/config/eplb_config.h"
 #include "core/framework/config/execution_config.h"
+#include "core/framework/config/model_config.h"
 #include "core/framework/config/rec_config.h"
-#include "framework/model/model_input_params.h"
 #include "util/rec_model_utils.h"
 #include "util/tensor_helper.h"
 #if defined(USE_CUDA)
 #include "kernels/cuda/cuda_ops_api.h"
 #include "kernels/cuda/xattention/xattention_ops_api.h"
-#include "layers/cuda/flashinfer_workspace.h"
 #include "layers/cuda/xattention_workspace.h"
 #include "platform/cuda/device_capture_lock.h"
+#endif
+#if defined(USE_CUDA) || defined(USE_MUSA)
+#include "layers/cuda/flashinfer_workspace.h"
 #endif
 #if defined(USE_NPU)
 #include "kernels/npu/npu_ops_api.h"
@@ -2844,7 +2846,17 @@ void RecWorkerImpl::initialize_xattention_workspace() {
 RecWorkerImpl::RecWorkerImpl(const ParallelArgs& parallel_args,
                              const torch::Device& device,
                              const runtime::Options& options)
-    : LLMWorkerImpl(parallel_args, device, options) {
+    : WorkerImpl(parallel_args, device, options) {
+  device_.set_device();
+#if defined(USE_CUDA) || defined(USE_MUSA)
+  const auto& model_config = ModelConfig::get_instance();
+  if (!ModelConfig::is_python_model_impl(model_config.model_impl())) {
+    threadpool_.schedule([this]() mutable {
+      ::xllm::layer::flashinfer::FlashinferWorkspace::get_instance().initialize(
+          device_);
+    });
+  }
+#endif
   initialize_xattention_workspace();
 
   if (!is_driver()) {
@@ -2869,14 +2881,11 @@ RecWorkerImpl::RecWorkerImpl(const ParallelArgs& parallel_args,
             << options_.rec_worker_max_concurrency();
 }
 
-RecWorkerImpl::~RecWorkerImpl() {
-  // Release model_ and eplb_executor_ in destructor to avoid
-  // double deletion. Ownership actually belongs to work_pipelines_[0].
-  model_.release();
-
-  if (::xllm::EPLBConfig::get_instance().enable_eplb()) {
-    eplb_executor_.release();
+ModelLifecycle* RecWorkerImpl::model_lifecycle() const {
+  if (work_pipelines_.empty()) {
+    return nullptr;
   }
+  return work_pipelines_.front()->runtime().model.get();
 }
 
 bool RecWorkerImpl::init_model(const std::string& model_weights_path,
@@ -2899,7 +2908,7 @@ bool RecWorkerImpl::init_model(const std::string& model_weights_path,
 }
 
 bool RecWorkerImpl::init_model(ModelContext& context) {
-  CHECK(model_ == nullptr) << "Model is already initialized.";
+  CHECK(work_pipelines_.empty()) << "Model is already initialized.";
 
   // Determine rec model kind and pipeline type
   const auto& model_type = context.get_model_args().model_type();
@@ -2924,11 +2933,7 @@ bool RecWorkerImpl::init_model(ModelContext& context) {
                                        context.get_quant_args(),
                                        context.get_tensor_options());
 
-    if (rec_model_kind == RecModelKind::kOneRec) {
-      runtime.model = create_rec_model(*runtime.context.get());
-    } else {
-      runtime.model = create_llm_model(*runtime.context.get());
-    }
+    runtime.model = create_rec_model(*runtime.context);
     CHECK(runtime.model != nullptr) << "Failed to create model instance " << i;
 
     runtime.executor =
@@ -2946,15 +2951,9 @@ bool RecWorkerImpl::init_model(ModelContext& context) {
     index_queue_.enqueue(i);
   }
 
-  model_.reset(work_pipelines_[0]->runtime().model.get());
-
   // Complete other initialization (EPLB, BeamSearcher, etc.)
   if (::xllm::BeamSearchConfig::get_instance().enable_beam_search_kernel()) {
     beam_searcher_ = std::make_unique<BeamSearcher>();
-  }
-
-  if (::xllm::EPLBConfig::get_instance().enable_eplb()) {
-    eplb_executor_.reset(work_pipelines_[0]->runtime().eplb_executor.get());
   }
 
   LOG(INFO) << "Created " << work_pipelines_.size()

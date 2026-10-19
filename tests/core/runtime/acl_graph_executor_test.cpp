@@ -33,6 +33,7 @@ limitations under the License.
 #include "core/framework/model/aux_hidden_capture.h"
 #include "core/framework/model/model_args.h"
 #include "core/framework/model/model_output.h"
+#include "core/framework/model/rec_causal_lm.h"
 #include "core/framework/model_context/model_context.h"
 #include "core/framework/model_loader/model_loader.h"
 #include "core/framework/request/sequence.h"
@@ -212,6 +213,136 @@ const KVCache& first_full_attention_cache(
   std::abort();
 }
 }  // namespace
+
+class NativeRecGraphModel final : public RecCausalLM {
+ public:
+  NativeRecGraphModel(int64_t hidden_size, const torch::Device& device)
+      : hidden_size_(hidden_size),
+        options_(torch::TensorOptions().dtype(torch::kFloat32).device(device)) {
+  }
+
+  ModelOutput forward(const torch::Tensor& tokens,
+                      const torch::Tensor& positions,
+                      std::vector<KVCache>&,
+                      const RecModelParams& params) override {
+    ++forward_count_;
+    const auto& strategy = *params.onerec_xattention_params();
+    auto values = tokens.to(torch::kFloat32) + positions.to(torch::kFloat32) +
+                  strategy.current_round_tensor.to(torch::kFloat32);
+    auto hidden_states = values.unsqueeze(1).repeat({1, hidden_size_});
+    strategy.shared_k_caches.front().copy_(hidden_states[0]);
+    return ModelOutput(hidden_states);
+  }
+
+  torch::Tensor logits(const torch::Tensor& hidden_states,
+                       const torch::Tensor&) override {
+    return hidden_states;
+  }
+  void load_model(std::unique_ptr<ModelLoader>) override {}
+  void prepare_expert_weight(int32_t, const std::vector<int32_t>&) override {}
+  void update_expert_weight(int32_t) override {}
+  torch::Device device() const override { return options_.device(); }
+  const torch::TensorOptions& options() const override { return options_; }
+  int64_t forward_count() const { return forward_count_; }
+
+ private:
+  int64_t hidden_size_;
+  torch::TensorOptions options_;
+  int64_t forward_count_ = 0;
+};
+
+RecModelParams make_native_rec_decode_params(const torch::Device& device,
+                                             const torch::Tensor& round,
+                                             const torch::Tensor& cache) {
+  RecModelParams params;
+  params.meta.batch_forward_type = BatchForwardType::DECODE;
+  params.meta.num_sequences = 3;
+  params.meta.kv_max_seq_len = 1;
+  params.meta.q_max_seq_len = 1;
+  const auto options =
+      torch::TensorOptions().dtype(torch::kInt32).device(device);
+  params.attention.host.q_seq_lens = {1, 1, 1};
+  params.attention.host.kv_seq_lens = {1, 1, 1};
+  params.attention.device.q_seq_lens = torch::tensor({1, 1, 1}, options);
+  params.attention.device.kv_seq_lens = torch::tensor({1, 1, 1}, options);
+  params.attention.device.new_cache_slots = torch::tensor({0, 1, 2}, options);
+  params.attention.device.block_tables = torch::zeros({3, 1}, options);
+  auto& strategy = params.mutable_onerec_xattention_params();
+  strategy.rec_stage = OneRecModelInputParams::RecStage::DECODE;
+  strategy.current_round_tensor = round;
+  strategy.shared_k_caches = {cache};
+  return params;
+}
+
+TEST(AclGraphExecutorRecTest, ReplaysRoundsAndRecapturesChangedKvBindings) {
+  struct ScopedExecutionConfig {
+    ExecutionConfig saved = ExecutionConfig::get_instance();
+    ~ScopedExecutionConfig() { ExecutionConfig::get_instance() = saved; }
+  } config_snapshot;
+  ExecutionConfig::get_instance().enable_graph_double_buffer(false);
+  ExecutionConfig::get_instance().enable_graph_mode_decode_no_padding(true);
+  const torch::Device device("npu:0");
+  ModelArgs args;
+  args.model_type("native_rec_test")
+      .dtype("float32")
+      .hidden_size(8)
+      .head_dim(0)
+      .n_layers(2)
+      .max_position_embeddings(16);
+  runtime::Options options;
+  options.max_tokens_per_batch(8)
+      .max_seqs_per_batch(4)
+      .num_decoding_tokens(1)
+      .block_size(4)
+      .dp_size(1);
+  NativeRecGraphModel model(args.hidden_size(), device);
+  npu::AclGraphExecutorImpl executor(&model, args, device, options);
+  auto kv_tensor = torch::zeros({16, 32}, model.options());
+  std::vector<KVCache> kv_caches;
+  kv_caches.emplace_back(KVCacheTensors{kv_tensor, kv_tensor});
+  const auto int_options =
+      torch::TensorOptions().dtype(torch::kInt32).device(device);
+  auto tokens = torch::tensor({12, 12, 12}, int_options);
+  auto positions = torch::tensor({3, 3, 3}, int_options);
+  auto round = torch::tensor({1}, int_options);
+  auto cache = torch::zeros({args.hidden_size()}, model.options());
+  auto params = make_native_rec_decode_params(device, round, cache);
+  params.meta.is_graph_warmup = true;
+
+  auto output = executor.run(tokens, positions, kv_caches, params);
+  EXPECT_TRUE(torch::equal(output.hidden_states.cpu(),
+                           torch::full({3, args.hidden_size()}, 16.0f)));
+  EXPECT_EQ(executor.get_graph_count(), 1);
+  const int64_t capture_forward_count = model.forward_count();
+  EXPECT_GT(capture_forward_count, 0);
+
+  params = make_native_rec_decode_params(device, round, cache);
+  tokens.fill_(20);
+  positions.fill_(4);
+  round.fill_(2);
+  output = executor.run(tokens, positions, kv_caches, params);
+  EXPECT_EQ(model.forward_count(), capture_forward_count);
+  EXPECT_TRUE(torch::equal(output.hidden_states.cpu(),
+                           torch::full({3, args.hidden_size()}, 26.0f)));
+  EXPECT_TRUE(
+      torch::equal(cache.cpu(), torch::full({args.hidden_size()}, 26.0f)));
+
+  auto replacement_cache = torch::zeros_like(cache);
+  params.mutable_onerec_xattention_params().shared_k_caches = {
+      replacement_cache};
+  tokens.fill_(30);
+  positions.fill_(5);
+  round.fill_(3);
+  output = executor.run(tokens, positions, kv_caches, params);
+  EXPECT_GT(model.forward_count(), capture_forward_count);
+  EXPECT_EQ(executor.get_graph_count(), 1);
+  EXPECT_TRUE(torch::equal(output.hidden_states.cpu(),
+                           torch::full({3, args.hidden_size()}, 38.0f)));
+  EXPECT_TRUE(torch::equal(replacement_cache.cpu(),
+                           torch::full({args.hidden_size()}, 38.0f)));
+  EXPECT_TRUE(
+      torch::equal(cache.cpu(), torch::full({args.hidden_size()}, 26.0f)));
+}
 
 // Simple CausalLM implementation for testing ACL graph executor
 // Uses basic operations to verify graph capture and replay functionality

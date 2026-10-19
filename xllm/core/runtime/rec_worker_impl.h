@@ -23,9 +23,10 @@ limitations under the License.
 #include <optional>
 #include <vector>
 
-#include "runtime/llm_worker_impl.h"
+#include "core/framework/model/rec_causal_lm.h"
 #include "runtime/rec_executor.h"
 #include "runtime/rec_forward_params.h"
+#include "runtime/worker_impl.h"
 #include "util/blockingconcurrentqueue.h"
 #include "util/rec_model_utils.h"
 #include "util/threadpool.h"
@@ -36,7 +37,7 @@ class RecSampler;
 class RecConstrainedDecoding;
 struct RecConstraintTables;
 
-class RecWorkerImpl : public LLMWorkerImpl {
+class RecWorkerImpl : public WorkerImpl {
   friend class RecWorkPipeline;
 
  public:
@@ -44,7 +45,7 @@ class RecWorkerImpl : public LLMWorkerImpl {
                 const torch::Device& device,
                 const runtime::Options& options);
 
-  ~RecWorkerImpl() override;
+  ~RecWorkerImpl() override = default;
 
   bool init_model(const std::string& model_weights_path,
                   int32_t random_seed,
@@ -68,6 +69,8 @@ class RecWorkerImpl : public LLMWorkerImpl {
       const LlmForwardInput& input) override;
 
  private:
+  ModelLifecycle* model_lifecycle() const override;
+
   struct RecPipelineRuntime {
     RecPipelineRuntime(RecWorkerImpl& worker) : worker(worker) {}
     RecPipelineRuntime(RecPipelineRuntime&& other) : worker(other.worker) {
@@ -79,7 +82,7 @@ class RecWorkerImpl : public LLMWorkerImpl {
       expert_load_data = std::move(other.expert_load_data);
     }
     std::unique_ptr<Stream> stream;
-    std::unique_ptr<CausalLM> model;
+    std::unique_ptr<RecCausalLM> model;
     std::unique_ptr<RecExecutor> executor;
     std::unique_ptr<ModelContext> context;
     std::unique_ptr<EplbExecutor> eplb_executor;
@@ -365,6 +368,7 @@ class RecWorkerImpl : public LLMWorkerImpl {
 
   void initialize_xattention_workspace();
 
+  std::unique_ptr<BeamSearcher> beam_searcher_;
   std::vector<std::unique_ptr<RecWorkPipeline>> work_pipelines_;
 
   std::unique_ptr<ThreadPool> step_threadpool_;

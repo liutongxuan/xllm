@@ -29,6 +29,7 @@ limitations under the License.
 #include "core/layers/common/lm_head.h"
 #include "core/layers/common/rms_norm.h"
 #include "core/util/rec_model_utils.h"
+#include "models/llm/qwen_execution_input.h"
 #include "models/model_registry.h"
 
 namespace xllm {
@@ -57,6 +58,23 @@ class LlmModelImplBase : public torch::nn::Module {
                               torch::Tensor positions,
                               std::vector<KVCache>& kv_caches,
                               const ModelInputParams& input_params) {
+    auto local_params = input_params.clone().view();
+    return forward_impl(tokens, positions, kv_caches, local_params);
+  }
+
+  ModelOutput forward(torch::Tensor tokens,
+                      torch::Tensor positions,
+                      std::vector<KVCache>& kv_caches,
+                      const RecModelParams& input_params) {
+    auto local_params = input_params.clone();
+    return forward_impl(tokens, positions, kv_caches, local_params);
+  }
+
+  template <typename InputParams>
+  ModelOutput forward_impl(torch::Tensor tokens,
+                           torch::Tensor positions,
+                           std::vector<KVCache>& kv_caches,
+                           InputParams& input_params) {
     if (tokens.numel() == 0) {
       tokens = torch::tensor({1}).to(torch::kInt32).to(tokens.device());
       positions = torch::tensor({1}).to(torch::kInt32).to(tokens.device());
@@ -70,7 +88,7 @@ class LlmModelImplBase : public torch::nn::Module {
       h = embed_tokens_(tokens);
     }
 
-    auto modified_input_params = input_params.clone().view();
+    auto& modified_input_params = input_params;
     auto& dp_token_nums = modified_input_params.parallel.dp_global_token_nums;
     std::replace(dp_token_nums.begin(), dp_token_nums.end(), 0, 1);
     if (!modified_input_params.attn_metadata) {
@@ -85,31 +103,13 @@ class LlmModelImplBase : public torch::nn::Module {
           apply_mrope(positions);
     }
 
-    const LlmRecMultiRoundParams* llmrec_params = nullptr;
-    if (is_rec_multi_round_mode() &&
-        modified_input_params.has_llmrec_params()) {
-      llmrec_params = modified_input_params.llmrec_params();
-      CHECK_EQ(llmrec_params->full_k_caches.size(), layers_.size())
-          << "Rec multi-round mode requires full_k_caches per layer.";
-      CHECK_EQ(llmrec_params->full_v_caches.size(), layers_.size())
-          << "Rec multi-round mode requires full_v_caches per layer.";
-      CHECK_EQ(llmrec_params->unshared_k_caches.size(), layers_.size())
-          << "Rec multi-round mode requires unshared_k_caches per layer.";
-      CHECK_EQ(llmrec_params->unshared_v_caches.size(), layers_.size())
-          << "Rec multi-round mode requires unshared_v_caches per layer.";
-    }
-
     std::optional<torch::Tensor> residual;
     for (size_t i = 0; i < layers_.size(); i++) {
       if (!modified_input_params.synchronize_layer(static_cast<uint32_t>(i))) {
         return ModelOutput();
       }
-      if (llmrec_params != nullptr) {
-        attn_metadata.full_k_cache = llmrec_params->full_k_caches[i];
-        attn_metadata.full_v_cache = llmrec_params->full_v_caches[i];
-        attn_metadata.unshared_k_cache = llmrec_params->unshared_k_caches[i];
-        attn_metadata.unshared_v_cache = llmrec_params->unshared_v_caches[i];
-      }
+      prepare_qwen_rec_layer(
+          modified_input_params, attn_metadata, i, layers_.size());
 #if defined(USE_CUDA) || defined(USE_MUSA)
       attn_metadata.plan_info->layer_id = i;
 #endif
@@ -198,6 +198,14 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
                               const torch::Tensor& positions,
                               std::vector<KVCache>& kv_caches,
                               const ModelInputParams& input_params) {
+    return model_(tokens, positions, kv_caches, input_params);
+  }
+
+  template <typename InputParams>
+  ModelOutput forward(const torch::Tensor& tokens,
+                      const torch::Tensor& positions,
+                      std::vector<KVCache>& kv_caches,
+                      const InputParams& input_params) {
     return model_(tokens, positions, kv_caches, input_params);
   }
 

@@ -5,6 +5,9 @@ cc_library(
     model
   HDRS
     causal_lm.h
+    expert_weight_access.h
+    model_lifecycle.h
+    moe_execution_input.h
     rec_causal_lm.h
     causal_vlm.h
     dit_model.h

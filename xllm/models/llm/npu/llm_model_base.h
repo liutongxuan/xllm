@@ -41,6 +41,7 @@ limitations under the License.
 #include "core/layers/npu/npu_pos_embedding_impl.h"
 #include "core/layers/npu/npu_rms_norm_impl.h"
 #include "core/layers/npu/npu_word_embedding_impl.h"
+#include "models/llm/qwen_execution_input.h"
 #include "models/model_registry.h"
 #include "xllm_atb_layers/core/include/atb_speed/log.h"
 
@@ -76,6 +77,33 @@ class LlmDecoderLayerImplBase : public torch::nn::Module {
                   0);
     }
 
+    return decoder_layer_(x,
+                          cos_pos,
+                          sin_pos,
+                          attn_mask,
+                          kv_cache,
+                          input_params,
+                          event,
+                          event_flag,
+                          layer_id_);
+  }
+
+  torch::Tensor forward(torch::Tensor& x,
+                        torch::Tensor& cos_pos,
+                        torch::Tensor& sin_pos,
+                        torch::Tensor& attn_mask,
+                        KVCache& kv_cache,
+                        RecModelParams& input_params,
+                        aclrtEvent* event,
+                        std::atomic<bool>* event_flag) {
+    if (input_params.block_copy.src_block_indices.numel() > 0) {
+      block_copy_(kv_cache.get_k_cache(),
+                  kv_cache.get_v_cache(),
+                  input_params.block_copy.src_block_indices,
+                  input_params.block_copy.dst_block_indices,
+                  input_params.block_copy.cum_sum,
+                  0);
+    }
     return decoder_layer_(x,
                           cos_pos,
                           sin_pos,
@@ -151,6 +179,23 @@ class LlmModelImplBase : public torch::nn::Module {
                               torch::Tensor positions,
                               std::vector<KVCache>& kv_caches,
                               const ModelInputParams& input_params) {
+    auto local_params = input_params;
+    return forward_impl(tokens, positions, kv_caches, local_params);
+  }
+
+  ModelOutput forward(torch::Tensor tokens,
+                      torch::Tensor positions,
+                      std::vector<KVCache>& kv_caches,
+                      const RecModelParams& input_params) {
+    auto local_params = input_params.clone();
+    return forward_impl(tokens, positions, kv_caches, local_params);
+  }
+
+  template <typename InputParams>
+  ModelOutput forward_impl(torch::Tensor tokens,
+                           torch::Tensor positions,
+                           std::vector<KVCache>& kv_caches,
+                           InputParams& input_params) {
     if (tokens.numel() == 0) {
       tokens = torch::tensor({1}).to(torch::kInt32).to(tokens.device());
       positions = torch::tensor({0}).to(torch::kInt32).to(tokens.device());
@@ -190,8 +235,7 @@ class LlmModelImplBase : public torch::nn::Module {
           {positions.sizes().front(), -1, sin_pos.sizes().back()}));
     }
 
-    ModelInputParams& input_params_new =
-        const_cast<ModelInputParams&>(input_params);
+    auto& input_params_new = input_params;
     torch::Tensor attn_mask;
     max_seq_len_ =
         ::xllm::SchedulerConfig::get_instance().enable_chunked_prefill()
@@ -418,6 +462,14 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
                               const torch::Tensor& positions,
                               std::vector<KVCache>& kv_caches,
                               const ModelInputParams& input_params) {
+    return model_(tokens, positions, kv_caches, input_params);
+  }
+
+  template <typename InputParams>
+  ModelOutput forward(const torch::Tensor& tokens,
+                      const torch::Tensor& positions,
+                      std::vector<KVCache>& kv_caches,
+                      const InputParams& input_params) {
     return model_(tokens, positions, kv_caches, input_params);
   }
 

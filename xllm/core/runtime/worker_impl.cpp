@@ -483,7 +483,7 @@ bool WorkerImpl::allocate_kv_cache_storage(
     const KVCacheShape& kv_cache_shape,
     bool use_huge_page_allocator,
     std::shared_ptr<KVCacheTensorAllocator> tensor_allocator) {
-  CHECK(model_ != nullptr) << "Model is not initialized.";
+  CHECK(model_lifecycle() != nullptr) << "Model is not initialized.";
   CHECK(kv_caches_.empty()) << "KV caches are already initialized.";
 
   const bool has_grouped_cache = kv_cache_shape.has_grouped_cache_layout();
@@ -617,7 +617,7 @@ bool WorkerImpl::allocate_kv_cache(const KVCacheShape& kv_cache_shape) {
 
 bool WorkerImpl::allocate_kv_cache_with_transfer(
     const KVCacheShape& kv_cache_shape) {
-  CHECK(model_ != nullptr) << "Model is not initialized.";
+  CHECK(model_lifecycle() != nullptr) << "Model is not initialized.";
   CHECK(kv_caches_.empty()) << "KV caches are already initialized.";
 
   const ModelArgs& model_args = context_.get_model_args();
@@ -665,7 +665,7 @@ bool WorkerImpl::allocate_kv_cache_with_transfer(
 bool WorkerImpl::allocate_kv_cache_with_transfer(
     std::shared_ptr<KVCacheTransfer> kv_cache_transfer,
     const KVCacheShape& kv_cache_shape) {
-  CHECK(model_ != nullptr) << "Model is not initialized.";
+  CHECK(model_lifecycle() != nullptr) << "Model is not initialized.";
   CHECK(kv_caches_.empty()) << "KV caches are already initialized.";
 
   kv_cache_transfer_ = kv_cache_transfer;
@@ -730,7 +730,7 @@ bool WorkerImpl::unlink_p2p(const std::string& remote_addr) {
 }
 
 std::tuple<int64_t, int64_t> WorkerImpl::estimate_kv_cache_capacity() {
-  CHECK(model_ != nullptr) << "Model is not initialized.";
+  CHECK(model_lifecycle() != nullptr) << "Model is not initialized.";
   size_t torch_cache = 0;
   size_t torch_largest_block = 0;
   int32_t device_id = device_.index();
@@ -2012,10 +2012,10 @@ bool WorkerImpl::virtual_memory_sleep(MasterStatus master_status) {
   if (master_status == MasterStatus::LIGHT_SLEEP) {
     // only load model weights to host memory.
     auto model_loader = ModelLoader::create(model_weights_path_);
-    model_->lazy_load_model(std::move(model_loader));
+    model_lifecycle()->lazy_load_model(std::move(model_loader));
   } else if (master_status == MasterStatus::DEEP_SLEEP) {
     // only release model weights from host memory.
-    model_->free_model_weights();
+    model_lifecycle()->free_model_weights();
   }
   return true;
 }
@@ -2148,10 +2148,10 @@ bool WorkerImpl::wakeup_local(const WakeupOptions& options) {
         return false;
       }
     } else {
-      model_->reload_model_weights();
+      model_lifecycle()->reload_model_weights();
     }
 #else
-    model_->reload_model_weights();
+    model_lifecycle()->reload_model_weights();
 #endif
   } else if (options.master_status == MasterStatus::DEEP_SLEEP) {
     auto model_loader = ModelLoader::create(model_weights_path_);
@@ -2228,7 +2228,7 @@ bool WorkerImpl::wakeup_from_remote_weights(const WakeupOptions& options) {
     }
   }
 
-  model_->reload_model_weights_from_device();
+  model_lifecycle()->reload_model_weights_from_device();
   return true;
 }
 #endif
@@ -2666,20 +2666,20 @@ torch::Tensor WorkerImpl::select_hidden_states_for_embedding(
 }
 
 void WorkerImpl::load_model(std::unique_ptr<ModelLoader> loader) {
-  CHECK(model_ != nullptr) << "Model is not initialized.";
+  CHECK(model_lifecycle() != nullptr) << "Model is not initialized.";
 #if defined(USE_NPU)
   // Rolling mode uses host-pinned weights as the single source of truth:
   // lazy_load_model -> init_rolling_runtime_state() to finish rolling init.
   if (::xllm::LoadConfig::get_instance().enable_rolling_load() &&
       !is_spec_draft_) {
-    model_->lazy_load_model(std::move(loader));
+    model_lifecycle()->lazy_load_model(std::move(loader));
     CHECK(init_rolling_runtime_state())
         << "Failed to initialize rolling runtime state during load_model";
     return;
   }
 #endif
 
-  model_->load_model(std::move(loader));
+  model_lifecycle()->load_model(std::move(loader));
 }
 
 #if defined(USE_NPU)
@@ -2691,7 +2691,8 @@ bool WorkerImpl::init_rolling_runtime_state() {
     return true;
   }
 
-  CHECK(model_ != nullptr) << "Model is not initialized for rolling load";
+  CHECK(model_lifecycle() != nullptr)
+      << "Model is not initialized for rolling load";
   CHECK(load_stream_ != nullptr) << "load_stream_ is null for rolling load";
 
   // Rolling runtime ownership is moved into model.
@@ -2701,17 +2702,18 @@ bool WorkerImpl::init_rolling_runtime_state() {
       ::xllm::LoadConfig::get_instance().rolling_load_num_cached_layers();
   const int32_t n_rolling_slots =
       ::xllm::LoadConfig::get_instance().rolling_load_num_rolling_slots();
-  return model_->init_or_refresh_rolling_runtime(load_stream_.get(),
-                                                 compute_stream_.get(),
-                                                 n_slots,
-                                                 n_rolling_slots,
-                                                 options_.model_id());
+  return model_lifecycle()->init_or_refresh_rolling_runtime(
+      load_stream_.get(),
+      compute_stream_.get(),
+      n_slots,
+      n_rolling_slots,
+      options_.model_id());
 }
 #endif
 
 void WorkerImpl::lazy_load_model(std::unique_ptr<ModelLoader> loader) {
-  CHECK(model_ != nullptr) << "Model is not initialized.";
-  model_->lazy_load_model(std::move(loader));
+  CHECK(model_lifecycle() != nullptr) << "Model is not initialized.";
+  model_lifecycle()->lazy_load_model(std::move(loader));
 }
 
 folly::SemiFuture<bool> WorkerImpl::allocate_kv_cache_async(

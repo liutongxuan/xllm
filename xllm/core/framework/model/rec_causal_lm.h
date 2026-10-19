@@ -15,37 +15,38 @@ limitations under the License.
 
 #pragma once
 
-#include "core/framework/model/causal_lm.h"
+#include "core/framework/model/model_lifecycle.h"
+#include "core/framework/model/model_output.h"
+#include "core/framework/model/model_traits.h"
 #include "core/framework/model/rec_model_params.h"
+#include "core/kv_cache/storage/kv_cache.h"
 
 namespace xllm {
 
-class RecCausalLM : public CausalLM {
+class RecCausalLM : public torch::nn::Module, public ModelLifecycle {
  public:
   ~RecCausalLM() override = default;
-
-  // Keep the shared graph executor ABI at the boundary while exposing the
-  // Rec-owned parameters to concrete recommendation models.
-  ModelOutput forward(const torch::Tensor& tokens,
-                      const torch::Tensor& positions,
-                      std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& parameters) final {
-    CHECK(parameters.has_rec_model_params())
-        << "RecCausalLM requires RecModelParams";
-    return forward(tokens, positions, kv_caches, parameters.rec_model_params());
-  }
 
   virtual ModelOutput forward(const torch::Tensor& tokens,
                               const torch::Tensor& positions,
                               std::vector<KVCache>& kv_caches,
                               const RecModelParams& parameters) = 0;
+
+  virtual torch::Tensor pooler(const torch::Tensor& hidden_states,
+                               const torch::Tensor& selected_idxes) {
+    if (selected_idxes.defined()) {
+      return hidden_states.index_select(/*dim=*/0, selected_idxes);
+    }
+    return hidden_states;
+  }
+
+  virtual torch::Tensor logits(const torch::Tensor& hidden_states,
+                               const torch::Tensor& selected_idxes) = 0;
 };
 
 template <typename Model>
 class RecCausalLMImpl : public RecCausalLM {
  public:
-  using RecCausalLM::forward;
-
   RecCausalLMImpl(Model model, const torch::TensorOptions& options)
       : model_(std::move(model)), options_(options) {}
 
@@ -107,8 +108,21 @@ class RecCausalLMImpl : public RecCausalLM {
     return model_->prepare_expert_weight(layer_id, expert_ids);
   }
 
+  void start_expert_weight_transfer(int32_t layer_id) override {
+    if constexpr (detail::has_start_expert_weight_transfer<Model>::value) {
+      model_->start_expert_weight_transfer(layer_id);
+    }
+  }
+
   void update_expert_weight(int32_t layer_id) override {
     return model_->update_expert_weight(layer_id);
+  }
+
+  bool last_prepare_expert_weight_ok(int32_t layer_id) const override {
+    if constexpr (detail::has_last_prepare_expert_weight_ok<Model>::value) {
+      return model_->last_prepare_expert_weight_ok(layer_id);
+    }
+    return RecCausalLM::last_prepare_expert_weight_ok(layer_id);
   }
 
 #if defined(USE_NPU)

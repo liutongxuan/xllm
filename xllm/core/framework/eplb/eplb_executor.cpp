@@ -26,7 +26,8 @@ limitations under the License.
 
 namespace xllm {
 
-EplbExecutor::EplbExecutor(CausalLM& model, const torch::Device& device)
+EplbExecutor::EplbExecutor(ExpertWeightAccess& model,
+                           const torch::Device& device)
     : model_(model),
       device_(device),
       stream_(device_.get_stream_from_pool()),

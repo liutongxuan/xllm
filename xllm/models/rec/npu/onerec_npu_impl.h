@@ -248,7 +248,6 @@ class OneRecStackImpl : public torch::nn::Module {
         input_params.meta.q_max_seq_len, is_prefill, input_params);
 
     RecModelParams input_params_local = input_params.clone();
-    ModelInputParams input_params_view(input_params_local);
     auto& mutable_onerec_params = input_params_local.mutable_onerec_params();
     const auto* onerec_xattn_params = input_params.onerec_xattention_params();
 
@@ -330,7 +329,7 @@ class OneRecStackImpl : public torch::nn::Module {
           h,
           preprocessed_attn_mask,
           kv_cache_ref,
-          input_params_view,
+          input_params_local,
           npu_encoder_output.defined() ? &npu_encoder_output : nullptr,
           static_cast<int>(i),
           event,

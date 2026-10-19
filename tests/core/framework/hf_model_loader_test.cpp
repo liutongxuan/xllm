@@ -44,13 +44,13 @@ using ExpectedRecModelFactory =
 
 static_assert(std::is_same_v<RecModelFactory, ExpectedRecModelFactory>,
               "RecModelFactory must return std::unique_ptr<RecCausalLM>.");
-static_assert(std::is_base_of_v<CausalLM, RecCausalLM>,
-              "RecCausalLM must derive from CausalLM.");
+static_assert(!std::is_base_of_v<CausalLM, RecCausalLM>,
+              "RecCausalLM must keep an independent forward contract.");
+static_assert(std::is_base_of_v<ModelLifecycle, RecCausalLM>,
+              "RecCausalLM must expose input-independent model resources.");
 
 class DummyRecCausalLM final : public RecCausalLM {
  public:
-  using RecCausalLM::forward;
-
   explicit DummyRecCausalLM(const torch::TensorOptions& options)
       : options_(options) {}
 
@@ -308,20 +308,18 @@ TEST(HFModelLoaderTest, RecFactoryCreatesRecCausalLmInstance) {
   std::unique_ptr<RecCausalLM> rec_model = factory(context);
   ASSERT_NE(rec_model, nullptr);
 
-  CausalLM* causal_model = dynamic_cast<CausalLM*>(rec_model.get());
-  EXPECT_NE(causal_model, nullptr);
-  EXPECT_EQ(rec_model->device(), torch::Device(torch::kCPU));
+  ModelLifecycle& lifecycle = *rec_model;
+  EXPECT_EQ(lifecycle.device(), torch::Device(torch::kCPU));
 }
 
-TEST(HFModelLoaderTest, RecCausalLmProjectsSharedViewToRecParams) {
+TEST(HFModelLoaderTest, RecCausalLmAcceptsOwnedRecParams) {
   const torch::TensorOptions options =
       torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU);
   auto rec_model = std::make_unique<DummyRecCausalLM>(options);
   RecModelParams rec_params;
-  ModelInputParams shared_view(rec_params);
   std::vector<KVCache> kv_caches;
 
-  rec_model->forward(torch::Tensor(), torch::Tensor(), kv_caches, shared_view);
+  rec_model->forward(torch::Tensor(), torch::Tensor(), kv_caches, rec_params);
 
   EXPECT_TRUE(rec_model->typed_forward_called());
 }
