@@ -22,8 +22,8 @@ limitations under the License.
 
 #include "core/kv_cache/storage/kv_cache.h"
 #include "framework/model/causal_lm.h"
-#include "framework/model/model_input_params.h"
 #include "framework/model/model_output.h"
+#include "framework/model/rec_model_params.h"
 #include "runtime/executor_impl.h"
 #include "runtime/options.h"
 
@@ -41,7 +41,7 @@ class RecExecutor final {
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& params);
+                      RecModelParams& params);
 
  private:
   std::unique_ptr<ExecutorImpl> impl_;

@@ -18,6 +18,7 @@ limitations under the License.
 #include <string>
 
 #include "core/framework/config/model_config.h"
+#include "core/framework/model/model_input_params.h"
 #include "platform/platform.h"
 #include "runtime/executor_impl_factory.h"
 
@@ -45,8 +46,11 @@ RecExecutor::RecExecutor(CausalLM* model,
 ModelOutput RecExecutor::forward(const torch::Tensor& tokens,
                                  const torch::Tensor& positions,
                                  std::vector<KVCache>& kv_caches,
-                                 const ModelInputParams& params) {
-  return impl_->run(tokens, positions, kv_caches, params);
+                                 RecModelParams& params) {
+  // Graph backends still consume the shared execution projection. The view
+  // borrows RecModelParams and does not copy the input payload.
+  ModelInputParams projection(params);
+  return impl_->run(tokens, positions, kv_caches, projection);
 }
 
 }  // namespace xllm

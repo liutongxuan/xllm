@@ -277,6 +277,16 @@ class ModelInputParams final {
     CHECK(rec_params_ != nullptr) << "strategy input requires Rec parameters";
     return *rec_params_;
   }
+
+  bool has_rec_model_params() const {
+    return domain_ == Domain::REC && native_owner_ != nullptr;
+  }
+
+  RecModelParams& rec_model_params() const {
+    CHECK(has_rec_model_params())
+        << "Rec model parameters require REC input parameters";
+    return *static_cast<RecModelParams*>(native_owner_);
+  }
   void clear_linear_attention_state() {
     embedding.linear_state_ids.clear();
     embedding.linear_state_indices = torch::Tensor();

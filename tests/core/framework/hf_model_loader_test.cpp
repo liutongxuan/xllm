@@ -49,19 +49,24 @@ static_assert(std::is_base_of_v<CausalLM, RecCausalLM>,
 
 class DummyRecCausalLM final : public RecCausalLM {
  public:
+  using RecCausalLM::forward;
+
   explicit DummyRecCausalLM(const torch::TensorOptions& options)
       : options_(options) {}
 
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& parameters) override {
+                      const RecModelParams& parameters) override {
     UNUSED_PARAMETER(tokens);
     UNUSED_PARAMETER(positions);
     UNUSED_PARAMETER(kv_caches);
     UNUSED_PARAMETER(parameters);
+    typed_forward_called_ = true;
     return ModelOutput();
   }
+
+  bool typed_forward_called() const { return typed_forward_called_; }
 
   torch::Tensor logits(const torch::Tensor& hidden_states,
                        const torch::Tensor& seleted_idxes) override {
@@ -90,6 +95,7 @@ class DummyRecCausalLM final : public RecCausalLM {
 
  private:
   torch::TensorOptions options_;
+  bool typed_forward_called_ = false;
 };
 
 nlohmann::json speculators_eagle3_config() {
@@ -305,6 +311,19 @@ TEST(HFModelLoaderTest, RecFactoryCreatesRecCausalLmInstance) {
   CausalLM* causal_model = dynamic_cast<CausalLM*>(rec_model.get());
   EXPECT_NE(causal_model, nullptr);
   EXPECT_EQ(rec_model->device(), torch::Device(torch::kCPU));
+}
+
+TEST(HFModelLoaderTest, RecCausalLmProjectsSharedViewToRecParams) {
+  const torch::TensorOptions options =
+      torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU);
+  auto rec_model = std::make_unique<DummyRecCausalLM>(options);
+  RecModelParams rec_params;
+  ModelInputParams shared_view(rec_params);
+  std::vector<KVCache> kv_caches;
+
+  rec_model->forward(torch::Tensor(), torch::Tensor(), kv_caches, shared_view);
+
+  EXPECT_TRUE(rec_model->typed_forward_called());
 }
 
 #if defined(USE_NPU) || defined(USE_MLU)

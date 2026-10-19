@@ -41,7 +41,7 @@ class OneRecModelImpl : public torch::nn::Module {
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) {
+                      const RecModelParams& input_params) {
     if (!tokens.defined()) {
       return ModelOutput();
     }

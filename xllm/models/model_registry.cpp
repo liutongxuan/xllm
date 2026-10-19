@@ -660,7 +660,7 @@ std::unique_ptr<CausalLM> create_llm_model(const ModelContext& context) {
   return nullptr;
 }
 
-std::unique_ptr<CausalLM> create_rec_model(const ModelContext& context) {
+std::unique_ptr<RecCausalLM> create_rec_model(const ModelContext& context) {
   std::string resolved_name;
   std::string error_message;
   if (!resolve_model_registration_name(context.get_model_args().model_type(),

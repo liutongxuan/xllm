@@ -192,7 +192,7 @@ void resolve_npu_kernel_backend(Options* options);
 
 std::unique_ptr<CausalLM> create_llm_model(const ModelContext& context);
 
-std::unique_ptr<CausalLM> create_rec_model(const ModelContext& context);
+std::unique_ptr<RecCausalLM> create_rec_model(const ModelContext& context);
 
 std::unique_ptr<CausalVLM> create_vlm_model(const ModelContext& context);
 

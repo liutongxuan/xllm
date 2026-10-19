@@ -441,7 +441,7 @@ std::optional<ForwardOutput> RecWorkerImpl::RecWorkPipeline::step(
     const RecForwardInput& input) {
   Timer timer;
   auto& sampling_params = input.sampling_params;
-  ModelInputParams input_params(input.input_params);
+  RecModelParams& input_params = input.input_params;
 
   std::vector<folly::SemiFuture<bool>> futures;
 
@@ -683,7 +683,7 @@ std::optional<ForwardOutput> RecWorkerImpl::OneRecWorkPipeline::step(
   runtime_.worker.device_.set_device();
 
   const auto& sampling_params = input.sampling_params;
-  ModelInputParams input_params(input.input_params);
+  RecModelParams& input_params = input.input_params;
 
   const auto* onerec_params = input_params.onerec_params();
   CHECK(onerec_params != nullptr) << "OneRec requires rec_params.";
@@ -1297,7 +1297,7 @@ std::optional<ForwardOutput> RecWorkerImpl::OneRecXAttentionWorkPipeline::step(
       };
 
   RecForwardInput mutable_input = input.clone();
-  ModelInputParams input_params(mutable_input.input_params);
+  RecModelParams& input_params = mutable_input.input_params;
   CHECK(input_params.onerec_xattention_params() != nullptr)
       << "OneRec xattention pipeline requires onerec_xattention_params.";
 
@@ -2131,7 +2131,7 @@ std::optional<ForwardOutput> RecWorkerImpl::LlmRecMultiRoundPipeline::step(
   device.set_device();
 
   RecForwardInput mutable_input = input.clone();
-  ModelInputParams input_params(mutable_input.input_params);
+  RecModelParams& input_params = mutable_input.input_params;
 
   const auto* step_meta = mutable_input.step_meta();
   CHECK(step_meta != nullptr)

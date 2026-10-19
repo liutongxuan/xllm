@@ -22,8 +22,8 @@ limitations under the License.
 #include <memory>
 #include <vector>
 
-#include "core/framework/model/model_input_params.h"
 #include "core/framework/model/model_output.h"
+#include "core/framework/model/rec_model_params.h"
 #include "core/framework/model_context/model_context.h"
 #include "core/framework/model_loader/model_loader.h"
 #include "core/kv_cache/storage/kv_cache.h"
@@ -49,7 +49,7 @@ class RecForCausalLMImplBase : public torch::nn::Module {
   virtual ModelOutput forward(const torch::Tensor& tokens,
                               const torch::Tensor& positions,
                               std::vector<KVCache>& kv_caches,
-                              const ModelInputParams& input_params) {
+                              const RecModelParams& input_params) {
     return model_->forward(tokens, positions, kv_caches, input_params);
   }
 

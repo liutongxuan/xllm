@@ -16,24 +16,43 @@ limitations under the License.
 #pragma once
 
 #include "core/framework/model/causal_lm.h"
+#include "core/framework/model/rec_model_params.h"
 
 namespace xllm {
 
 class RecCausalLM : public CausalLM {
  public:
   ~RecCausalLM() override = default;
+
+  // Keep the shared graph executor ABI at the boundary while exposing the
+  // Rec-owned parameters to concrete recommendation models.
+  ModelOutput forward(const torch::Tensor& tokens,
+                      const torch::Tensor& positions,
+                      std::vector<KVCache>& kv_caches,
+                      const ModelInputParams& parameters) final {
+    CHECK(parameters.has_rec_model_params())
+        << "RecCausalLM requires RecModelParams";
+    return forward(tokens, positions, kv_caches, parameters.rec_model_params());
+  }
+
+  virtual ModelOutput forward(const torch::Tensor& tokens,
+                              const torch::Tensor& positions,
+                              std::vector<KVCache>& kv_caches,
+                              const RecModelParams& parameters) = 0;
 };
 
 template <typename Model>
 class RecCausalLMImpl : public RecCausalLM {
  public:
+  using RecCausalLM::forward;
+
   RecCausalLMImpl(Model model, const torch::TensorOptions& options)
       : model_(std::move(model)), options_(options) {}
 
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& parameters) override {
+                      const RecModelParams& parameters) override {
     return model_->forward(tokens, positions, kv_caches, parameters);
   }
 
