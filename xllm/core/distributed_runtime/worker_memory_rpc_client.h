@@ -107,6 +107,7 @@ class WorkerMemoryRpcClient final {
  private:
   int32_t global_rank_;
   torch::Device device_;
+  const int32_t transaction_timeout_ms_;
 
   // brpc connection resources
   brpc::Channel channel_;
@@ -117,6 +118,12 @@ class WorkerMemoryRpcClient final {
   ThreadPool threadpool_{/*num_threads=*/1,
                          /*cpu_binding=*/false,
                          /*pool_name=*/"WorkerMemoryRpcClient.async"};
+
+  // Capacity probes must not wait behind mutation RPCs.
+  ThreadPool capacity_query_threadpool_{
+      /*num_threads=*/1,
+      /*cpu_binding=*/false,
+      /*pool_name=*/"WorkerMemoryRpcClient.capacity"};
 };
 
 }  // namespace xllm

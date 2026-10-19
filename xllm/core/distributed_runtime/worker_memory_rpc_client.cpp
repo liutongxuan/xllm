@@ -25,11 +25,25 @@ limitations under the License.
 #include "core/framework/config/service_config.h"
 
 namespace xllm {
+namespace {
+
+constexpr int32_t kDefaultTransactionTimeoutMs = 30000;
+
+int32_t get_transaction_timeout_ms() {
+  const int32_t timeout_ms =
+      ServiceConfig::get_instance().rpc_channel_timeout_ms();
+  // Ownership transactions need a deadline even when other RPCs are unbounded.
+  return timeout_ms > 0 ? timeout_ms : kDefaultTransactionTimeoutMs;
+}
+
+}  // namespace
 
 WorkerMemoryRpcClient::WorkerMemoryRpcClient(int32_t global_rank,
                                              const std::string& server_address,
                                              const torch::Device& device)
-    : global_rank_(global_rank), device_(device) {
+    : global_rank_(global_rank),
+      device_(device),
+      transaction_timeout_ms_(get_transaction_timeout_ms()) {
   options_.connection_type = "pooled";
   options_.timeout_ms = -1;
   options_.connect_timeout_ms = -1;
@@ -76,7 +90,7 @@ folly::SemiFuture<MemoryInfo> WorkerMemoryRpcClient::get_memory_info_async(
     int32_t timeout_ms) {
   folly::Promise<MemoryInfo> promise;
   auto future = promise.getSemiFuture();
-  threadpool_.schedule(
+  capacity_query_threadpool_.schedule(
       [this, timeout_ms, promise = std::move(promise)]() mutable {
         proto::Status req;
         proto::MemoryInfoResponse resp;
@@ -147,6 +161,7 @@ folly::SemiFuture<bool> WorkerMemoryRpcClient::prepare_kv_mapping_async(
     }
     proto::Status resp;
     brpc::Controller cntl;
+    cntl.set_timeout_ms(transaction_timeout_ms_);
     stub_->PrepareKvMapping(&cntl, &req, &resp, nullptr);
     if (cntl.Failed()) {
       LOG(ERROR) << "PrepareKvMapping failed: " << cntl.ErrorText();
@@ -185,6 +200,7 @@ folly::SemiFuture<bool> WorkerMemoryRpcClient::prepare_weight_pages_async(
     req.set_num_pages(num_pages);
     proto::Status resp;
     brpc::Controller cntl;
+    cntl.set_timeout_ms(transaction_timeout_ms_);
     stub_->PrepareWeightPages(&cntl, &req, &resp, nullptr);
     if (cntl.Failed()) {
       LOG(ERROR) << "PrepareWeightPages failed: " << cntl.ErrorText();
@@ -220,6 +236,7 @@ folly::SemiFuture<bool> WorkerMemoryRpcClient::finish_mapping_async(
     req.set_transaction_id(transaction_id);
     proto::Status resp;
     brpc::Controller cntl;
+    cntl.set_timeout_ms(transaction_timeout_ms_);
     if (weight && commit) {
       stub_->CommitWeightPages(&cntl, &req, &resp, nullptr);
     } else if (weight) {
