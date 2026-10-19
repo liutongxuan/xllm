@@ -509,6 +509,57 @@ TEST(FixedStepsSchedulerTest, PrepareBatchRespectsTokenBudget) {
   EXPECT_LE(scheduler.get_running_requests().size(), 1u);
 }
 
+TEST(FixedStepsSchedulerTest,
+     PreservesQueuedRequestsWhileMemoryThresholdBlocksPrefill) {
+  ScopedConfigValue<bool> prefix_cache(
+      KVCacheConfig::get_instance().enable_prefix_cache(), false);
+  ScopedConfigValue<double> memory_threshold(
+      SchedulerConfig::get_instance()
+          .prefill_scheduling_memory_usage_threshold(),
+      0.0);
+  auto engine = std::make_unique<FakeEngine>(64, 32);
+  TestableFixedStepsScheduler scheduler(engine.get(), CreateOptions());
+  auto requests = GenRequests({32, 32}, {10, 10}, RecType::kOneRec);
+  for (auto& request : requests) {
+    ASSERT_TRUE(scheduler.add_request(request));
+  }
+
+  RecBatchGroup batches = scheduler.prepare_batch_test();
+  ASSERT_EQ(batches.size(), 1u);
+  EXPECT_TRUE(batches.front().empty());
+  EXPECT_EQ(scheduler.get_waiting_requests_num(), 2u);
+  EXPECT_EQ(scheduler.num_pending_requests(), 2u);
+
+  SchedulerConfig::get_instance().prefill_scheduling_memory_usage_threshold() =
+      1.0;
+  batches = scheduler.prepare_batch_test();
+  ASSERT_EQ(batches.size(), 1u);
+  EXPECT_EQ(batches.front().size(), 2u);
+  EXPECT_EQ(scheduler.get_waiting_requests_num(), 0u);
+}
+
+TEST(FixedStepsSchedulerTest, PreservesQueuedRequestsWhenKvAllocationFails) {
+  ScopedConfigValue<bool> prefix_cache(
+      KVCacheConfig::get_instance().enable_prefix_cache(), false);
+  ScopedConfigValue<double> memory_threshold(
+      SchedulerConfig::get_instance()
+          .prefill_scheduling_memory_usage_threshold(),
+      1.0);
+  auto engine = std::make_unique<FakeEngine>(
+      /*num_blocks=*/2, /*block_size=*/32);
+  TestableFixedStepsScheduler scheduler(engine.get(), CreateOptions());
+  auto requests = GenRequests({64, 64}, {10, 10}, RecType::kLlmRec);
+  for (auto& request : requests) {
+    ASSERT_TRUE(scheduler.add_request(request));
+  }
+
+  RecBatchGroup batches = scheduler.prepare_batch_test();
+  ASSERT_EQ(batches.size(), 1u);
+  EXPECT_TRUE(batches.front().empty());
+  EXPECT_EQ(scheduler.get_waiting_requests_num(), 2u);
+  EXPECT_EQ(scheduler.num_pending_requests(), 2u);
+}
+
 TEST(FixedStepsSchedulerTest, StepExecutesRecBatch) {
   ScopedConfigValue<bool> prefix_cache(
       KVCacheConfig::get_instance().enable_prefix_cache(), false);

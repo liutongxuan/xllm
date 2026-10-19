@@ -229,7 +229,7 @@ bool FixedStepsScheduler::handle_prefill_requests(
   // NOTE: preempted requests will be pushed in waiting_priority_queue,
   // they may contain many sequences, so we should check here.
   bool rejected_oversized_request = false;
-  bool blocks_exhausted = false;
+  bool budget_exhausted = false;
   const bool requires_kv_cache =
       scheduler_pipeline_ && scheduler_pipeline_->requires_kv_cache();
   while (!prefill_queue_->empty() && remaining_seq_budget > 0 &&
@@ -278,6 +278,7 @@ bool FixedStepsScheduler::handle_prefill_requests(
       if (remaining_token_budget < allocated_tokens + num_tokens ||
           remaining_seq_budget < allocated_seqs + 1) {
         can_schedule = false;
+        budget_exhausted = true;
         break;
       }
 
@@ -285,7 +286,6 @@ bool FixedStepsScheduler::handle_prefill_requests(
         if (!scheduler_pipeline_->allocate_kv_cache(kv_cache_manager_,
                                                     prefill_sequence.get())) {
           can_schedule = false;
-          blocks_exhausted = true;
           break;
         }
       }
@@ -321,11 +321,10 @@ bool FixedStepsScheduler::handle_prefill_requests(
                                       prefill_sequences_budget.end());
   }
 
-  if (running_sequences_.empty() && !prefill_queue_->empty()) {
-    LOG(ERROR)
-        << "Request prompt is too long, no enough budget/memory to schedule "
-           "a single sequence.";
-    // no enough memory to schedule single sequence, just finish the request
+  if (running_sequences_.empty() && !prefill_queue_->empty() &&
+      budget_exhausted) {
+    LOG(ERROR) << "Request prompt is too long, no enough budget to schedule "
+                  "a single sequence.";
     std::shared_ptr<Request> request(prefill_queue_->top());
     prefill_queue_->pop_top();
     // block_manager_->release_blocks_for(request.get());
