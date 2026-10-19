@@ -22,7 +22,7 @@ limitations under the License.
 #include <thread>
 #include <vector>
 
-#include "core/kv_cache/storage/virtual_kv_cache_page_allocator_impl.h"
+#include "core/kv_cache/storage/vmm_kv_page_allocator_impl.h"
 
 namespace xllm {
 

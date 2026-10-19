@@ -31,7 +31,7 @@ limitations under the License.
 #include "core/framework/config/kv_cache_config.h"
 #include "core/framework/config/load_config.h"
 #include "core/framework/model_loader/model_loader.h"
-#include "core/kv_cache/storage/virtual_kv_cache_page_allocator_impl.h"
+#include "core/kv_cache/storage/vmm_kv_page_allocator_impl.h"
 
 namespace xllm {
 namespace {
@@ -46,7 +46,7 @@ class RecordingWorkerClient final : public WorkerClient {
     sleep_status_ = master_status;
     pages_sleeping_at_sleep_ =
         DistributedVirtualMemoryCoordinator::get_instance()
-            .virtual_kv_cache_page_allocator()
+            .vmm_kv_page_allocator()
             .is_suspended(model_id_);
     return folly::makeSemiFuture(sleep_result_);
   }
@@ -56,7 +56,7 @@ class RecordingWorkerClient final : public WorkerClient {
     wakeup_options_ = options;
     pages_awake_at_wakeup_ =
         !DistributedVirtualMemoryCoordinator::get_instance()
-             .virtual_kv_cache_page_allocator()
+             .vmm_kv_page_allocator()
              .is_suspended(model_id_);
     return folly::makeSemiFuture(wakeup_result_);
   }
@@ -143,7 +143,7 @@ class ModelResidencyCoordinatorTest : public ::testing::Test {
     model_id_ =
         "model_residency_coordinator_test_" + std::to_string(next_model_id++);
     ASSERT_TRUE(DistributedVirtualMemoryCoordinator::get_instance()
-                    .virtual_kv_cache_page_allocator()
+                    .vmm_kv_page_allocator()
                     .register_model(model_id_, /*num_layers=*/2));
 
     auto& load_config = LoadConfig::get_instance();
@@ -194,7 +194,7 @@ class ModelResidencyCoordinatorTest : public ::testing::Test {
 
   void suspend_model_pages() {
     auto& page_allocator = DistributedVirtualMemoryCoordinator::get_instance()
-                               .virtual_kv_cache_page_allocator();
+                               .vmm_kv_page_allocator();
     const auto plan = page_allocator.begin_suspend(model_id_);
     ASSERT_TRUE(plan.has_value());
     page_allocator.finish_suspend(model_id_);
@@ -222,7 +222,7 @@ TEST_F(ModelResidencyCoordinatorTest,
   EXPECT_FALSE(coordinator.sleep(MasterStatus::DEEP_SLEEP));
   EXPECT_FALSE(coordinator.wakeup(WakeupOptions{}));
   EXPECT_FALSE(DistributedVirtualMemoryCoordinator::get_instance()
-                   .virtual_kv_cache_page_allocator()
+                   .vmm_kv_page_allocator()
                    .is_suspended(model_id_));
   EXPECT_EQ(worker->sleep_calls_, 0);
   EXPECT_EQ(worker->wakeup_calls_, 0);
@@ -271,13 +271,11 @@ TEST_F(ModelResidencyCoordinatorTest,
     EXPECT_EQ(memory_coordinator.get_worker_free_page_counts(),
               std::vector<size_t>({8, 8}));
     EXPECT_FALSE(
-        memory_coordinator.virtual_kv_cache_page_allocator().is_suspended(
-            model_id));
+        memory_coordinator.vmm_kv_page_allocator().is_suspended(model_id));
 
     EXPECT_TRUE(coordinator.finish_initialization(statuses[index]));
     EXPECT_TRUE(
-        memory_coordinator.virtual_kv_cache_page_allocator().is_suspended(
-            model_id));
+        memory_coordinator.vmm_kv_page_allocator().is_suspended(model_id));
     EXPECT_EQ(memory_coordinator.get_weight_page_count(model_id), 23);
     EXPECT_EQ(memory_coordinator.get_worker_free_page_counts(),
               std::vector<size_t>({8, 8}));
@@ -318,8 +316,8 @@ TEST_F(ModelResidencyCoordinatorTest,
   EXPECT_EQ(memory_coordinator.get_worker_free_page_counts(),
             std::vector<size_t>({8, 8}));
   EXPECT_TRUE(coordinator.finish_initialization(MasterStatus::LIGHT_SLEEP));
-  EXPECT_TRUE(memory_coordinator.virtual_kv_cache_page_allocator().is_suspended(
-      model_id));
+  EXPECT_TRUE(
+      memory_coordinator.vmm_kv_page_allocator().is_suspended(model_id));
   EXPECT_EQ(memory_coordinator.get_weight_page_count(model_id), 24);
 }
 
@@ -364,7 +362,7 @@ TEST_F(ModelResidencyCoordinatorTest, AwakeInitializationLeavesModelAwake) {
 
   EXPECT_TRUE(coordinator.finish_initialization(MasterStatus::WAKEUP));
   EXPECT_FALSE(DistributedVirtualMemoryCoordinator::get_instance()
-                   .virtual_kv_cache_page_allocator()
+                   .vmm_kv_page_allocator()
                    .is_suspended(model_id_));
 }
 
@@ -382,13 +380,13 @@ TEST_F(ModelResidencyCoordinatorTest, MissingWorkerManagerPreservesModelState) {
             std::make_pair(/*dp_size=*/1, /*tp_size=*/2));
   EXPECT_FALSE(coordinator.sleep(MasterStatus::DEEP_SLEEP));
   EXPECT_FALSE(DistributedVirtualMemoryCoordinator::get_instance()
-                   .virtual_kv_cache_page_allocator()
+                   .vmm_kv_page_allocator()
                    .is_suspended(model_id_));
 
   suspend_model_pages();
   EXPECT_FALSE(coordinator.wakeup(WakeupOptions{}));
   EXPECT_TRUE(DistributedVirtualMemoryCoordinator::get_instance()
-                  .virtual_kv_cache_page_allocator()
+                  .vmm_kv_page_allocator()
                   .is_suspended(model_id_));
 }
 
@@ -406,13 +404,13 @@ TEST_F(ModelResidencyCoordinatorTest, EmptyWorkerManagerPreservesModelState) {
             std::make_pair(/*dp_size=*/1, /*tp_size=*/2));
   EXPECT_FALSE(coordinator.sleep(MasterStatus::DEEP_SLEEP));
   EXPECT_FALSE(DistributedVirtualMemoryCoordinator::get_instance()
-                   .virtual_kv_cache_page_allocator()
+                   .vmm_kv_page_allocator()
                    .is_suspended(model_id_));
 
   suspend_model_pages();
   EXPECT_FALSE(coordinator.wakeup(WakeupOptions{}));
   EXPECT_TRUE(DistributedVirtualMemoryCoordinator::get_instance()
-                  .virtual_kv_cache_page_allocator()
+                  .vmm_kv_page_allocator()
                   .is_suspended(model_id_));
 }
 
@@ -462,7 +460,7 @@ TEST_F(ModelResidencyCoordinatorTest,
 
   EXPECT_FALSE(coordinator.sleep(MasterStatus::LIGHT_SLEEP));
   EXPECT_TRUE(DistributedVirtualMemoryCoordinator::get_instance()
-                  .virtual_kv_cache_page_allocator()
+                  .vmm_kv_page_allocator()
                   .is_suspended(model_id_));
   EXPECT_EQ(first->sleep_calls_, 1);
   EXPECT_EQ(second->sleep_calls_, 1);

@@ -133,7 +133,7 @@ flowchart TB
 
   subgraph cache["core/kv_cache"]
     policy["layout, block and prefix<br/>KV policy and state"]
-    pages["storage / VirtualKVCachePageAllocatorImpl<br/>page queues, preallocation and block-to-page conversion"]
+    pages["storage / VmmKVPageAllocatorImpl<br/>page queues, preallocation and block-to-page conversion"]
     backend["storage / KVCachePageBackend<br/>capacity reservation and mapping interface"]
     ports["storage and transfer interfaces<br/>page allocator, tensor allocator, memory provider"]
     storage["storage / VirtualKVCacheMemoryRegistry<br/>local KV mappings and paged tensor allocation"]
@@ -193,7 +193,7 @@ leases. Transport registration and its retained mapping lease belong to
 
 `core/kv_cache/storage` owns `VirtualKVCacheMemoryRegions` and
 `VirtualKVCacheMemoryRegistry`, including model-local cache mappings and physical
-offset lookup. `VirtualKVCacheTensorAllocator` uses an injected registry to
+offset lookup. `VmmKVTensorAllocator` uses an injected registry to
 implement `KVCacheTensorAllocator`. In `core/kv_cache/transfer`,
 `VirtualKVCacheTransferMemoryProviderImpl` uses that registry and an injected
 `GlobalVirtualMemoryRegion` to implement `VirtualKVCacheTransferMemoryProvider`.
@@ -216,14 +216,14 @@ depend on the `runtime` aggregate, RPC or distributed-runtime targets.
 `WorkerMemoryRpcServer` handle requests between workers. The service invokes
 local resources without calling back into distributed coordination.
 
-`core/kv_cache/storage/VirtualKVCachePageAllocatorImpl` owns KV page queues,
+`core/kv_cache/storage/VmmKVPageAllocatorImpl` owns KV page queues,
 preallocation and block-to-virtual-page conversion, implementing
-`VirtualKVCachePageAllocator`. An injected `KVCachePageBackend` supplies capacity
+`VmmKVPageAllocator`. An injected `KVCachePageBackend` supplies capacity
 reservation and map/unmap operations; the allocator has no weight policy or
 RPC code. Map/unmap receive byte offsets within each layer's K/V region,
 computed by the allocator as virtual page ID times page size.
 `KVCacheManagerFactory` injects the page allocator interface through
-pools and composite managers into `VirtualMemoryKVCacheBlockManager`, whose block
+pools and composite managers into `VmmKVBlockManager`, whose block
 adapter does not access a distributed singleton.
 
 `DistributedVirtualMemoryCoordinator` implements that backend, owns the paged

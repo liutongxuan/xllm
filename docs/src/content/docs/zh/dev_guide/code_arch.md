@@ -128,7 +128,7 @@ flowchart TB
 
   subgraph cache["core/kv_cache"]
     policy["layout、block 与 prefix<br/>KV 策略与状态"]
-    pages["storage / VirtualKVCachePageAllocatorImpl<br/>页队列、预分配与 block 到页换算"]
+    pages["storage / VmmKVPageAllocatorImpl<br/>页队列、预分配与 block 到页换算"]
     backend["storage / KVCachePageBackend<br/>容量预留与映射接口"]
     ports["storage 与 transfer 接口<br/>页分配、tensor 分配、内存 provider"]
     storage["storage / VirtualKVCacheMemoryRegistry<br/>本地 KV 映射与分页 tensor 分配"]
@@ -186,7 +186,7 @@ tensor 的 shape、dtype 和视图构造放在 `framework/allocator/torch`；返
 目标依赖。
 
 `core/kv_cache/storage` 保存 `VirtualKVCacheMemoryRegions` 和 `VirtualKVCacheMemoryRegistry`，
-负责各模型本地的缓存映射及物理偏移查询。`VirtualKVCacheTensorAllocator` 使用注入的
+负责各模型本地的缓存映射及物理偏移查询。`VmmKVTensorAllocator` 使用注入的
 registry 实现 `KVCacheTensorAllocator`。`core/kv_cache/transfer` 中的
 `VirtualKVCacheTransferMemoryProviderImpl` 使用该 registry 和注入的 `GlobalVirtualMemoryRegion`
 实现 `VirtualKVCacheTransferMemoryProvider`。`WorkerImpl` 提供这些依赖，具体缓存后端使用
@@ -205,12 +205,12 @@ Mooncake 字节传输。KV manifest、peer 状态和重分片 plan 仍属于
 `WorkerMemoryRpcServer` 负责跨 worker 请求；service 只调用本地资源，
 不反向进入分布式协调器。
 
-`core/kv_cache/storage/VirtualKVCachePageAllocatorImpl` 管理 KV 页队列、预分配和
-block 到虚拟页的换算，实现 `VirtualKVCachePageAllocator`。它通过注入的
+`core/kv_cache/storage/VmmKVPageAllocatorImpl` 管理 KV 页队列、预分配和
+block 到虚拟页的换算，实现 `VmmKVPageAllocator`。它通过注入的
 `KVCachePageBackend` 请求容量预留及 map/unmap，不包含权重策略或 RPC。
 map/unmap 接收每层 K/V 区域内的字节偏移，由 allocator 将虚拟页 ID 乘以页大小得到。
 `KVCacheManagerFactory` 将页分配接口经 pool 和组合 manager 注入
-`VirtualMemoryKVCacheBlockManager`，block 适配器不访问分布式单例。
+`VmmKVBlockManager`，block 适配器不访问分布式单例。
 
 `DistributedVirtualMemoryCoordinator` 实现该 backend，持有分页 allocator，使用通用的
 `WorkerPhysicalPageBudget` 记账，并选择目标 worker、派发本地或 RPC 操作。

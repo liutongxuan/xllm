@@ -22,7 +22,7 @@ limitations under the License.
 
 #include "core/framework/block/block_manager_pool.h"
 #include "core/kv_cache/block/block_utils.h"
-#include "core/kv_cache/storage/virtual_kv_cache_page_allocator.h"
+#include "core/kv_cache/storage/vmm_kv_page_allocator.h"
 #include "framework/config/scheduler_config.h"
 #include "framework/request/request.h"
 #include "framework/request/sequence.h"
@@ -146,10 +146,9 @@ std::vector<Block> C128Blocks(Sequence& seq) {
 }
 
 // Supplies a small logical page pool without device mappings or RPCs.
-class TestVirtualKVCachePageAllocator final
-    : public VirtualKVCachePageAllocator {
+class TestVmmKVPageAllocator final : public VmmKVPageAllocator {
  public:
-  explicit TestVirtualKVCachePageAllocator(int32_t dp_size)
+  explicit TestVmmKVPageAllocator(int32_t dp_size)
       : allocated_pages_(dp_size), next_page_ids_(dp_size, 0) {}
 
   bool is_initialized() const override { return true; }
@@ -1157,7 +1156,7 @@ TEST(CompositeBlockManagerTest, DecodeRoleLinearDefaultStrideDoesNotAbort) {
 
 TEST(CompositeBlockManagerTest,
      VirtualMemoryPoolUsesInjectedAllocatorForEveryDpRank) {
-  TestVirtualKVCachePageAllocator allocator(/*dp_size=*/2);
+  TestVmmKVPageAllocator allocator(/*dp_size=*/2);
   BlockManagerPool::Options options;
   options.num_blocks(8)
       .block_size(4)
@@ -1191,7 +1190,7 @@ TEST(CompositeBlockManagerTest,
 }
 
 TEST(CompositeBlockManagerTest, PagedShortageReturnsPagesToInjectedAllocator) {
-  TestVirtualKVCachePageAllocator allocator(/*dp_size=*/1);
+  TestVmmKVPageAllocator allocator(/*dp_size=*/1);
   BlockManager::Options options;
   options.num_blocks(8)
       .block_size(4)

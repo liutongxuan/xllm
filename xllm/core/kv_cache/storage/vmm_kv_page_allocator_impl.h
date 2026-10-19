@@ -29,7 +29,7 @@ limitations under the License.
 #include <vector>
 
 #include "core/kv_cache/storage/kv_cache_page_backend.h"
-#include "core/kv_cache/storage/virtual_kv_cache_page_allocator.h"
+#include "core/kv_cache/storage/vmm_kv_page_allocator.h"
 
 namespace xllm {
 
@@ -44,15 +44,12 @@ struct KVCacheMappingPlan {
 // Owns KV page queues and preallocation policy. Physical page capacity and
 // mapping operations are supplied by a backend whose lifetime exceeds this
 // allocator's. Model lifecycle and weight policy belong to the caller.
-class VirtualKVCachePageAllocatorImpl final
-    : public VirtualKVCachePageAllocator {
+class VmmKVPageAllocatorImpl final : public VmmKVPageAllocator {
  public:
-  explicit VirtualKVCachePageAllocatorImpl(KVCachePageBackend& backend);
-  ~VirtualKVCachePageAllocatorImpl() override;
-  VirtualKVCachePageAllocatorImpl(const VirtualKVCachePageAllocatorImpl&) =
-      delete;
-  VirtualKVCachePageAllocatorImpl& operator=(
-      const VirtualKVCachePageAllocatorImpl&) = delete;
+  explicit VmmKVPageAllocatorImpl(KVCachePageBackend& backend);
+  ~VmmKVPageAllocatorImpl() override;
+  VmmKVPageAllocatorImpl(const VmmKVPageAllocatorImpl&) = delete;
+  VmmKVPageAllocatorImpl& operator=(const VmmKVPageAllocatorImpl&) = delete;
 
   void init(size_t total_pages,
             size_t page_size,

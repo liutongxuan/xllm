@@ -30,7 +30,7 @@ limitations under the License.
 #include "core/distributed_runtime/worker_memory_rpc_server.h"
 #include "core/framework/config/distributed_config.h"
 #include "core/framework/config/kv_cache_config.h"
-#include "core/kv_cache/storage/virtual_kv_cache_page_allocator_impl.h"
+#include "core/kv_cache/storage/vmm_kv_page_allocator_impl.h"
 #include "core/platform/device.h"
 #include "core/runtime/worker_memory_resources.h"
 #include "server/xllm_server_registry.h"
@@ -41,7 +41,7 @@ DistributedVirtualMemoryCoordinator::DistributedVirtualMemoryCoordinator() {
   // These singletons must outlive the coordinator and its RPC shutdown.
   WorkerMemoryResources::get_instance();
   ServerRegistry::get_instance();
-  kv_cache_pages_ = std::make_unique<VirtualKVCachePageAllocatorImpl>(*this);
+  kv_cache_pages_ = std::make_unique<VmmKVPageAllocatorImpl>(*this);
 }
 
 DistributedVirtualMemoryCoordinator::~DistributedVirtualMemoryCoordinator() {
@@ -554,8 +554,8 @@ size_t DistributedVirtualMemoryCoordinator::get_num_total_phy_pages() const {
   return page_budget_.total_pages();
 }
 
-VirtualKVCachePageAllocatorImpl&
-DistributedVirtualMemoryCoordinator::virtual_kv_cache_page_allocator() {
+VmmKVPageAllocatorImpl&
+DistributedVirtualMemoryCoordinator::vmm_kv_page_allocator() {
   return *kv_cache_pages_;
 }
 

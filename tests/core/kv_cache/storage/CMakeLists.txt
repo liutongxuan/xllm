@@ -62,11 +62,11 @@ endif()
 cc_test(
   NO_NPU_RUNTIME
   NAME
-    virtual_kv_cache_page_allocator_impl_test
+    vmm_kv_page_allocator_impl_test
   SRCS
-    virtual_kv_cache_page_allocator_impl_test.cpp
+    vmm_kv_page_allocator_impl_test.cpp
   DEPS
-    :virtual_kv_cache_page_allocator_impl
+    :vmm_kv_page_allocator_impl
     :virtual_kv_cache_page_layout
     GTest::gtest_main
     glog::glog

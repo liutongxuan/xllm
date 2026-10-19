@@ -27,7 +27,7 @@ limitations under the License.
 #include "core/framework/config/kv_cache_config.h"
 #include "core/framework/config/load_config.h"
 #include "core/framework/model_loader/model_loader.h"
-#include "core/kv_cache/storage/virtual_kv_cache_page_allocator_impl.h"
+#include "core/kv_cache/storage/vmm_kv_page_allocator_impl.h"
 #include "core/runtime/worker_memory_resources.h"
 
 namespace xllm {
@@ -259,7 +259,7 @@ bool ModelResidencyCoordinator::wakeup(const WakeupOptions& options) {
 
   // Restore weight and KV cache pages before workers load or transfer weights.
   auto& coordinator = DistributedVirtualMemoryCoordinator::get_instance();
-  auto& pages = coordinator.virtual_kv_cache_page_allocator();
+  auto& pages = coordinator.vmm_kv_page_allocator();
   const auto plan = pages.begin_resume(options_.model_id);
   if (!plan.has_value()) {
     return false;
@@ -311,7 +311,7 @@ bool ModelResidencyCoordinator::wakeup(const WakeupOptions& options) {
 
 bool ModelResidencyCoordinator::suspend_memory(bool skip_weight_release) {
   auto& coordinator = DistributedVirtualMemoryCoordinator::get_instance();
-  auto& pages = coordinator.virtual_kv_cache_page_allocator();
+  auto& pages = coordinator.vmm_kv_page_allocator();
   const auto plan = pages.begin_suspend(options_.model_id);
   if (!plan.has_value()) {
     return false;

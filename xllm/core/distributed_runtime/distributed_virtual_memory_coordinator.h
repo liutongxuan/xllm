@@ -33,7 +33,7 @@ namespace xllm {
 
 class WorkerMemoryRpcClient;
 class WorkerMemoryRpcServer;
-class VirtualKVCachePageAllocatorImpl;
+class VmmKVPageAllocatorImpl;
 struct KVCacheMappingPlan;
 
 // Coordinates the virtual-memory subsystem across workers, including shared
@@ -59,7 +59,7 @@ class DistributedVirtualMemoryCoordinator final : public KVCachePageBackend {
                         bool enable_prealloc = true);
   bool is_initialized() const;
   size_t get_num_total_phy_pages() const;
-  VirtualKVCachePageAllocatorImpl& virtual_kv_cache_page_allocator();
+  VmmKVPageAllocatorImpl& vmm_kv_page_allocator();
 
   bool reserve_weight_pages(const std::string& model_id, size_t num_pages);
   void set_weight_page_count(const std::string& model_id, size_t num_pages);
@@ -150,7 +150,7 @@ class DistributedVirtualMemoryCoordinator final : public KVCachePageBackend {
   std::vector<std::shared_ptr<WorkerMemoryRpcClient>> clients_;
   std::vector<std::unique_ptr<WorkerMemoryRpcServer>> servers_;
   std::string collective_server_name_{"WorkerMemoryRpcCollectiveServer"};
-  std::unique_ptr<VirtualKVCachePageAllocatorImpl> kv_cache_pages_;
+  std::unique_ptr<VmmKVPageAllocatorImpl> kv_cache_pages_;
 };
 
 }  // namespace xllm

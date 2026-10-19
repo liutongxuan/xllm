@@ -19,7 +19,7 @@ limitations under the License.
 #include <limits>
 
 #include "core/framework/block/composite_block_manager.h"
-#include "core/framework/block/virtual_memory_kv_cache_block_manager.h"
+#include "core/framework/block/vmm_kv_block_manager.h"
 #include "core/kv_cache/block/block_manager_impl.h"
 #include "core/kv_cache/block/concurrent_block_manager_impl.h"
 #include "core/kv_cache/block/linear_state_block_manager.h"
@@ -46,7 +46,7 @@ size_t total_admission_blocks(const BlockManager& manager,
 
 BlockManagerPool::BlockManagerPool(const Options& options,
                                    int32_t dp_size,
-                                   VirtualKVCachePageAllocator* page_allocator)
+                                   VmmKVPageAllocator* page_allocator)
     : page_allocator_(page_allocator), options_(options) {
   CHECK(dp_size > 0) << "dp_size must be greater than 0";
   block_managers_.reserve(dp_size);
@@ -100,7 +100,7 @@ BlockManagerPool::BlockManagerPool(const Options& options,
           .event_scope(KVCacheEventScope{options_.model_id(), i, "gpu"});
     }
     // The pool always holds a CompositeBlockManager. Its KV leaf is a flat
-    // BlockManagerImpl, or a VirtualMemoryKVCacheBlockManager when
+    // BlockManagerImpl, or a VmmKVBlockManager when
     // enable_virtual_memory (the builder picks); SWA / C4 / C128 come from
     // manager_types; the LINEAR leaf is added by the builder when
     // enable_linear_state. The per-sequence EMBEDDING resource leaf is appended

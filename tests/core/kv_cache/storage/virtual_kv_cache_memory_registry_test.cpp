@@ -30,7 +30,7 @@ limitations under the License.
 #include "core/framework/allocator/virtual_memory/physical_page_pool.h"
 #include "core/framework/allocator/virtual_memory/shared_physical_page_mapping.h"
 #include "core/kv_cache/storage/kv_cache.h"
-#include "core/kv_cache/storage/virtual_kv_cache_tensor_allocator.h"
+#include "core/kv_cache/storage/vmm_kv_tensor_allocator.h"
 #include "core/platform/vmm_api.h"
 #include "tests/npu_test_environment.h"
 
@@ -301,8 +301,8 @@ TEST_F(VirtualKVCacheMemoryRegistryTest,
 
 TEST_F(VirtualKVCacheMemoryRegistryTest,
        TensorAllocatorUsesItsInjectedRegistry) {
-  auto allocator = create_virtual_kv_cache_tensor_allocator(
-      registry_, "model", /*num_layers=*/2);
+  auto allocator =
+      create_vmm_kv_tensor_allocator(registry_, "model", /*num_layers=*/2);
   const std::vector<int64_t> shape{static_cast<int64_t>(page_size_ / 2)};
   const torch::Tensor first_key = allocator->allocate(
       KVCacheTensorRole::KEY, shape, torch::kBFloat16, device_);
@@ -658,7 +658,7 @@ TEST_F(VirtualIndexedKVCacheMemoryRegistryTest,
 TEST_F(VirtualIndexedKVCacheMemoryRegistryTest,
        TensorAllocatorSkipsSharedIndexLayers) {
   const std::vector<bool> index_layer_owned{false, true, false, true};
-  auto allocator = create_virtual_kv_cache_tensor_allocator(
+  auto allocator = create_vmm_kv_tensor_allocator(
       registry_, "indexed", /*num_layers=*/4, index_layer_owned);
   const std::vector<int64_t> key_shape{
       blocks_per_page(), kBlockSize, 1, kLatentSize};
@@ -692,8 +692,8 @@ TEST_F(VirtualIndexedKVCacheMemoryRegistryTest,
 
 TEST_F(VirtualIndexedKVCacheMemoryRegistryTest,
        DefaultIndexOwnershipMapsAllLayersAndRejectsTransfer) {
-  auto allocator = create_virtual_kv_cache_tensor_allocator(
-      registry_, "indexed", /*num_layers=*/2);
+  auto allocator =
+      create_vmm_kv_tensor_allocator(registry_, "indexed", /*num_layers=*/2);
   const std::vector<int64_t> shape{blocks_per_page(), kBlockSize, 1, kRopeSize};
   std::vector<torch::Tensor> indices;
   for (size_t layer = 0; layer < 2; ++layer) {
@@ -778,7 +778,7 @@ TEST_F(VirtualIndexedKVCacheMemoryRegistryTest,
       shape.index_cache_shape(),
       (std::vector<int64_t>{2 * blocks_per_group, kBlockSize, 1, kIndexSize}));
 
-  auto virtual_allocator = create_virtual_kv_cache_tensor_allocator(
+  auto virtual_allocator = create_vmm_kv_tensor_allocator(
       registry_, "indexed", /*num_layers=*/3, index_layer_owned);
   auto allocator = std::make_shared<RecordingForwardingKVCacheTensorAllocator>(
       std::move(virtual_allocator));

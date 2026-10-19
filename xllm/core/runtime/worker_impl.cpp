@@ -86,7 +86,7 @@ limitations under the License.
 #include "core/kv_cache/layout/layerwise_split_layout.h"
 #include "core/kv_cache/linear_state_restore.h"
 #include "core/kv_cache/storage/kv_cache.h"
-#include "core/kv_cache/storage/virtual_kv_cache_tensor_allocator.h"
+#include "core/kv_cache/storage/vmm_kv_tensor_allocator.h"
 #include "core/kv_cache/transfer/virtual_kv_cache_transfer_memory_provider_impl.h"
 #include "core/runtime/decode_graph_bucket.h"
 #include "core/runtime/worker_memory_resources.h"
@@ -560,7 +560,7 @@ bool WorkerImpl::allocate_kv_cache_storage(
   if (::xllm::KVCacheConfig::get_instance().enable_virtual_memory()) {
     CHECK(tensor_allocator == nullptr)
         << "Virtual memory KV cache cannot use another tensor allocator.";
-    tensor_allocator = create_virtual_kv_cache_tensor_allocator(
+    tensor_allocator = create_vmm_kv_tensor_allocator(
         WorkerMemoryResources::get_instance().kv_cache_memory(),
         options_.model_id(),
         num_layers,
