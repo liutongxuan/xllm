@@ -19,7 +19,10 @@ limitations under the License.
 #include <brpc/server.h>
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -28,7 +31,9 @@ limitations under the License.
 
 #include "core/distributed_runtime/worker_memory_rpc_client.h"
 #include "core/framework/config/kv_cache_config.h"
+#include "core/framework/config/service_config.h"
 #include "core/kv_cache/storage/vmm_kv_page_allocator_impl.h"
+#include "core/runtime/worker_memory_resources.h"
 
 namespace xllm {
 
@@ -56,9 +61,147 @@ class DistributedVirtualMemoryCoordinatorTestPeer final {
       DistributedVirtualMemoryCoordinator& coordinator) {
     coordinator.refresh_worker_capacity_snapshot();
   }
+
+  static void configure_node(DistributedVirtualMemoryCoordinator& coordinator,
+                             int32_t node_rank) {
+    coordinator.configure_workers(
+        /*world_size=*/2, /*dp_size=*/1, /*tp_size=*/2);
+    coordinator.node_rank_ = node_rank;
+  }
+
+  static bool has_worker_capacity_tracking(
+      DistributedVirtualMemoryCoordinator& coordinator) {
+    std::lock_guard<std::mutex> lock(coordinator.mutex_);
+    return std::any_of(coordinator.worker_allocatable_pages_.begin(),
+                       coordinator.worker_allocatable_pages_.end(),
+                       [](size_t pages) { return pages != 0; }) ||
+           coordinator.capacity_refresh_running_ ||
+           coordinator.capacity_refresh_thread_.joinable();
+  }
+};
+
+class WorkerMemoryResourcesTestPeer final {
+ public:
+  // Simulate the RPC publication boundary without allocating device memory.
+  static bool begin_initialization() {
+    auto& resources = WorkerMemoryResources::get_instance();
+    std::lock_guard<std::mutex> lock(resources.mutex_);
+    if (resources.initialized_) {
+      return false;
+    }
+    resources.initialized_ = true;
+    resources.pool_capacity_pages_ = 0;
+    return true;
+  }
+
+  static void publish_capacity(int64_t num_pages) {
+    auto& resources = WorkerMemoryResources::get_instance();
+    {
+      std::lock_guard<std::mutex> lock(resources.mutex_);
+      resources.pool_capacity_pages_ = num_pages;
+    }
+    resources.pool_ready_cv_.notify_all();
+  }
+
+  static void reset_initialization() {
+    auto& resources = WorkerMemoryResources::get_instance();
+    {
+      std::lock_guard<std::mutex> lock(resources.mutex_);
+      resources.pool_capacity_pages_ = 0;
+      resources.initialized_ = false;
+    }
+    resources.pool_ready_cv_.notify_all();
+  }
 };
 
 namespace {
+
+class NonLeaderPoolInitializationTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    auto& config = ServiceConfig::get_instance();
+    previous_timeout_ms_ = config.rpc_channel_timeout_ms();
+    config.rpc_channel_timeout_ms(1000);
+    auto& kv_config = KVCacheConfig::get_instance();
+    previous_elastic_ = kv_config.vmm_elastic();
+    kv_config.vmm_elastic(true);
+    resources_initialized_ =
+        WorkerMemoryResourcesTestPeer::begin_initialization();
+    ASSERT_TRUE(resources_initialized_);
+    coordinator_ = DistributedVirtualMemoryCoordinatorTestPeer::create();
+    DistributedVirtualMemoryCoordinatorTestPeer::configure_node(
+        *coordinator_, /*node_rank=*/1);
+  }
+
+  void TearDown() override {
+    // Clear the simulated state before coordinator teardown can destroy it.
+    if (resources_initialized_) {
+      WorkerMemoryResourcesTestPeer::reset_initialization();
+    }
+    coordinator_.reset();
+    ServiceConfig::get_instance().rpc_channel_timeout_ms(previous_timeout_ms_);
+    KVCacheConfig::get_instance().vmm_elastic(previous_elastic_);
+  }
+
+  std::shared_ptr<DistributedVirtualMemoryCoordinator> coordinator_;
+
+ private:
+  int32_t previous_timeout_ms_ = -1;
+  bool previous_elastic_ = false;
+  bool resources_initialized_ = false;
+};
+
+TEST_F(NonLeaderPoolInitializationTest, WaitsForMasterCapacityWithoutClients) {
+  // Bootstrap may outlive a single worker RPC's configured timeout.
+  ServiceConfig::get_instance().rpc_channel_timeout_ms(1);
+  auto result = std::async(std::launch::async, [this]() {
+    return coordinator_->init_physical_page_pools(0.1, 1);
+  });
+  EXPECT_EQ(result.wait_for(std::chrono::milliseconds(20)),
+            std::future_status::timeout);
+
+  WorkerMemoryResourcesTestPeer::publish_capacity(37);
+  EXPECT_EQ(result.get(), 37);
+  EXPECT_FALSE(
+      DistributedVirtualMemoryCoordinatorTestPeer::has_worker_capacity_tracking(
+          *coordinator_));
+}
+
+TEST_F(NonLeaderPoolInitializationTest, AcceptsCapacityPublishedBeforeWaiting) {
+  WorkerMemoryResourcesTestPeer::publish_capacity(37);
+
+  EXPECT_EQ(coordinator_->init_physical_page_pools(0.1, 1), 37);
+  EXPECT_FALSE(
+      DistributedVirtualMemoryCoordinatorTestPeer::has_worker_capacity_tracking(
+          *coordinator_));
+}
+
+TEST_F(NonLeaderPoolInitializationTest, WorkerPoolWaitTimesOutWithoutMaster) {
+  auto result = std::async(std::launch::async, []() {
+    return WorkerMemoryResources::get_instance().wait_for_physical_page_pool(
+        std::chrono::milliseconds(20));
+  });
+  const std::future_status status = result.wait_for(std::chrono::seconds(1));
+  if (status != std::future_status::ready) {
+    // Keep a broken timeout implementation from leaving a blocked test thread.
+    WorkerMemoryResourcesTestPeer::publish_capacity(37);
+  }
+
+  EXPECT_EQ(status, std::future_status::ready);
+  EXPECT_EQ(result.get(), 0);
+  EXPECT_FALSE(
+      DistributedVirtualMemoryCoordinatorTestPeer::has_worker_capacity_tracking(
+          *coordinator_));
+}
+
+TEST_F(NonLeaderPoolInitializationTest,
+       LeaderStillRejectsMissingWorkerClients) {
+  DistributedVirtualMemoryCoordinatorTestPeer::configure_node(*coordinator_,
+                                                              /*node_rank=*/0);
+  WorkerMemoryResourcesTestPeer::publish_capacity(37);
+
+  EXPECT_EQ(coordinator_->init_physical_page_pools(0.8, 0), 0);
+}
 
 enum class MappingFailure { NONE, PREPARE, PREPARE_REPLY, COMMIT, WEIGHT };
 

@@ -17,6 +17,8 @@ limitations under the License.
 
 #include <torch/types.h>
 
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
@@ -59,6 +61,9 @@ class WorkerMemoryResources final {
                                int64_t initial_pages,
                                bool lazy,
                                size_t growth_memory_reserve_bytes);
+  // Wait for the master's RPC to finish pool, reserve and mapping setup.
+  // Returns the master's capacity, or zero on timeout or resource shutdown.
+  int64_t wait_for_physical_page_pool(std::chrono::milliseconds timeout);
   WorkerMemoryCapacity memory_capacity_snapshot() const;
   void set_execution_memory_reserve(size_t bytes);
   size_t trim_idle_physical_pages(size_t keep_pages = 0);
@@ -147,9 +152,11 @@ class WorkerMemoryResources final {
   uint64_t retired_weight_transaction_id_ = 0;
   size_t execution_memory_reserve_bytes_ = 0;
   size_t growth_memory_reserve_bytes_ = 0;
+  int64_t pool_capacity_pages_ = 0;
   bool initialized_ = false;
   torch::Device device_{torch::kCPU};
   mutable std::mutex mutex_;
+  std::condition_variable pool_ready_cv_;
   VirtualKVCacheMemoryRegistry kv_cache_memory_;
   WeightVirtualMemoryManager weight_memory_;
 };

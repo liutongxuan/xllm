@@ -162,6 +162,7 @@ class DistributedVirtualMemoryCoordinator final : public KVCachePageBackend {
   std::unordered_map<std::string, std::pair<int32_t, int32_t>>
       model_parallel_strategies_;
   int32_t world_size_ = 0;
+  int32_t node_rank_ = 0;
   int32_t dp_size_ = 1;
   int32_t tp_size_ = 1;
   std::vector<std::shared_ptr<WorkerMemoryRpcClient>> clients_;

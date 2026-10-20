@@ -43,6 +43,7 @@ namespace xllm {
 namespace {
 
 constexpr int32_t kCapacityQueryTimeoutMs = 1000;
+constexpr int32_t kDefaultPoolInitializationTimeoutMs = 120000;
 constexpr std::chrono::milliseconds kCapacityRefreshInterval(250);
 
 }  // namespace
@@ -76,6 +77,7 @@ void DistributedVirtualMemoryCoordinator::destroy() {
   clients_.clear();
   worker_allocatable_pages_.clear();
   world_size_ = 0;
+  node_rank_ = 0;
   dp_size_ = 1;
   tp_size_ = 1;
   auto& resources = WorkerMemoryResources::get_instance();
@@ -118,6 +120,7 @@ void DistributedVirtualMemoryCoordinator::setup_worker_memory_rpc(
 
   const int32_t tp_size = world_size / dp_size;
   configure_workers(world_size, dp_size, tp_size);
+  node_rank_ = distributed_config.node_rank();
 
   std::shared_ptr<CollectiveService> collective_service;
   if (distributed_config.node_rank() == 0) {
@@ -218,6 +221,24 @@ int64_t DistributedVirtualMemoryCoordinator::init_physical_page_pools(
     }
     refresh_worker_capacity_snapshot();
     start_worker_capacity_refresh();
+    return num_pages;
+  }
+
+  if (node_rank_ != 0) {
+    // Only the master owns clients for all workers. Other nodes keep their
+    // local server running until the master's initialization RPC completes.
+    // Registration of the remaining workers can outlast a single RPC. Use
+    // a separate startup deadline rather than the per-request RPC timeout.
+    const auto timeout =
+        std::chrono::milliseconds(kDefaultPoolInitializationTimeoutMs);
+    const int64_t num_pages =
+        WorkerMemoryResources::get_instance().wait_for_physical_page_pool(
+            timeout);
+    if (num_pages <= 0) {
+      LOG(ERROR) << "Local physical page pool was not initialized by master: "
+                 << "node_rank=" << node_rank_
+                 << ", timeout_ms=" << timeout.count();
+    }
     return num_pages;
   }
 

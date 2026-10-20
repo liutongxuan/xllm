@@ -52,7 +52,9 @@ void WorkerMemoryResources::destroy() {
   GlobalVirtualMemoryRegion::get_instance().reset();
   CHECK(PhysicalPagePool::get_instance().reset())
       << "Cannot reset physical page pool while pages are in use";
+  pool_capacity_pages_ = 0;
   initialized_ = false;
+  pool_ready_cv_.notify_all();
 }
 
 void WorkerMemoryResources::init(const torch::Device& device) {
@@ -82,7 +84,7 @@ void WorkerMemoryResources::init_physical_page_pool(
     int64_t initial_pages,
     bool lazy,
     size_t growth_memory_reserve_bytes) {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::unique_lock<std::mutex> lock(mutex_);
   CHECK(initialized_) << "Worker memory resources must be initialized first";
   const size_t page_size = static_cast<size_t>(
       KVCacheConfig::get_instance().phy_page_granularity_size());
@@ -104,6 +106,21 @@ void WorkerMemoryResources::init_physical_page_pool(
   PhysicalPagePool::get_instance().set_allocation_headroom(
       execution_memory_reserve_bytes_);
   GlobalVirtualMemoryRegion::get_instance().init(device_);
+  // Publish only after every local resource is ready for model startup.
+  pool_capacity_pages_ = max_pages;
+  lock.unlock();
+  pool_ready_cv_.notify_all();
+}
+
+int64_t WorkerMemoryResources::wait_for_physical_page_pool(
+    std::chrono::milliseconds timeout) {
+  std::unique_lock<std::mutex> lock(mutex_);
+  if (!pool_ready_cv_.wait_for(lock, timeout, [this]() {
+        return pool_capacity_pages_ > 0 || !initialized_;
+      })) {
+    return 0;
+  }
+  return pool_capacity_pages_;
 }
 
 WorkerMemoryCapacity WorkerMemoryResources::memory_capacity_snapshot() const {
