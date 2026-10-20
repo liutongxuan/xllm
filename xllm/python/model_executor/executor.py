@@ -853,11 +853,14 @@ class ModelExecutor:
             if enable_graph and layer_synchronizer is None:
                 if self.prepared_graph_runner is None:
                     raise RuntimeError("prepared ACL graph runner is not enabled")
-                if self._prepared_dspark and not self.prepared_graph_runner.can_execute_block(
-                    input_ids, positions, metadata
-                ):
-                    # Explicit capacity admission, never exception fallback or
-                    # a new graph capture during a serving request.
+                if self._prepared_dspark:
+                    output = self.prepared_graph_runner.execute_block(
+                        input_ids, positions, metadata, input_embedding, layer_synchronizer, mtp_topk_indices, eplb=eplb
+                    )
+                    if output is not None:
+                        return output
+                    # Only a declared capacity miss selects eager. Binding
+                    # validation and replay failures propagate to the caller.
                     return self.eager_runner.execute(input_ids, positions, metadata, eplb=eplb)
                 return self.prepared_graph_runner.execute(
                     input_ids, positions, metadata, input_embedding, layer_synchronizer, mtp_topk_indices, eplb=eplb
@@ -869,19 +872,27 @@ class ModelExecutor:
             return self.eager_runner.execute(
                 input_ids, positions, metadata, input_embedding, layer_synchronizer, eplb=eplb
             )
-        graph_kwargs = {}
-        if mtp_topk_indices is not None:
+        if graph_runner is not None or mtp_topk_indices is not None:
             from xllm.python.model_executor.runners.decode_acl_graph import DecodeAclGraphRunner
 
+        graph_kwargs = {}
+        if mtp_topk_indices is not None:
             if isinstance(graph_runner, DecodeAclGraphRunner):
                 graph_kwargs["mtp_topk_indices"] = mtp_topk_indices
             else:
                 graph_runner = None
-        if (
-            graph_runner is not None
-            and (eplb is None or current_platform.is_npu())
-            and graph_runner.can_execute(input_ids, metadata, input_embedding, **graph_kwargs)
-        ):
+        use_graph = False
+        if graph_runner is not None and (eplb is None or current_platform.is_npu()):
+            if type(graph_runner) is DecodeAclGraphRunner:
+                # Subclasses can have a different admission/input contract.
+                # Ordinary decode reuses its resolved values only in this call.
+                decode_metadata = graph_runner.prepare_execution(input_ids, metadata, input_embedding, **graph_kwargs)
+                use_graph = decode_metadata is not None
+                if use_graph:
+                    graph_kwargs["decode_metadata"] = decode_metadata
+            else:
+                use_graph = graph_runner.can_execute(input_ids, metadata, input_embedding, **graph_kwargs)
+        if use_graph:
             graph_key = None
             # CUDA can_execute only admits previously captured buckets. ACL
             # captures lazily with scheduler metadata and MTP inputs.

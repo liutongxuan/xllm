@@ -146,7 +146,10 @@ def runner(monkeypatch: pytest.MonkeyPatch) -> PreparedAclGraphRunner:
     return result
 
 
-def test_block_graph_borrows_views_and_keeps_fia_capacity_constant(runner: PreparedAclGraphRunner) -> None:
+@pytest.fixture
+def block_inputs(
+    runner: PreparedAclGraphRunner,
+) -> tuple[torch.Tensor, torch.Tensor, SimpleNamespace, AclGraphEntry]:
     runner._block_draft = True
     runner.attention_backend.page_size = 128
     runner.attention_backend.prepare_metadata = Mock(
@@ -167,6 +170,15 @@ def test_block_graph_borrows_views_and_keeps_fia_capacity_constant(runner: Prepa
     metadata.is_chunked_prefill = True
     runner.warmup_prepared(tokens, positions, metadata)
     entry = runner._prepared_graphs[runner._prepared_binding(tokens, positions, metadata)]
+    entry.static_output = torch.ones(3, 8)
+    return tokens, positions, metadata, entry
+
+
+def test_block_graph_borrows_views_and_keeps_fia_capacity_constant(
+    runner: PreparedAclGraphRunner,
+    block_inputs: tuple[torch.Tensor, torch.Tensor, SimpleNamespace, AclGraphEntry],
+) -> None:
+    tokens, positions, metadata, entry = block_inputs
     assert entry.static_input_ids is tokens
     assert entry.static_positions is positions
     assert entry.static_metadata.kv_seq_lens is metadata.kv_seq_lens
@@ -174,19 +186,97 @@ def test_block_graph_borrows_views_and_keeps_fia_capacity_constant(runner: Prepa
     assert entry.static_metadata.block_table.shape == (1, 32)
     assert entry.static_metadata.prepared_attention_state.device_kv_lengths is metadata.kv_seq_lens
     assert entry.static_metadata.kv_seq_lens_host_values == [4096]
-    for length in (2080, 2200, 4096):
-        metadata.kv_seq_lens_host_values[:] = [length]
-        metadata.kv_seq_lens.fill_(length)
-        assert runner.can_execute_block(tokens, positions, metadata)
-        runner.execute(tokens, positions, metadata)
-        assert runner.attention_backend.prepare_graph_replay.call_args.args[0] is entry.static_metadata
-        assert entry.static_metadata.kv_seq_lens_host_values == [4096]
-    metadata.kv_seq_lens_host_values[:] = [4097]
-    assert not runner.can_execute_block(tokens, positions, metadata)
-    with pytest.raises(RuntimeError, match="warmed Slot binding"):
-        runner.can_execute_block(tokens.clone(), positions, metadata)
+    with (
+        patch.object(runner, "_validate_prepared_input", wraps=runner._validate_prepared_input) as validate,
+        patch.object(runner, "_prepared_binding", wraps=runner._prepared_binding) as binding,
+    ):
+        for step, length in enumerate((2080, 2200, 4096, 4097, 2048)):
+            metadata.kv_seq_lens_host_values[:] = [length]
+            metadata.kv_seq_lens.fill_(length)
+            output = runner.execute_block(tokens, positions, metadata)
+            assert output is (None if length > 4096 else entry.static_output)
+            assert validate.call_count == step + 1
+            assert binding.call_count == step + 1
+            if length <= 4096:
+                assert runner.attention_backend.prepare_graph_replay.call_args.args[0] is entry.static_metadata
+            assert entry.static_metadata.kv_seq_lens_host_values == [4096]
+    assert runner.prepared_replays == 4
+    assert entry.graph.replay.call_count == 4
+    assert runner.attention_backend.prepare_graph_replay.call_count == 4
     runner._allocate_entry.assert_not_called()
     runner._fill_entry.assert_not_called()
+    assert runner._capture.call_count == 1
+
+
+def test_block_capacity_rejection_has_no_launch_side_effects(
+    runner: PreparedAclGraphRunner,
+    block_inputs: tuple[torch.Tensor, torch.Tensor, SimpleNamespace, AclGraphEntry],
+) -> None:
+    tokens, positions, metadata, entry = block_inputs
+    metadata.kv_seq_lens_host_values[:] = [4097]
+    metadata.raw_dp_execution_token_counts = [3]
+    entry.static_metadata.mega_moe_token_mask = torch.ones(3, dtype=torch.int8)
+    runner.attention_backend.prepare.reset_mock()
+    with (
+        patch.object(runner, "_fill_mega_moe_token_mask") as mask,
+        patch.object(runner, "_prepare_graph_eplb_state") as eplb,
+        patch.object(runner, "_update_after_replay") as update,
+    ):
+        assert runner.execute_block(tokens, positions, metadata) is None
+        mask.assert_not_called()
+        eplb.assert_not_called()
+        update.assert_not_called()
+    runner.attention_backend.prepare.assert_not_called()
+    runner.attention_backend.prepare_graph_replay.assert_not_called()
+    entry.graph.replay.assert_not_called()
+    assert runner.prepared_replays == 0
+
+
+def test_block_missing_binding_takes_priority_over_capacity(
+    runner: PreparedAclGraphRunner,
+    block_inputs: tuple[torch.Tensor, torch.Tensor, SimpleNamespace, AclGraphEntry],
+) -> None:
+    tokens, positions, metadata, entry = block_inputs
+    metadata.kv_seq_lens_host_values[:] = [4097]
+    with pytest.raises(RuntimeError, match="warmed Slot binding"):
+        runner.execute_block(tokens.clone(), positions, metadata)
+    runner.attention_backend.prepare_graph_replay.assert_not_called()
+    entry.graph.replay.assert_not_called()
+    assert runner._capture.call_count == 1
+
+
+@pytest.mark.parametrize("invalid", ["prefill", "decode", "verify", "layout"])
+def test_block_invalid_inputs_raise_before_capacity_check(
+    runner: PreparedAclGraphRunner,
+    block_inputs: tuple[torch.Tensor, torch.Tensor, SimpleNamespace, AclGraphEntry],
+    invalid: str,
+) -> None:
+    tokens, positions, metadata, entry = block_inputs
+    metadata.kv_seq_lens_host_values[:] = [4097]
+    if invalid == "prefill":
+        metadata.is_prefill = True
+    elif invalid == "decode":
+        metadata.is_chunked_prefill = False
+    elif invalid == "verify":
+        metadata.is_spec_verify = True
+    else:
+        positions = positions[:2]
+    message = "fixed-width request" if invalid == "layout" else "non-causal chunked-prefill"
+    with pytest.raises(ValueError, match=message):
+        runner.execute_block(tokens, positions, metadata)
+    runner.attention_backend.prepare_graph_replay.assert_not_called()
+    entry.graph.replay.assert_not_called()
+
+
+def test_block_replay_failure_propagates(
+    runner: PreparedAclGraphRunner,
+    block_inputs: tuple[torch.Tensor, torch.Tensor, SimpleNamespace, AclGraphEntry],
+) -> None:
+    tokens, positions, metadata, entry = block_inputs
+    entry.graph.replay.side_effect = RuntimeError("device replay failed")
+    with pytest.raises(RuntimeError, match="device replay failed"):
+        runner.execute_block(tokens, positions, metadata)
+    assert runner.prepared_replays == 0
     assert runner._capture.call_count == 1
 
 

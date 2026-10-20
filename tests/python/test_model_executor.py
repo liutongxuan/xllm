@@ -842,25 +842,18 @@ class TestDecodeAclGraphSpeculativeMetadata:
         runner = self._runner()
         metadata = self._metadata()
         expanded = runner._expanded_verify_view(metadata)
-        (
-            block_table,
-            kv_seq_lens,
-            _,
-            paged_kv_indptr,
-            paged_kv_indices,
-            paged_kv_last_page_len,
-        ) = runner._decode_metadata(metadata, expanded)
+        decoded = runner._decode_metadata(metadata, expanded)
 
-        assert block_table.tolist() == [
+        assert decoded.block_table.tolist() == [
             [10, 11],
             [10, 11],
             [20, 21],
             [20, 21],
         ]
-        assert kv_seq_lens.tolist() == [3, 4, 7, 8]
-        assert paged_kv_indptr.tolist() == [0, 1, 2, 4, 6]
-        assert paged_kv_indices.tolist() == [10, 10, 20, 21, 20, 21]
-        assert paged_kv_last_page_len.tolist() == [3, 4, 3, 4]
+        assert decoded.kv_seq_lens.tolist() == [3, 4, 7, 8]
+        assert decoded.paged_kv_indptr.tolist() == [0, 1, 2, 4, 6]
+        assert decoded.paged_kv_indices.tolist() == [10, 10, 20, 21, 20, 21]
+        assert decoded.paged_kv_last_page_len.tolist() == [3, 4, 3, 4]
 
     def test_decode_metadata_rebuilds_token_row_paging_metadata(self) -> None:
         metadata = self._metadata()
@@ -876,18 +869,11 @@ class TestDecodeAclGraphSpeculativeMetadata:
         metadata.paged_kv_indices = torch.tensor([10, 20, 21], dtype=torch.int32)
         metadata.paged_kv_last_page_len = torch.tensor([4, 4], dtype=torch.int32)
 
-        (
-            _,
-            _,
-            _,
-            paged_kv_indptr,
-            paged_kv_indices,
-            paged_kv_last_page_len,
-        ) = self._runner()._decode_metadata(metadata)
+        decoded = self._runner()._decode_metadata(metadata)
 
-        assert paged_kv_indptr.tolist() == [0, 1, 2, 4, 6]
-        assert paged_kv_indices.tolist() == [10, 10, 20, 21, 20, 21]
-        assert paged_kv_last_page_len.tolist() == [3, 4, 3, 4]
+        assert decoded.paged_kv_indptr.tolist() == [0, 1, 2, 4, 6]
+        assert decoded.paged_kv_indices.tolist() == [10, 10, 20, 21, 20, 21]
+        assert decoded.paged_kv_last_page_len.tolist() == [3, 4, 3, 4]
 
     @pytest.mark.parametrize(
         "linear_state,supported,allowed", [(False, False, True), (True, False, False), (True, True, True)]
@@ -2230,13 +2216,23 @@ def test_prepared_dspark_graph_keeps_block_width_and_explicit_capacity_admission
     metadata = SimpleNamespace(prepared_attention_state=object(), is_prefill=False, is_chunked_prefill=True)
     tokens = torch.arange(3, dtype=torch.int32)
     positions = torch.arange(3, dtype=torch.int32)
-    executor.execute(tokens, positions, metadata, enable_graph=True, is_graph_warmup=True)
-    executor.prepared_graph_runner.execute.assert_called_once()
+    output = executor.execute(tokens, positions, metadata, enable_graph=True, is_graph_warmup=True)
+    assert output is executor.prepared_graph_runner.execute_block.return_value
+    executor.prepared_graph_runner.execute_block.assert_called_once_with(
+        tokens, positions, metadata, None, None, None, eplb=None
+    )
+    executor.prepared_graph_runner.can_execute_block.assert_not_called()
+    executor.prepared_graph_runner.execute.assert_not_called()
     executor.context_kv_graph_runner.warmup.assert_not_called()
-    executor.prepared_graph_runner.can_execute_block.return_value = False
+    executor.prepared_graph_runner.execute_block.return_value = None
     output = executor.execute(tokens, positions, metadata, enable_graph=True)
     assert output is executor.eager_runner.execute.return_value
-    assert executor.prepared_graph_runner.execute.call_count == 1
+    assert executor.prepared_graph_runner.execute_block.call_count == 2
+    for error in (RuntimeError("missing binding"), ValueError("invalid input")):
+        executor.prepared_graph_runner.execute_block.side_effect = error
+        with pytest.raises(type(error), match=str(error)):
+            executor.execute(tokens, positions, metadata, enable_graph=True)
+    executor.eager_runner.execute.assert_called_once_with(tokens, positions, metadata, eplb=None)
 
 
 @pytest.mark.parametrize("dp_size,cp_size", [(1, 1), (2, 1), (1, 2), (1, 4)])
@@ -2439,6 +2435,36 @@ def test_executor_warms_context_prefix_buckets_only_during_startup() -> None:
     executor.context_kv_graph_runner.warmup.assert_called_once_with(16)
     executor.execute(tokens, positions, metadata)
     executor.context_kv_graph_runner.warmup.assert_called_once_with(16)
+
+
+def test_executor_preserves_block_draft_admission_and_runner_arguments() -> None:
+    config = {
+        "model_type": "DSparkDraftModel",
+        "num_speculative_tokens": 3,
+        "python_graph_backend": "aclgraph",
+        "max_position_embeddings": 128,
+    }
+    with patch(
+        "xllm.python.model_executor.executor._create_attention_backend", return_value=_PreparedStubAttentionBackend()
+    ):
+        executor = ModelExecutor(_FakeModel(), config, max_seqs_per_batch=4)
+    executor._kv_bound = True
+    runner = executor.decode_graph_runner
+    assert isinstance(runner, BlockDraftAclGraphRunner)
+    runner.prepare_execution = MagicMock(side_effect=AssertionError("ordinary decode admission"))
+    runner.can_execute = MagicMock(return_value=True)
+    runner.warmup = MagicMock(return_value="block-key")
+    runner.execute = MagicMock(return_value=torch.ones(3, 4))
+    tokens = torch.arange(3, dtype=torch.int32)
+    metadata = SimpleNamespace(is_prefill=False, is_chunked_prefill=True, prepared_attention_state=None)
+
+    output = executor.execute(tokens, tokens, metadata)
+
+    runner.prepare_execution.assert_not_called()
+    runner.can_execute.assert_called_once_with(tokens, metadata, None)
+    runner.warmup.assert_called_once_with(tokens, tokens, metadata, None, eplb=None)
+    runner.execute.assert_called_once_with(tokens, tokens, metadata, None, graph_key="block-key", eplb=None)
+    assert output is runner.execute.return_value
 
 
 def test_eager_runner_skips_cp_for_empty_rank() -> None:

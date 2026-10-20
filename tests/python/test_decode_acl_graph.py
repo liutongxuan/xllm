@@ -521,6 +521,34 @@ def test_dspark_graph_validation_preserves_static_inputs(
     assert prepared.actual_seq_kv == old_kv_lengths
 
 
+def test_block_draft_inherited_execute_keeps_entry_preparation_signature() -> None:
+    runner = _block_draft_runner()
+    runner._stream = Mock()
+    caller = Mock()
+    metadata = _block_draft_metadata(torch.tensor([[10, 11, 12]], dtype=torch.int32))
+    input_ids = torch.arange(2, dtype=torch.int32)
+    graph_key = runner._graph_key(input_ids, metadata, 1, 2)
+    entry = SimpleNamespace(
+        graph_tasks=[],
+        graph=Mock(),
+        static_output=torch.arange(8, dtype=torch.float32).view(4, 2),
+        replay_logged=True,
+    )
+
+    with (
+        patch.object(runner, "_prepare_graph_entry", autospec=True, return_value=entry) as prepare,
+        patch.object(torch.npu, "current_stream", return_value=caller),
+        patch.object(torch.npu, "stream", side_effect=lambda _: nullcontext()) as stream_context,
+    ):
+        output = runner.execute(input_ids, input_ids, metadata, graph_key=graph_key)
+
+    prepare.assert_called_once_with(input_ids, input_ids, metadata, None, None, graph_key=graph_key, eplb=None)
+    entry.graph.replay.assert_called_once_with()
+    stream_context.assert_called_once_with(caller)
+    torch.testing.assert_close(output, entry.static_output[:2])
+    assert output.data_ptr() == entry.static_output.data_ptr()
+
+
 @pytest.mark.parametrize("has_tasks", [False, True])
 @pytest.mark.parametrize("has_mtp_inputs", [False, True])
 @pytest.mark.parametrize("mode", ["plain", "mtp_target", "spec_draft"])

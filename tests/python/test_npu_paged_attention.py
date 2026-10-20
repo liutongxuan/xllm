@@ -192,6 +192,40 @@ def test_private_metadata_preparation_preserves_active_slot(paged: bool, monkeyp
     assert backend._block_table_i32 is metadata.block_table
 
 
+@pytest.mark.parametrize("is_mla", [False, True])
+@pytest.mark.parametrize("leading_zero", [False, True])
+def test_prepared_host_lengths_remain_private_across_tasks(is_mla: bool, leading_zero: bool) -> None:
+    backend = _mla_backend() if is_mla else _ordinary_backend()
+    metadata = _mla_metadata(prefill=True)
+    snapshots = []
+    lengths = [([1, 2], [6, 4]), ([2, 5], [8, 9]), ([1, 3], [5, 7])]
+
+    for query_ends, kv_lengths in lengths:
+        metadata.q_cu_seq_lens_host_values[:] = [0, *query_ends] if leading_zero else query_ends
+        metadata.kv_seq_lens_host_values[:] = kv_lengths
+        metadata.q_cu_seq_lens.copy_(torch.tensor(query_ends, dtype=torch.int32))
+        metadata.q_seq_lens.copy_(torch.tensor([query_ends[0], query_ends[1] - query_ends[0]], dtype=torch.int32))
+        metadata.kv_seq_lens.copy_(torch.tensor(kv_lengths, dtype=torch.int32))
+        metadata.slot_mapping = torch.arange(query_ends[-1], dtype=torch.int32)
+        prepared = backend.prepare_metadata(metadata)
+        snapshots.append(prepared)
+        metadata.prepared_attention_state = prepared
+        backend.prepare(metadata)
+
+    metadata.q_cu_seq_lens_host_values[:] = [-99]
+    metadata.kv_seq_lens_host_values[:] = [-99]
+    for prepared, (query_ends, kv_lengths) in zip(snapshots, lengths):
+        assert prepared.query_ends == query_ends
+        if is_mla:
+            assert prepared.kv_lengths == kv_lengths
+            assert prepared.max_query_len == max(query_ends[0], query_ends[1] - query_ends[0])
+            assert prepared.max_seq_len == max(kv_lengths)
+        else:
+            assert prepared.actual_seq_q == query_ends
+            assert prepared.actual_seq_kv == kv_lengths
+            assert prepared.actual_seq_q is not prepared.query_ends
+
+
 def test_prepared_block_query_uses_cumulative_query_ends() -> None:
     backend = _ordinary_backend()
     metadata = SimpleNamespace(
@@ -616,6 +650,43 @@ def test_prepared_decode_uses_warmed_graph_state(is_mla: bool) -> None:
         assert backend._paged_graph_state is state
         assert state.kv == metadata.kv_seq_lens_host_values
         assert backend._actual_seq_lens is None
+
+
+def test_prepared_decode_updates_captured_lists_without_mutating_snapshots() -> None:
+    from xllm.python.model_executor.forward_context import AclGraphExecutionState
+
+    backend = _ordinary_backend()
+    metadata = _mla_metadata()
+    state = PagedAttentionGraphState(
+        torch.empty(1), torch.empty(2, 8, 64), torch.empty(0), metadata.block_table, [], []
+    )
+    execution = AclGraphExecutionState({}, {2: state})
+    captured_query = state.query
+    captured_kv = state.kv
+    snapshots = []
+    lengths = [[6, 4], [8, 9], [5, 7]]
+
+    for kv_lengths in lengths:
+        metadata.kv_seq_lens_host_values[:] = kv_lengths
+        metadata.kv_seq_lens.copy_(torch.tensor(kv_lengths, dtype=torch.int32))
+        prepared = backend.prepare_metadata(metadata)
+        snapshots.append(prepared)
+        metadata.prepared_attention_state = prepared
+        with forward_context(ForwardContext(backend, torch.device("cpu"), metadata, [], execution_state=execution)):
+            backend.prepare(metadata, graph_mode=True)
+        assert state.query is captured_query
+        assert state.kv is captured_kv
+        assert state.query == [1, 2]
+        assert state.kv == kv_lengths
+        assert backend._actual_seq_q is captured_query
+        assert backend._actual_seq_kv is captured_kv
+
+    for prepared, kv_lengths in zip(snapshots, lengths):
+        assert prepared.query_ends == [1, 2]
+        assert prepared.actual_seq_q == [1, 2]
+        assert prepared.actual_seq_kv == kv_lengths
+        assert prepared.actual_seq_q is not captured_query
+        assert prepared.actual_seq_kv is not captured_kv
 
 
 @pytest.mark.parametrize("width", [4, 8])

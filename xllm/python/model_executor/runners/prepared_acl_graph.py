@@ -225,6 +225,24 @@ class PreparedAclGraphRunner(AclGraphRunner):
         self._capture(entry, torch.npu.current_stream(self.device))
         self._prepared_graphs[binding] = entry
 
+    def _resolve_entry(
+        self,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+        metadata: AttentionMetadata,
+        input_embedding: torch.Tensor | None = None,
+        mtp_topk_indices: torch.Tensor | None = None,
+    ) -> AclGraphEntry:
+        self._validate_prepared_input(input_ids, positions, metadata, input_embedding, mtp_topk_indices)
+        entry = self._prepared_graphs.get(
+            self._prepared_binding(input_ids, positions, metadata, input_embedding, mtp_topk_indices)
+        )
+        if entry is None:
+            # Native admission already selected a captured bucket for every
+            # rank. A missing Slot binding is an error, never a local fallback.
+            raise RuntimeError("prepared ACL replay requires a warmed Slot binding")
+        return entry
+
     def execute(
         self,
         input_ids: torch.Tensor,
@@ -238,14 +256,38 @@ class PreparedAclGraphRunner(AclGraphRunner):
     ) -> ModelExecutionOutput:
         if layer_synchronizer is not None:
             raise ValueError("prepared ACL replay does not support layer synchronization")
-        self._validate_prepared_input(input_ids, positions, metadata, input_embedding, mtp_topk_indices)
-        entry = self._prepared_graphs.get(
-            self._prepared_binding(input_ids, positions, metadata, input_embedding, mtp_topk_indices)
-        )
-        if entry is None:
-            # Native admission already selected a captured bucket for every
-            # rank. A missing Slot binding is an error, never a local fallback.
-            raise RuntimeError("prepared ACL replay requires a warmed Slot binding")
+        entry = self._resolve_entry(input_ids, positions, metadata, input_embedding, mtp_topk_indices)
+        return self._execute_entry(entry, input_ids, metadata, input_embedding, mtp_topk_indices, eplb=eplb)
+
+    def execute_block(
+        self,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+        metadata: AttentionMetadata,
+        input_embedding: torch.Tensor | None = None,
+        layer_synchronizer: LayerSynchronizer | None = None,
+        mtp_topk_indices: torch.Tensor | None = None,
+        *,
+        eplb: EplbRuntimeState | None = None,
+    ) -> ModelExecutionOutput | None:
+        """Return None only when the query exceeds the captured block capacity."""
+        if layer_synchronizer is not None:
+            raise ValueError("prepared ACL replay does not support layer synchronization")
+        entry = self._resolve_entry(input_ids, positions, metadata, input_embedding, mtp_topk_indices)
+        if max(metadata.kv_seq_lens_host_values) > entry.static_metadata.kv_seq_lens_host_values[0]:
+            return None
+        return self._execute_entry(entry, input_ids, metadata, input_embedding, mtp_topk_indices, eplb=eplb)
+
+    def _execute_entry(
+        self,
+        entry: AclGraphEntry,
+        input_ids: torch.Tensor,
+        metadata: AttentionMetadata,
+        input_embedding: torch.Tensor | None,
+        mtp_topk_indices: torch.Tensor | None,
+        *,
+        eplb: EplbRuntimeState | None,
+    ) -> ModelExecutionOutput:
         # Only serialized Launch installs shared backend state. This path
         # selects entry-owned buffers and refreshes its captured Host lists.
         if entry.static_metadata.mega_moe_token_mask is not None:
@@ -273,8 +315,5 @@ class PreparedAclGraphRunner(AclGraphRunner):
 
     def can_execute_block(self, input_ids: torch.Tensor, positions: torch.Tensor, metadata: AttentionMetadata) -> bool:
         """Only declared out-of-capacity queries use eager; missing bindings fail."""
-        self._validate_prepared_input(input_ids, positions, metadata)
-        entry = self._prepared_graphs.get(self._prepared_binding(input_ids, positions, metadata))
-        if entry is None:
-            raise RuntimeError("prepared ACL replay requires a warmed Slot binding")
+        entry = self._resolve_entry(input_ids, positions, metadata)
         return max(metadata.kv_seq_lens_host_values) <= entry.static_metadata.kv_seq_lens_host_values[0]

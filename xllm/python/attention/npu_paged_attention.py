@@ -423,7 +423,8 @@ class NpuPagedAttentionBackend(KdaLinearAttentionMixin, AttentionBackend):
         query_ends = getattr(metadata, "q_cu_seq_lens_host_values", None)
         if query_ends is None:
             raise ValueError("prepared paged metadata requires Host query ends")
-        if len(query_ends) == batch_size + 1 and query_ends[0] == 0:
+        has_leading_zero = len(query_ends) == batch_size + 1 and query_ends[0] == 0
+        if has_leading_zero:
             query_ends = query_ends[1:]
         if len(query_ends) != batch_size:
             raise ValueError("prepared Host query ends must match the batch")
@@ -438,8 +439,13 @@ class NpuPagedAttentionBackend(KdaLinearAttentionMixin, AttentionBackend):
             kv_lengths = metadata.kv_seq_lens_host_values
             if kv_lengths is None or len(kv_lengths) != batch_size:
                 raise ValueError("prepared Host KV lengths must match the batch")
-            actual_seq_q = list(query_ends)
+            if not self._is_mla:
+                actual_seq_q = list(query_ends)
             actual_seq_kv = list(kv_lengths)
+        # A leading-zero slice already owns its Host values. Otherwise take
+        # one private snapshot so the next Task cannot mutate this one.
+        if not has_leading_zero:
+            query_ends = list(query_ends)
         if self._is_mla:
             if block_table is None:
                 raise ValueError("prepared MLA requires a block table for every forward type")
@@ -471,7 +477,7 @@ class NpuPagedAttentionBackend(KdaLinearAttentionMixin, AttentionBackend):
                 slot_mapping=slot_mapping,
                 actual_seq_q=query_tensor,
                 actual_seq_kv=kv_tensor,
-                query_ends=list(query_ends),
+                query_ends=query_ends,
                 kv_lengths=actual_seq_kv,
                 max_query_len=max(query_lengths, default=0),
                 max_seq_len=max(actual_seq_kv, default=0),
@@ -497,9 +503,9 @@ class NpuPagedAttentionBackend(KdaLinearAttentionMixin, AttentionBackend):
             if kv_capacity == 0 or kv_capacity > block_table.shape[1] * self.page_size:
                 raise ValueError("prepared block attention exceeds block-table capacity")
             return _PreparedPagedAttention(
-                block_table, list(query_ends), actual_seq_q, actual_seq_kv, lengths, kv_capacity, widths
+                block_table, query_ends, actual_seq_q, actual_seq_kv, lengths, kv_capacity, widths
             )
-        return _PreparedPagedAttention(block_table, list(query_ends), actual_seq_q, actual_seq_kv)
+        return _PreparedPagedAttention(block_table, query_ends, actual_seq_q, actual_seq_kv)
 
     def prepare_owned_graph_metadata(self, metadata: AttentionMetadata) -> None:
         self.prepare(metadata, graph_mode=True, owned_metadata=True)
