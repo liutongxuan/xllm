@@ -78,6 +78,7 @@ xLLM 使用 gflags 管理服务启动参数。`--model <PATH>` 是唯一必填�
 | `enable_virtual_memory` | `bool` | `false` | 是否为模型权重和 KV Cache 启用共享虚拟内存池；`false` 使用原有物理 KV Cache 实现。 |
 | `vmm_elastic` | `bool` | `true` | 启用虚拟内存后，按需扩张活动逻辑槽位及物理页，并释放空闲页的物理内存；`false` 在启动时整体分配固定池。 |
 | `vmm_memory_reserve_bytes` | `int64` | `0` | 弹性虚拟内存增长时额外保留的设备空闲显存，单位 byte，须非负；在运行时执行预留空间之外叠加生效。 |
+| `vmm_startup_timeout_ms` | `int32` | `120000` | VMM 启动时，master 等待节点注册、各非 master 等待物理池就绪分别使用的超时，单位毫秒，须为正数。独立于单次 RPC 超时，每个等待阶段单独计时。 |
 | `phy_page_granularity_size` | `int64` | `2097152` | 单个物理页的粒度大小，单位 byte，默认 2 MiB；用于连续 KV Cache。 |
 
 ### 虚拟 KV Cache

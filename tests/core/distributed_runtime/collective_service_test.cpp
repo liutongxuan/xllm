@@ -17,8 +17,22 @@ limitations under the License.
 
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <future>
+#include <string>
+
 namespace xllm {
 namespace {
+
+void register_worker(CollectiveService& service,
+                     int32_t rank,
+                     const std::string& address) {
+  proto::AddressInfo worker;
+  proto::CommUniqueIdList response;
+  worker.set_global_rank(rank);
+  worker.set_address(address);
+  service.Sync(nullptr, &worker, &response, nullptr);
+}
 
 TEST(CollectiveServiceTest, RendezvousNeedsNoDeviceOrCommunicator) {
   // Address discovery must work before device/communicator initialization.
@@ -39,6 +53,65 @@ TEST(CollectiveServiceTest, RendezvousNeedsNoDeviceOrCommunicator) {
   ASSERT_EQ(addresses.size(), 2);
   EXPECT_EQ(addresses.at(0), "127.0.0.1:9000");
   EXPECT_EQ(addresses.at(1), "127.0.0.1:9001");
+}
+
+TEST(CollectiveServiceTest, MissingWorkersTimeOutWithoutPartialAddresses) {
+  CollectiveService service(/*total_num=*/2);
+  register_worker(service, /*rank=*/0, "127.0.0.1:9000");
+
+  const auto addresses = service.wait_until(std::chrono::steady_clock::now());
+
+  EXPECT_FALSE(addresses.has_value());
+}
+
+TEST(CollectiveServiceTest, TimedWaitAcceptsWorkersRegisteredBeforeWaiting) {
+  CollectiveService service(/*total_num=*/2);
+  register_worker(service, /*rank=*/0, "127.0.0.1:9000");
+  register_worker(service, /*rank=*/1, "127.0.0.1:9001");
+
+  const auto addresses = service.wait_until(std::chrono::steady_clock::now() +
+                                            std::chrono::seconds(1));
+
+  ASSERT_TRUE(addresses.has_value());
+  ASSERT_EQ(addresses->size(), 2);
+  EXPECT_EQ(addresses->at(0), "127.0.0.1:9000");
+  EXPECT_EQ(addresses->at(1), "127.0.0.1:9001");
+}
+
+TEST(CollectiveServiceTest, FinalRegistrationWakesTimedWaitBeforeDeadline) {
+  CollectiveService service(/*total_num=*/2);
+  register_worker(service, /*rank=*/0, "127.0.0.1:9000");
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  auto result = std::async(std::launch::async, [&service, deadline]() {
+    return service.wait_until(deadline);
+  });
+  EXPECT_EQ(result.wait_for(std::chrono::milliseconds(20)),
+            std::future_status::timeout);
+
+  register_worker(service, /*rank=*/1, "127.0.0.1:9001");
+  EXPECT_EQ(result.wait_for(std::chrono::seconds(1)),
+            std::future_status::ready);
+  const auto addresses = result.get();
+  ASSERT_TRUE(addresses.has_value());
+  ASSERT_EQ(addresses->size(), 2);
+  EXPECT_EQ(addresses->at(1), "127.0.0.1:9001");
+}
+
+TEST(CollectiveServiceTest, TimedOutRendezvousCanObserveLateWorkersOnRetry) {
+  CollectiveService service(/*total_num=*/2);
+  register_worker(service, /*rank=*/0, "127.0.0.1:9000");
+  const auto expired_addresses = service.wait_until(
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(20));
+  ASSERT_FALSE(expired_addresses.has_value());
+
+  register_worker(service, /*rank=*/1, "127.0.0.1:9001");
+
+  // A new rendezvous may observe registrations made after the previous timeout.
+  const auto addresses = service.wait_until(std::chrono::steady_clock::now() +
+                                            std::chrono::seconds(1));
+  ASSERT_TRUE(addresses.has_value());
+  EXPECT_EQ(addresses->size(), 2);
 }
 
 }  // namespace

@@ -43,7 +43,6 @@ namespace xllm {
 namespace {
 
 constexpr int32_t kCapacityQueryTimeoutMs = 1000;
-constexpr int32_t kDefaultPoolInitializationTimeoutMs = 120000;
 constexpr std::chrono::milliseconds kCapacityRefreshInterval(250);
 
 }  // namespace
@@ -122,6 +121,11 @@ void DistributedVirtualMemoryCoordinator::setup_worker_memory_rpc(
   configure_workers(world_size, dp_size, tp_size);
   node_rank_ = distributed_config.node_rank();
 
+  const auto timeout = std::chrono::milliseconds(
+      KVCacheConfig::get_instance().vmm_startup_timeout_ms());
+  // Start the registration deadline before workers can register and begin
+  // their own pool-readiness waits.
+  const auto registration_deadline = std::chrono::steady_clock::now() + timeout;
   std::shared_ptr<CollectiveService> collective_service;
   if (distributed_config.node_rank() == 0) {
     collective_service = std::make_shared<CollectiveService>(world_size);
@@ -141,13 +145,19 @@ void DistributedVirtualMemoryCoordinator::setup_worker_memory_rpc(
   if (collective_service == nullptr) {
     return;
   }
-  auto worker_memory_rpc_addrs = collective_service->wait();
+  // Bound the master's registration stage with the same configured timeout
+  // used by non-master nodes waiting for pool initialization.
+  auto worker_memory_rpc_addrs =
+      collective_service->wait_until(registration_deadline);
+  CHECK(worker_memory_rpc_addrs.has_value())
+      << "Timed out waiting for worker memory RPC registration: world_size="
+      << world_size << ", timeout_ms=" << timeout.count();
 
   auto& clients = clients_;
   clients.reserve(world_size);
   for (int32_t rank = 0; rank < world_size; ++rank) {
-    auto address = worker_memory_rpc_addrs.find(rank);
-    CHECK(address != worker_memory_rpc_addrs.end())
+    auto address = worker_memory_rpc_addrs->find(rank);
+    CHECK(address != worker_memory_rpc_addrs->end())
         << "worker memory RPC server did not connect to master node: rank "
         << rank;
     auto client = std::make_shared<WorkerMemoryRpcClient>(
@@ -227,10 +237,10 @@ int64_t DistributedVirtualMemoryCoordinator::init_physical_page_pools(
   if (node_rank_ != 0) {
     // Only the master owns clients for all workers. Other nodes keep their
     // local server running until the master's initialization RPC completes.
-    // Registration of the remaining workers can outlast a single RPC. Use
-    // a separate startup deadline rather than the per-request RPC timeout.
-    const auto timeout =
-        std::chrono::milliseconds(kDefaultPoolInitializationTimeoutMs);
+    // Registration can outlast a single RPC. Share the master's configured
+    // per-stage startup timeout instead of using the per-request RPC timeout.
+    const auto timeout = std::chrono::milliseconds(
+        KVCacheConfig::get_instance().vmm_startup_timeout_ms());
     const int64_t num_pages =
         WorkerMemoryResources::get_instance().wait_for_physical_page_pool(
             timeout);

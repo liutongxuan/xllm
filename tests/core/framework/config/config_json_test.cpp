@@ -451,6 +451,78 @@ TEST(KVCacheConfigTest, ElasticCommandLineOptionsOverrideJson) {
   EXPECT_EQ(config.vmm_memory_reserve_bytes(), 2048);
 }
 
+TEST(KVCacheConfigTest, StartupTimeoutDefaultIsRegisteredForHelp) {
+  const KVCacheConfig config;
+  EXPECT_EQ(config.vmm_startup_timeout_ms(), 120000);
+  nlohmann::ordered_json serialized = nlohmann::ordered_json::object();
+  config.append_config_json(serialized);
+  EXPECT_FALSE(serialized.contains("vmm_startup_timeout_ms"));
+
+  google::CommandLineFlagInfo flag_info;
+  ASSERT_TRUE(
+      google::GetCommandLineFlagInfo("vmm_startup_timeout_ms", &flag_info));
+  EXPECT_EQ(flag_info.type, "int32");
+  EXPECT_EQ(flag_info.default_value, "120000");
+  const auto& option_names = KVCacheConfig::option_category().option_names;
+  EXPECT_NE(
+      std::find(
+          option_names.begin(), option_names.end(), "vmm_startup_timeout_ms"),
+      option_names.end());
+}
+
+TEST(KVCacheConfigTest, StartupTimeoutRoundTripsThroughJson) {
+  nlohmann::ordered_json serialized = nlohmann::ordered_json::object();
+  {
+    google::FlagSaver flag_saver;
+    KVCacheConfig config;
+    config.from_json(config::parse_json_string(
+        R"json({"vmm_startup_timeout_ms":45000})json"));
+    config.validate();
+    EXPECT_EQ(config.vmm_startup_timeout_ms(), 45000);
+    config.append_config_json(serialized);
+    ASSERT_EQ(serialized.at("vmm_startup_timeout_ms"), 45000);
+  }
+
+  // Restore flag metadata before simulating a fresh startup from the dump.
+  google::FlagSaver flag_saver;
+  KVCacheConfig restored;
+  restored.from_flags();
+  restored.from_json(config::parse_json_string(serialized.dump()));
+  restored.validate();
+  EXPECT_EQ(restored.vmm_startup_timeout_ms(), 45000);
+}
+
+TEST(KVCacheConfigTest, ExplicitDefaultStartupTimeoutOverridesJson) {
+  google::FlagSaver flag_saver;
+  ASSERT_FALSE(
+      google::SetCommandLineOption("vmm_startup_timeout_ms", "120000").empty());
+  KVCacheConfig config;
+  config.from_flags();
+  EXPECT_EQ(config.vmm_startup_timeout_ms(), 120000);
+  config.from_json(
+      config::parse_json_string(R"json({"vmm_startup_timeout_ms":45000})json"));
+  config.validate();
+  EXPECT_EQ(config.vmm_startup_timeout_ms(), 120000);
+}
+
+TEST(KVCacheConfigValidationTest, AcceptsPositiveStartupTimeout) {
+  KVCacheConfig config;
+  config.vmm_startup_timeout_ms(/*value=*/1);
+  config.validate();
+}
+
+TEST(KVCacheConfigValidationTest, RejectsNonpositiveStartupTimeout) {
+  for (int32_t timeout_ms : {int32_t{0}, int32_t{-1}}) {
+    EXPECT_DEATH(
+        {
+          KVCacheConfig config;
+          config.vmm_startup_timeout_ms(timeout_ms);
+          config.validate();
+        },
+        "vmm_startup_timeout_ms must be positive");
+  }
+}
+
 TEST(KVCacheConfigValidationTest, ElasticVmmAllowsUnsetUtilizationCeiling) {
   KVCacheConfig config;
   config.enable_virtual_memory(true)

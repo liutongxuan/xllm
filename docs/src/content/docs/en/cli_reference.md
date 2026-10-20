@@ -78,6 +78,7 @@ xLLM uses gflags to manage service startup parameters. `--model <PATH>` is the o
 | `enable_virtual_memory` | `bool` | `false` | Enable a shared virtual memory pool for model weights and KV Cache. `false` uses the original physical KV Cache implementation. |
 | `vmm_elastic` | `bool` | `true` | When virtual memory is enabled, grow active logical slots and physical backing on demand, and release idle backing. `false` allocates the fixed pool at startup. |
 | `vmm_memory_reserve_bytes` | `int64` | `0` | Additional device memory to keep free when elastic virtual memory grows, in bytes. Supplements runtime execution headroom; must be nonnegative. |
+| `vmm_startup_timeout_ms` | `int32` | `120000` | Positive timeout in milliseconds applied separately to the master's node-registration wait and each non-master's physical-pool readiness wait during VMM startup. Independent of per-request RPC timeouts; each wait has its own timer. |
 | `phy_page_granularity_size` | `int64` | `2097152` | Granularity size of one physical page in bytes, default 2 MiB, for continuous KV Cache. |
 
 ### Virtual KV Cache

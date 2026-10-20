@@ -15,8 +15,11 @@ limitations under the License.
 
 #pragma once
 
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 
@@ -35,14 +38,18 @@ class CollectiveService final : public proto::Collective {
             proto::CommUniqueIdList* response,
             ::google::protobuf::Closure* done) override;
 
-  // wait all worker connected
+  // Wait for every worker to register and return a consistent address snapshot.
   std::unordered_map<int32_t, std::string> wait();
+  // A timed-out rendezvous must not expose a partial worker set.
+  std::optional<std::unordered_map<int32_t, std::string>> wait_until(
+      std::chrono::steady_clock::time_point deadline);
 
  private:
   DISALLOW_COPY_AND_ASSIGN(CollectiveService);
 
   int32_t total_num_ = 0;
   std::mutex mutex_;
+  std::condition_variable registration_cv_;
   std::unordered_map<int32_t, std::string> addrs_map_;
 };
 

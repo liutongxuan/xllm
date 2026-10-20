@@ -124,7 +124,9 @@ class NonLeaderPoolInitializationTest : public ::testing::Test {
     config.rpc_channel_timeout_ms(1000);
     auto& kv_config = KVCacheConfig::get_instance();
     previous_elastic_ = kv_config.vmm_elastic();
+    previous_startup_timeout_ms_ = kv_config.vmm_startup_timeout_ms();
     kv_config.vmm_elastic(true);
+    kv_config.vmm_startup_timeout_ms(1000);
     resources_initialized_ =
         WorkerMemoryResourcesTestPeer::begin_initialization();
     ASSERT_TRUE(resources_initialized_);
@@ -141,12 +143,15 @@ class NonLeaderPoolInitializationTest : public ::testing::Test {
     coordinator_.reset();
     ServiceConfig::get_instance().rpc_channel_timeout_ms(previous_timeout_ms_);
     KVCacheConfig::get_instance().vmm_elastic(previous_elastic_);
+    KVCacheConfig::get_instance().vmm_startup_timeout_ms(
+        previous_startup_timeout_ms_);
   }
 
   std::shared_ptr<DistributedVirtualMemoryCoordinator> coordinator_;
 
  private:
   int32_t previous_timeout_ms_ = -1;
+  int32_t previous_startup_timeout_ms_ = 120000;
   bool previous_elastic_ = false;
   bool resources_initialized_ = false;
 };
@@ -177,9 +182,9 @@ TEST_F(NonLeaderPoolInitializationTest, AcceptsCapacityPublishedBeforeWaiting) {
 }
 
 TEST_F(NonLeaderPoolInitializationTest, WorkerPoolWaitTimesOutWithoutMaster) {
-  auto result = std::async(std::launch::async, []() {
-    return WorkerMemoryResources::get_instance().wait_for_physical_page_pool(
-        std::chrono::milliseconds(20));
+  KVCacheConfig::get_instance().vmm_startup_timeout_ms(20);
+  auto result = std::async(std::launch::async, [this]() {
+    return coordinator_->init_physical_page_pools(0.1, 1);
   });
   const std::future_status status = result.wait_for(std::chrono::seconds(1));
   if (status != std::future_status::ready) {

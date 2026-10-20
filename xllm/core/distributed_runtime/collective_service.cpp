@@ -15,8 +15,6 @@ limitations under the License.
 
 #include "core/distributed_runtime/collective_service.h"
 
-#include <absl/time/clock.h>
-#include <absl/time/time.h>
 #include <brpc/closure_guard.h>
 
 namespace xllm {
@@ -38,18 +36,25 @@ void CollectiveService::Sync(::google::protobuf::RpcController* /*controller*/,
     std::lock_guard<std::mutex> lock(mutex_);
     addrs_map_[global_rank] = address;
   }
+  registration_cv_.notify_all();
 }
 
 std::unordered_map<int32_t, std::string> CollectiveService::wait() {
-  int connected = 0;
-  while (connected < total_num_) {
-    absl::SleepFor(absl::Milliseconds(1000));
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      connected = addrs_map_.size();
-    }
-  }
+  std::unique_lock<std::mutex> lock(mutex_);
+  registration_cv_.wait(lock, [this]() {
+    return addrs_map_.size() >= static_cast<size_t>(total_num_);
+  });
+  return addrs_map_;
+}
 
+std::optional<std::unordered_map<int32_t, std::string>>
+CollectiveService::wait_until(std::chrono::steady_clock::time_point deadline) {
+  std::unique_lock<std::mutex> lock(mutex_);
+  if (!registration_cv_.wait_until(lock, deadline, [this]() {
+        return addrs_map_.size() >= static_cast<size_t>(total_num_);
+      })) {
+    return std::nullopt;
+  }
   return addrs_map_;
 }
 

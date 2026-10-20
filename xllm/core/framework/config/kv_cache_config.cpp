@@ -47,6 +47,12 @@ DEFINE_int64(vmm_memory_reserve_bytes,
              "Additional device memory kept free for execution when elastic "
              "VMM grows. This supplements runtime execution headroom.");
 
+DEFINE_int32(vmm_startup_timeout_ms,
+             120000,
+             "Timeout in milliseconds for each VMM startup wait: master node "
+             "registration and non-master physical pool readiness. Must be "
+             "positive; independent of per-request RPC timeouts.");
+
 DEFINE_string(kv_cache_dtype,
               "auto",
               "KV cache data type for quantization. \"auto\" (default): KV "
@@ -108,6 +114,7 @@ void KVCacheConfig::from_flags() {
   XLLM_CONFIG_ASSIGN_FROM_FLAG(enable_virtual_memory);
   XLLM_CONFIG_ASSIGN_FROM_FLAG(vmm_elastic);
   XLLM_CONFIG_ASSIGN_FROM_FLAG(vmm_memory_reserve_bytes);
+  XLLM_CONFIG_ASSIGN_FROM_FLAG(vmm_startup_timeout_ms);
   XLLM_CONFIG_ASSIGN_FROM_FLAG(phy_page_granularity_size);
   max_memory_utilization_configured_ =
       config::is_flag_specified("max_memory_utilization");
@@ -130,6 +137,7 @@ void KVCacheConfig::from_json(const JsonReader& json) {
   XLLM_CONFIG_ASSIGN_FROM_JSON(enable_virtual_memory);
   XLLM_CONFIG_ASSIGN_FROM_JSON(vmm_elastic);
   XLLM_CONFIG_ASSIGN_FROM_JSON(vmm_memory_reserve_bytes);
+  XLLM_CONFIG_ASSIGN_FROM_JSON(vmm_startup_timeout_ms);
   XLLM_CONFIG_ASSIGN_FROM_JSON(phy_page_granularity_size);
   max_memory_utilization_configured_ = ratio_configured || ratio_from_flags ||
                                        json.contains("max_memory_utilization");
@@ -169,6 +177,8 @@ void KVCacheConfig::append_config_json(
   APPEND_CONFIG_JSON_VALUE_IF_NOT_DEFAULT(
       config_json, default_config, vmm_memory_reserve_bytes);
   APPEND_CONFIG_JSON_VALUE_IF_NOT_DEFAULT(
+      config_json, default_config, vmm_startup_timeout_ms);
+  APPEND_CONFIG_JSON_VALUE_IF_NOT_DEFAULT(
       config_json, default_config, phy_page_granularity_size);
 }
 
@@ -187,6 +197,8 @@ void KVCacheConfig::initialize() {
 
 void KVCacheConfig::validate() const {
   CHECK_GE(vmm_memory_reserve_bytes_, 0);
+  CHECK_GT(vmm_startup_timeout_ms_, 0)
+      << "vmm_startup_timeout_ms must be positive";
   CHECK(std::isfinite(max_memory_utilization_));
   CHECK_LE(max_memory_utilization_, 1.0);
   CHECK_GE(max_memory_utilization_, 0.0);

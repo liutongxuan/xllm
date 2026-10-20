@@ -60,6 +60,7 @@ class KVCacheConfig final {
          "enable_virtual_memory",
          "vmm_elastic",
          "vmm_memory_reserve_bytes",
+         "vmm_startup_timeout_ms",
          "phy_page_granularity_size"}};
     return kOptionCategory;
   }
@@ -97,6 +98,8 @@ class KVCacheConfig final {
   PROPERTY(bool, vmm_elastic) = true;
 
   PROPERTY(int64_t, vmm_memory_reserve_bytes) = 0;
+
+  PROPERTY(int32_t, vmm_startup_timeout_ms) = 120000;
 
   PROPERTY(int64_t, phy_page_granularity_size) = 2 * 1024 * 1024;
 
