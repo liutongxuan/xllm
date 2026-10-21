@@ -2,6 +2,13 @@ include(cc_test)
 
 cc_test(
   NO_NPU_RUNTIME
+  NAME executor_impl_factory_test
+  SRCS executor_impl_factory_test.cpp
+  DEPS :runtime GTest::gtest_main
+)
+
+cc_test(
+  NO_NPU_RUNTIME
   NAME rec_graph_input_test
   SRCS rec_graph_input_test.cpp
   DEPS :model GTest::gtest_main

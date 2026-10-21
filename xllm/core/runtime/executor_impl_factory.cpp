@@ -39,10 +39,27 @@ ExecutorImplFactory& ExecutorImplFactory::get_instance() {
   return instance;
 }
 
-bool ExecutorImplFactory::register_creator(const std::string& name,
+bool ExecutorImplFactory::register_creator(const std::string& executor_type,
                                            Creator creator) {
-  auto [it, inserted] = creators_.emplace(name, std::move(creator));
-  return inserted;
+  return register_creator(executor_type, std::move(creator), /*priority=*/0);
+}
+
+bool ExecutorImplFactory::register_creator(const std::string& executor_type,
+                                           Creator creator,
+                                           int32_t priority) {
+  auto it = creators_.find(executor_type);
+  if (it == creators_.end()) {
+    creators_.emplace(executor_type,
+                      Registration{priority, std::move(creator)});
+    return true;
+  }
+
+  if (priority <= it->second.priority) {
+    return false;
+  }
+
+  it->second = Registration{priority, std::move(creator)};
+  return true;
 }
 
 std::unique_ptr<ExecutorImpl> ExecutorImplFactory::create_executor_impl(
@@ -50,13 +67,13 @@ std::unique_ptr<ExecutorImpl> ExecutorImplFactory::create_executor_impl(
     const ModelArgs& args,
     const torch::Device& device,
     const runtime::Options& options,
-    const std::string& backend) {
-  auto it = creators_.find(backend);
+    const std::string& executor_type) {
+  auto it = creators_.find(executor_type);
   if (it == creators_.end()) {
-    throw std::runtime_error("No valid backend found: " + backend);
+    throw std::runtime_error("No valid executor type found: " + executor_type);
   }
 
-  return it->second(model, args, device, options);
+  return it->second.creator(model, args, device, options);
 }
 
 }  // namespace xllm
