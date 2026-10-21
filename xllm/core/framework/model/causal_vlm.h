@@ -25,17 +25,17 @@ limitations under the License.
 #include "core/framework/state_dict/state_dict.h"
 #include "core/kv_cache/storage/kv_cache.h"
 #include "model_args.h"
-#include "model_input_params.h"
+#include "model_params_view.h"
 
 namespace xllm {
 
 class CausalVLM : public CausalLM {
  public:
   ~CausalVLM() override = default;
-  virtual MMDict encode(const ModelInputParams& parameters) = 0;
+  virtual MMDict encode(const ModelParamsView& parameters) = 0;
   virtual torch::Tensor get_input_embeddings(
       const torch::Tensor& input_ids,
-      const ModelInputParams& input_params) = 0;
+      const ModelParamsView& input_params) = 0;
 };
 
 template <typename ModelType>
@@ -44,20 +44,20 @@ class CausalVLMImpl : public CausalVLM {
   CausalVLMImpl(ModelType model, const torch::TensorOptions& options)
       : model_(std::move(model)), options_(options) {}
 
-  MMDict encode(const ModelInputParams& parameters) override {
+  MMDict encode(const ModelParamsView& parameters) override {
     return model_->get_multimodal_embeddings(parameters);
   }
 
   torch::Tensor get_input_embeddings(
       const torch::Tensor& input_ids,
-      const ModelInputParams& input_params) override {
+      const ModelParamsView& input_params) override {
     return model_->get_input_embeddings(input_ids, input_params);
   }
 
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& parameters) override {
+                      const ModelParamsView& parameters) override {
     return model_->forward(tokens, positions, kv_caches, parameters);
   }
 

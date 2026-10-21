@@ -22,7 +22,7 @@ limitations under the License.
 #include "forward_params.h"
 #include "framework/model/causal_lm.h"
 #include "framework/model/model_args.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "framework/quantization/quant_args.h"
 #include "framework/state_dict/state_dict.h"
 #include "options.h"

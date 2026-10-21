@@ -24,7 +24,7 @@ limitations under the License.
 #include <memory>
 #include <thread>
 
-#include "core/framework/model/model_input_params.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/platform/device.h"
 #include "core/platform/layer_synchronizer.h"
 #include "core/platform/platform.h"
@@ -237,7 +237,7 @@ TEST_F(MLULayerSynchronizerTest, ModelInputWaitsAtRangeBoundaries) {
   std::unique_ptr<Stream> copy_stream = device_->get_stream_from_pool();
   ASSERT_TRUE(
       synchronizer->record_stream(/*layer_index=*/0, copy_stream.get()));
-  ModelInputParams params = ModelInputSnapshot(LlmModelParams()).view();
+  ModelParamsView params = ModelInputSnapshot(LlmModelParams()).view();
   params.parallel.layer_wise_load_synchronizer = synchronizer;
   params.parallel.layers_per_event = 2;
 

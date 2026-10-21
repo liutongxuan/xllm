@@ -210,7 +210,7 @@ RunMode get_run_mode(const xllm::runtime::Options& options,
     return RunMode::kDraft;
   }
 
-  if constexpr (std::is_same_v<Params, xllm::ModelInputParams>) {
+  if constexpr (std::is_same_v<Params, xllm::ModelParamsView>) {
     if (params.is_spec_verify) {
       return RunMode::kSpecVerify;
     }
@@ -256,7 +256,7 @@ RunMode get_run_mode(const xllm::runtime::Options& options,
 template <typename Params>
 const std::vector<torch::Tensor>& graph_multi_block_tables(
     const Params& params) {
-  if constexpr (std::is_same_v<Params, xllm::ModelInputParams>) {
+  if constexpr (std::is_same_v<Params, xllm::ModelParamsView>) {
     return params.multi_block_tables;
   } else {
     static const std::vector<torch::Tensor> empty;
@@ -315,7 +315,7 @@ template <typename Params>
 void GraphPersistentParam::init_params(const Params& params,
                                        uint32_t padding_num_tokens,
                                        uint32_t padding_needed) {
-  if constexpr (std::is_same_v<Params, ModelInputParams>) {
+  if constexpr (std::is_same_v<Params, ModelParamsView>) {
     params_.emplace(params.to(tokens_.device()).view());
   } else {
     rec_params_.emplace(params.to(tokens_.device()));
@@ -418,7 +418,7 @@ void GraphPersistentParam::update_input_buffer(const torch::Tensor& tokens,
     }
   }
 
-  if constexpr (std::is_same_v<Params, ModelInputParams>) {
+  if constexpr (std::is_same_v<Params, ModelParamsView>) {
     if (!multi_block_tables.empty()) {
       graph_params.multi_block_tables = multi_block_tables;
     }
@@ -481,7 +481,7 @@ MluGraph::MluGraph(GraphPersistentParam* persistent_param,
       padding_num_tokens_(padding_num_tokens) {}
 
 void MluGraph::prepare_model_graph_metadata(CausalLM* model,
-                                            const ModelInputParams& params) {
+                                            const ModelParamsView& params) {
   if (!model->requires_graph_forward_metadata()) {
     return;
   }
@@ -507,7 +507,7 @@ void MluGraph::capture(ModelType* model,
                        const runtime::Options& options) {
   using Params = std::conditional_t<std::is_same_v<ModelType, RecModel>,
                                     RecModelParams,
-                                    ModelInputParams>;
+                                    ModelParamsView>;
   Params& graph_params = persistent_param_->capture_params<Params>();
   if constexpr (std::is_same_v<Params, RecModelParams>) {
     rec_graph_input_.emplace(graph_params.clone());
@@ -570,7 +570,7 @@ void MluGraph::update_input_buffer(ModelType* model,
       tokens, positions, params, padding_needed);
   // For some models (e.g. DeepSeekV4), the metadata depends on variable host
   // data, which needs to be updated outside of capture.
-  if constexpr (std::is_same_v<Params, ModelInputParams>) {
+  if constexpr (std::is_same_v<Params, ModelParamsView>) {
     prepare_model_graph_metadata(model, params);
   }
 }
@@ -703,7 +703,7 @@ void MluGraphExecutorImpl::log_memory_after_capture() {
 ModelOutput MluGraphExecutorImpl::run(const torch::Tensor& tokens,
                                       const torch::Tensor& positions,
                                       std::vector<KVCache>& kv_caches,
-                                      const ModelInputParams& params) {
+                                      const ModelParamsView& params) {
   return run_impl(model_, tokens, positions, kv_caches, params);
 }
 
@@ -799,18 +799,18 @@ ModelOutput MluGraphExecutorImpl::run_impl(ModelType* model,
   return ModelOutput(hidden_states);
 }
 
-template void GraphPersistentParam::init_params<ModelInputParams>(
-    const ModelInputParams&,
+template void GraphPersistentParam::init_params<ModelParamsView>(
+    const ModelParamsView&,
     uint32_t,
     uint32_t);
 template void GraphPersistentParam::init_params<RecModelParams>(
     const RecModelParams&,
     uint32_t,
     uint32_t);
-template void GraphPersistentParam::update_input_buffer<ModelInputParams>(
+template void GraphPersistentParam::update_input_buffer<ModelParamsView>(
     const torch::Tensor&,
     const torch::Tensor&,
-    const ModelInputParams&,
+    const ModelParamsView&,
     uint32_t);
 template void GraphPersistentParam::update_input_buffer<RecModelParams>(
     const torch::Tensor&,

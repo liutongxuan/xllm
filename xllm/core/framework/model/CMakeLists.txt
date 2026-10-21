@@ -13,9 +13,11 @@ cc_library(
     rec_model_kind.h
     causal_vlm.h
     dit_model.h
+    dit_model_output.h
+    dit_model_params.h
     aux_hidden_capture.h
     model_args.h
-    model_input_params.h
+    model_params_view.h
     mtp_topk_state.h
   SRCS
   DEPS

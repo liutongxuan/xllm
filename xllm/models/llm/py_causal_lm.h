@@ -68,9 +68,9 @@ class __attribute__((visibility("hidden"))) PyCausalLM : public CausalVLM {
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& parameters) override;
+                      const ModelParamsView& parameters) override;
 
-  MMDict encode(const ModelInputParams& parameters) override {
+  MMDict encode(const ModelParamsView& parameters) override {
     LOG(FATAL) << "PyCausalLM::encode must not be called directly; "
                << "PyExecutorImpl drives the Python model's encode via pybind.";
     return MMDict{};
@@ -78,7 +78,7 @@ class __attribute__((visibility("hidden"))) PyCausalLM : public CausalVLM {
 
   torch::Tensor get_input_embeddings(
       const torch::Tensor& input_ids,
-      const ModelInputParams& input_params) override {
+      const ModelParamsView& input_params) override {
     LOG(FATAL) << "PyCausalLM::get_input_embeddings must not be called "
                << "directly; PyExecutorImpl drives it via pybind.";
     return torch::Tensor();
@@ -96,7 +96,7 @@ class __attribute__((visibility("hidden"))) PyCausalLM : public CausalVLM {
                                const torch::Tensor& positions,
                                const torch::Tensor& device_cache_slots,
                                std::vector<KVCache>& kv_caches,
-                               const ModelInputParams& input_params) override;
+                               const ModelParamsView& input_params) override;
 
   DFlash2CandidateOutput dflash2_candidates(
       const torch::Tensor& hidden_states,

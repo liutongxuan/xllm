@@ -19,8 +19,8 @@ limitations under the License.
 
 #include "core/kv_cache/storage/kv_cache.h"
 #include "framework/model/causal_lm.h"
-#include "framework/model/model_input_params.h"
 #include "framework/model/model_output.h"
+#include "framework/model/model_params_view.h"
 #include "runtime/executor_impl.h"
 #include "runtime/options.h"
 
@@ -41,23 +41,23 @@ class Executor final {
   // Called on Prepare after binding Slot-owned tensor and native metadata.
   // No model computation; the supported backend must not mutate active state.
   void prepare_attention_metadata(std::vector<KVCache>& kv_caches,
-                                  ModelInputParams& params);
+                                  ModelParamsView& params);
 
   // Regular warmup Tasks capture final Slot views before serving uses them.
   void warmup_prepared_graph(const torch::Tensor& tokens,
                              const torch::Tensor& positions,
                              std::vector<KVCache>& kv_caches,
-                             const ModelInputParams& params);
+                             const ModelParamsView& params);
 
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& params);
+                      const ModelParamsView& params);
 
   void prepare_graph_input(const torch::Tensor& tokens,
                            const torch::Tensor& positions,
                            std::vector<KVCache>& kv_caches,
-                           const ModelInputParams& params);
+                           const ModelParamsView& params);
 
   bool prepare_static_mtp_graph_tasks(const SpecVerifyGraphTaskSignal& signal,
                                       const Stream& signal_stream);

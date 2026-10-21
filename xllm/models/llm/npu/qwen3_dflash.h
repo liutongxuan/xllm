@@ -124,7 +124,7 @@ class DFlashQwen3ModelImpl : public QWen3ModelImpl {
                                const torch::Tensor& positions,
                                const torch::Tensor& device_cache_slots,
                                std::vector<KVCache>& kv_caches,
-                               const ModelInputParams& input_params) {
+                               const ModelParamsView& input_params) {
     const int64_t num_layers = static_cast<int64_t>(layers_.size());
     CHECK_EQ(static_cast<int64_t>(kv_caches.size()), num_layers);
     CHECK(device_cache_slots.defined())
@@ -376,7 +376,7 @@ class DFlashQwen3ForCausalLMImpl final
                                const torch::Tensor& positions,
                                const torch::Tensor& device_cache_slots,
                                std::vector<KVCache>& kv_caches,
-                               const ModelInputParams& input_params) {
+                               const ModelParamsView& input_params) {
     return model_->write_context_kv(
         target_hidden, positions, device_cache_slots, kv_caches, input_params);
   }

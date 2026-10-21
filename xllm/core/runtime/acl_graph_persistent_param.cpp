@@ -167,7 +167,7 @@ int64_t infer_actual_batch_size(const Params& params) {
       params.attention.device.block_tables.dim() >= 2) {
     return params.attention.device.block_tables.size(0);
   }
-  if constexpr (std::is_same_v<Params, ModelInputParams>) {
+  if constexpr (std::is_same_v<Params, ModelParamsView>) {
     for (const auto& block_table : params.multi_block_tables) {
       if (block_table.defined() && block_table.dim() >= 2) {
         return block_table.size(0);
@@ -177,7 +177,7 @@ int64_t infer_actual_batch_size(const Params& params) {
   return 0;
 }
 
-bool can_skip_unused_expanded_verify_mask(const ModelInputParams& params,
+bool can_skip_unused_expanded_verify_mask(const ModelParamsView& params,
                                           bool is_hybrid_linear_attention) {
   return params.is_spec_verify &&
          params.meta.batch_forward_type.is_chunked_prefill() &&
@@ -185,7 +185,7 @@ bool can_skip_unused_expanded_verify_mask(const ModelInputParams& params,
          params.graph.use_expanded_decode_for_spec_verify_attention;
 }
 
-int64_t get_spec_verify_width(const ModelInputParams& params) {
+int64_t get_spec_verify_width(const ModelParamsView& params) {
   CHECK(params.graph.input_tokens_override.defined())
       << "speculative verify graph update requires token inputs";
   CHECK_EQ(params.graph.input_tokens_override.dim(), 1)
@@ -202,7 +202,7 @@ int64_t get_spec_verify_width(const ModelInputParams& params) {
 
 }  // namespace
 
-int32_t get_mla_capture_kv_seq_len_bucket(const ModelInputParams& params,
+int32_t get_mla_capture_kv_seq_len_bucket(const ModelParamsView& params,
                                           const runtime::Options& options) {
   const int32_t block_size = std::max<int32_t>(options.block_size(), 1);
   int32_t capture_kv_len =
@@ -733,7 +733,7 @@ void GraphPersistentParam::update_eplb_decode_token_mask(
 
 std::vector<int32_t>
 GraphPersistentParam::update_expanded_spec_decode_attention(
-    const ModelInputParams& input_params,
+    const ModelParamsView& input_params,
     uint32_t actual_num_tokens,
     uint32_t padded_num_tokens) {
   CHECK(input_params.is_spec_verify)
@@ -802,7 +802,7 @@ void GraphPersistentParam::update_tokens(const torch::Tensor& tokens,
                                          uint32_t padded_num_tokens) {
   CHECK_GT(padded_num_tokens, 0) << "padded_num_tokens must be > 0";
   const torch::Tensor& graph_tokens = [&]() -> const torch::Tensor& {
-    if constexpr (std::is_same_v<Params, ModelInputParams>) {
+    if constexpr (std::is_same_v<Params, ModelParamsView>) {
       if (params.graph.input_tokens_override.defined()) {
         return params.graph.input_tokens_override;
       }
@@ -829,7 +829,7 @@ void GraphPersistentParam::update_tokens(const torch::Tensor& tokens,
 void GraphPersistentParam::update_spec_verify_inputs(
     const torch::Tensor& tokens,
     const torch::Tensor& positions,
-    const ModelInputParams& params,
+    const ModelParamsView& params,
     uint32_t padded_num_tokens,
     SpecVerifyInputUpdateScope scope) {
   CHECK(params.graph.spec_verify_source_addresses_stable)
@@ -942,7 +942,7 @@ std::optional<Params> GraphPersistentParam::update(
   const bool is_chunked_prefill =
       params.meta.batch_forward_type.is_chunked_prefill();
   const bool is_hybrid_spec_verify_chunked_prefill = [&]() {
-    if constexpr (std::is_same_v<Params, ModelInputParams>) {
+    if constexpr (std::is_same_v<Params, ModelParamsView>) {
       return params.is_spec_verify && is_chunked_prefill &&
              is_hybrid_linear_attention_;
     }
@@ -1099,7 +1099,7 @@ std::optional<Params> GraphPersistentParam::update(
           .fill_(kPaddingLinearStateId);
     }
   }
-  if constexpr (std::is_same_v<Params, ModelInputParams>) {
+  if constexpr (std::is_same_v<Params, ModelParamsView>) {
     if (params.num_accepted_tokens.defined()) {
       persistent_num_accepted_tokens_
           .slice(/*dim=*/0, /*start=*/0, /*end=*/actual_batch_size)
@@ -1185,7 +1185,7 @@ std::optional<Params> GraphPersistentParam::update(
   if (has_q_cu && q_cu_size > 0) {
     const bool use_hybrid_query_start_loc = is_hybrid_linear_attention_;
     const bool input_has_leading_zero = [&]() {
-      if constexpr (std::is_same_v<Params, ModelInputParams>) {
+      if constexpr (std::is_same_v<Params, ModelParamsView>) {
         return params.is_spec_verify && use_hybrid_query_start_loc;
       }
       return false;
@@ -1241,7 +1241,7 @@ std::optional<Params> GraphPersistentParam::update(
   // the dense graph attention mask. Avoid rebuilding the unused mask on every
   // target replay while preserving all other decode/prefill paths.
   const bool skip_unused_expanded_verify_mask = [&]() {
-    if constexpr (std::is_same_v<Params, ModelInputParams>) {
+    if constexpr (std::is_same_v<Params, ModelParamsView>) {
       return can_skip_unused_expanded_verify_mask(params,
                                                   is_hybrid_linear_attention_);
     }
@@ -1272,7 +1272,7 @@ std::optional<Params> GraphPersistentParam::update(
         is_chunked_prefill ? q_max_seq_len : 1;
   }
   const bool use_expanded_spec_decode_attention = [&]() {
-    if constexpr (std::is_same_v<Params, ModelInputParams>) {
+    if constexpr (std::is_same_v<Params, ModelParamsView>) {
       return params.graph.use_expanded_decode_for_spec_verify_attention;
     }
     return false;
@@ -1283,7 +1283,7 @@ std::optional<Params> GraphPersistentParam::update(
            "decode attention input";
   }
   std::vector<int32_t> expanded_kv_seq_lens_vec;
-  if constexpr (std::is_same_v<Params, ModelInputParams>) {
+  if constexpr (std::is_same_v<Params, ModelParamsView>) {
     if (use_expanded_spec_decode_attention) {
       expanded_kv_seq_lens_vec = update_expanded_spec_decode_attention(
           params, actual_num_tokens, padded_num_tokens);
@@ -1292,7 +1292,7 @@ std::optional<Params> GraphPersistentParam::update(
   const auto expanded_block_tables_for_graph = [&]() {
     torch::Tensor block_tables = persistent_expanded_block_tables_.slice(
         /*dim=*/0, /*start=*/0, /*end=*/padded_num_tokens);
-    if constexpr (std::is_same_v<Params, ModelInputParams>) {
+    if constexpr (std::is_same_v<Params, ModelParamsView>) {
       if (params.graph.spec_verify_source_addresses_stable) {
         // Stable verify graphs include the active width in their graph key.
         return block_tables.narrow(
@@ -1397,7 +1397,7 @@ std::optional<Params> GraphPersistentParam::update(
     }
   }
 
-  // Return ModelInputParams with persistent buffer references if requested.
+  // Return ModelParamsView with persistent buffer references if requested.
   // Capture uses bucketed DeepSeekV2-family MLA host lengths to size ATB
   // tiling/workspace. Replay uses the same stable hostData addresses, but
   // refreshes them with the actual per-step lengths above before graph replay.
@@ -1419,7 +1419,7 @@ std::optional<Params> GraphPersistentParam::update(
       const bool use_mla_capture_host_lens = for_capture && is_decode;
       if (use_mla_capture_host_lens) {
         const int32_t capture_kv_seq_len = [&]() {
-          if constexpr (std::is_same_v<Params, ModelInputParams>) {
+          if constexpr (std::is_same_v<Params, ModelParamsView>) {
             return get_mla_capture_kv_seq_len_bucket(params, options_);
           }
           CHECK(!supports_mla_graph_kv_bucketing_);
@@ -1542,13 +1542,13 @@ std::optional<Params> GraphPersistentParam::update(
       graph_params->embedding.input_embedding =
           persistent_embedding(padded_num_tokens);
     }
-    if constexpr (std::is_same_v<Params, ModelInputParams>) {
+    if constexpr (std::is_same_v<Params, ModelParamsView>) {
       if (params.num_accepted_tokens.defined()) {
         graph_params->num_accepted_tokens = persistent_num_accepted_tokens(
             static_cast<uint32_t>(padded_batch_size));
       }
     }
-    if constexpr (std::is_same_v<Params, ModelInputParams>) {
+    if constexpr (std::is_same_v<Params, ModelParamsView>) {
       if (use_expanded_spec_decode_attention) {
         layer::ExpandedDecodeMetadataBuilder::populate_expanded_layout(
             *graph_params,
@@ -1601,7 +1601,7 @@ std::optional<Params> GraphPersistentParam::update(
                        padded_q_seq_lens_vec[static_cast<size_t>(i)]);
     }
 
-    if constexpr (std::is_same_v<Params, ModelInputParams>) {
+    if constexpr (std::is_same_v<Params, ModelParamsView>) {
       if (params.num_accepted_tokens.defined() &&
           params.num_accepted_tokens.numel() > 0) {
         if (!params.num_accepted_tokens_host.empty()) {
@@ -1884,7 +1884,7 @@ GraphPersistentParam::classify_spec_verify_paged_attention_plan(
     const torch::Tensor& tokens,
     const torch::Tensor& k_cache,
     const torch::Tensor& v_cache,
-    const ModelInputParams& params) {
+    const ModelParamsView& params) {
   if (!params.graph.use_expanded_decode_for_spec_verify_attention ||
       !params.graph.expanded_kv_seq_lens.defined() ||
       !params.graph.expanded_block_tables.defined() ||
@@ -1903,7 +1903,7 @@ GraphPersistentParam::classify_spec_verify_paged_attention_plan(
     return std::nullopt;
   }
 
-  ModelInputParams plan_params = params.clone().view();
+  ModelParamsView plan_params = params.clone().view();
   plan_params.meta.num_sequences = static_cast<int32_t>(num_rows);
   plan_params.attention.device.kv_seq_lens = params.graph.expanded_kv_seq_lens;
   plan_params.attention.device.q_seq_lens =
@@ -2048,7 +2048,7 @@ void GraphPersistentParam::plan_paged_attention_tiling(
   CHECK_GT(tiling_buffer_info.tilingBufferSize, 0)
       << "Tiling buffer size is zero";
 
-  if constexpr (std::is_same_v<Params, ModelInputParams>) {
+  if constexpr (std::is_same_v<Params, ModelParamsView>) {
     if (input_params.graph.use_expanded_decode_for_spec_verify_attention) {
       const size_t word_count =
           static_cast<size_t>(tiling_buffer_info.tilingBufferSize) /
@@ -2197,19 +2197,19 @@ void GraphPersistentParam::update_attention_mask(const Params& input_params) {
   }
 }
 
-template std::optional<ModelInputParams> GraphPersistentParam::update(
+template std::optional<ModelParamsView> GraphPersistentParam::update(
     const torch::Tensor&,
     const torch::Tensor&,
     const torch::Tensor&,
     const torch::Tensor&,
-    const ModelInputParams&,
+    const ModelParamsView&,
     uint32_t,
     bool,
     bool,
     bool,
     bool);
 template void GraphPersistentParam::update_tokens(const torch::Tensor&,
-                                                  const ModelInputParams&,
+                                                  const ModelParamsView&,
                                                   uint32_t,
                                                   uint32_t);
 

@@ -23,7 +23,7 @@ limitations under the License.
 
 #include "framework/eplb/expert_buffer_manager.h"
 #include "framework/eplb/expert_weight_buffer_shm.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "framework/model_context/model_context.h"
 #include "framework/parallel_state/mega_moe_comm_resource.h"
 #include "framework/parallel_state/npu_dp_ep_padding.h"
@@ -58,7 +58,7 @@ class NpuDeepseekV32DecoderLayerImpl : public BaseLayer {
                         torch::Tensor& sin_pos,
                         torch::Tensor& attn_mask,
                         KVCache& kv_cache,
-                        const ModelInputParams& input_params,
+                        const ModelParamsView& input_params,
                         aclrtEvent* event = nullptr,
                         std::atomic<bool>* event_flag = nullptr,
                         int node_id = 0);
@@ -68,7 +68,7 @@ class NpuDeepseekV32DecoderLayerImpl : public BaseLayer {
                                   torch::Tensor& sin_pos,
                                   torch::Tensor& attn_mask,
                                   KVCache& kv_cache,
-                                  const ModelInputParams& input_params,
+                                  const ModelParamsView& input_params,
                                   const torch::Tensor& shared_topk_indices,
                                   torch::Tensor* output_topk_indices,
                                   aclrtEvent* event = nullptr,
@@ -81,7 +81,7 @@ class NpuDeepseekV32DecoderLayerImpl : public BaseLayer {
       torch::Tensor& sin_pos,
       torch::Tensor& attn_mask,
       KVCache& kv_cache,
-      const ModelInputParams& input_params,
+      const ModelParamsView& input_params,
       torch::Tensor* output_topk_indices,
       aclrtEvent* event = nullptr,
       std::atomic<bool>* event_flag = nullptr,
@@ -160,7 +160,7 @@ class NpuDeepseekV32DecoderLayerImpl : public BaseLayer {
                                torch::Tensor& sin_pos,
                                torch::Tensor& attn_mask,
                                KVCache& kv_cache,
-                               ModelInputParams& input_params,
+                               ModelParamsView& input_params,
                                bool is_prefill,
                                const torch::Tensor& shared_topk_indices,
                                torch::Tensor* output_topk_indices,

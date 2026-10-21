@@ -169,7 +169,7 @@ torch::Tensor NpuLlamaDecoderLayerImpl::forward(torch::Tensor& x,
                                                 torch::Tensor& sin_pos,
                                                 torch::Tensor& attn_mask,
                                                 KVCache& kv_cache,
-                                                ModelInputParams& input_params,
+                                                ModelParamsView& input_params,
                                                 int node_id) {
   atb::Status st;
 
@@ -210,7 +210,7 @@ void NpuLlamaDecoderLayerImpl::build_node_variant_pack(
     torch::Tensor& sin_pos,
     at::Tensor& attn_mask,
     KVCache& kv_cache,
-    ModelInputParams& input_params,
+    ModelParamsView& input_params,
     bool is_prefill) {
   internal_tensors_ = atb_speed::Utils::AtTensor2Tensor(x);
   node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER) = internal_tensors_;

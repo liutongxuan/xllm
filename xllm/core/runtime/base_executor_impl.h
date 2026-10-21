@@ -24,7 +24,7 @@ limitations under the License.
 #include "core/kv_cache/storage/kv_cache.h"
 #include "executor_impl_factory.h"
 #include "framework/model/causal_lm.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "runtime/executor_impl.h"
 #include "runtime/options.h"
 
@@ -42,7 +42,7 @@ class BaseExecutorImpl : public ExecutorImpl {
   ModelOutput run(const torch::Tensor& tokens,
                   const torch::Tensor& positions,
                   std::vector<KVCache>& kv_caches,
-                  const ModelInputParams& params) override;
+                  const ModelParamsView& params) override;
 
  private:
   // not own

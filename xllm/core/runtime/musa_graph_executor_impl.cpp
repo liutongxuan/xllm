@@ -547,7 +547,7 @@ std::optional<Params> MusaGraphPersistentParam::update_typed(
     actual_batch_size = static_cast<int64_t>(actual_num_tokens);
   }
   int64_t accepted_batch_size = 0;
-  if constexpr (std::is_same_v<Params, ModelInputParams>) {
+  if constexpr (std::is_same_v<Params, ModelParamsView>) {
     accepted_batch_size =
         params.num_accepted_tokens.defined()
             ? std::min<int64_t>(params.num_accepted_tokens.numel(),
@@ -620,7 +620,7 @@ std::optional<Params> MusaGraphPersistentParam::update_typed(
           persistent_kv_cache_tokens_nums(
               static_cast<uint32_t>(actual_batch_size));
     }
-    if constexpr (std::is_same_v<Params, ModelInputParams>) {
+    if constexpr (std::is_same_v<Params, ModelParamsView>) {
       if (params.num_accepted_tokens.defined()) {
         params_for_capture->num_accepted_tokens =
             persistent_num_accepted_tokens(
@@ -635,7 +635,7 @@ std::optional<Params> MusaGraphPersistentParam::update_typed(
     }
 
     params_for_capture->attn_metadata = attn_metadata;
-    if constexpr (std::is_same_v<Params, ModelInputParams>) {
+    if constexpr (std::is_same_v<Params, ModelParamsView>) {
       params_for_capture->is_spec_verify = params.is_spec_verify;
     }
     return std::move(params_for_capture);
@@ -775,7 +775,7 @@ std::optional<Params> MusaGraphPersistentParam::update_typed(
     }
   }
 
-  if constexpr (std::is_same_v<Params, ModelInputParams>) {
+  if constexpr (std::is_same_v<Params, ModelParamsView>) {
     if (params.num_accepted_tokens.defined()) {
       persistent_num_accepted_tokens_
           .slice(/*dim=*/0, /*start=*/0, /*end=*/accepted_batch_size)
@@ -1109,12 +1109,12 @@ std::optional<Params> MusaGraphPersistentParam::update_typed(
   return build_capture_params_if_needed();
 }
 
-std::optional<ModelInputParams> MusaGraphPersistentParam::update(
+std::optional<ModelParamsView> MusaGraphPersistentParam::update(
     const torch::Tensor& tokens,
     const torch::Tensor& k_cache,
     const torch::Tensor& v_cache,
     const torch::Tensor& positions,
-    const ModelInputParams& params,
+    const ModelParamsView& params,
     uint32_t padded_num_tokens,
     bool return_capture_params) {
   return update_typed(tokens,
@@ -1496,7 +1496,7 @@ bool MusaGraph::capture(CausalLM* model,
                         const runtime::Options& options,
                         const torch::Tensor& tokens,
                         const torch::Tensor& positions,
-                        const ModelInputParams& params,
+                        const ModelParamsView& params,
                         std::vector<KVCache>& kv_cache,
                         uint32_t bucket_num_tokens,
                         const c10::musa::MempoolId_t& pool,
@@ -1654,7 +1654,7 @@ ModelOutput MusaGraph::replay_typed(const torch::Tensor& tokens,
 ModelOutput MusaGraph::replay(const torch::Tensor& tokens,
                               const torch::Tensor& positions,
                               std::vector<KVCache>& kv_cache,
-                              const ModelInputParams& params) {
+                              const ModelParamsView& params) {
   return replay_typed(tokens, positions, kv_cache, params);
 }
 
@@ -2036,7 +2036,7 @@ ModelOutput MusaGraphExecutorImpl::run_typed(Model* model,
 ModelOutput MusaGraphExecutorImpl::run(const torch::Tensor& tokens,
                                        const torch::Tensor& positions,
                                        std::vector<KVCache>& kv_caches,
-                                       const ModelInputParams& params) {
+                                       const ModelParamsView& params) {
   return run_typed(model_, tokens, positions, kv_caches, params);
 }
 

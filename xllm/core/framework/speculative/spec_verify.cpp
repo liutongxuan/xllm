@@ -19,7 +19,7 @@ limitations under the License.
 
 #include <algorithm>
 
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "framework/sampling/rejection_sampler.h"
 #include "runtime/forward_params.h"
 

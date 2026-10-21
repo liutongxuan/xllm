@@ -42,7 +42,7 @@ class Glm4MoeDecoderLiteLayerImpl : public torch::nn::Module {
                         torch::Tensor sin_pos,
                         torch::Tensor attn_mask,
                         KVCache& kv_cache,
-                        const ModelInputParams& input_params,
+                        const ModelParamsView& input_params,
                         aclrtEvent* event,
                         std::atomic<bool>* event_flag) {
     return decoder_layer_(x,
@@ -164,7 +164,7 @@ class Glm4MoeLiteModelImpl : public torch::nn::Module {
   ModelOutput forward(torch::Tensor tokens,
                       torch::Tensor positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) {
+                      const ModelParamsView& input_params) {
     if (dp_size_ > 1) {
       if (tokens.sizes() == 0) {
         tokens = torch::tensor({1}).to(torch::kInt32).to(device_);
@@ -202,8 +202,8 @@ class Glm4MoeLiteModelImpl : public torch::nn::Module {
           num_speculative_tokens_ + 1, dtype_, device_);
     }
 
-    ModelInputParams& input_params_new =
-        const_cast<ModelInputParams&>(input_params);
+    ModelParamsView& input_params_new =
+        const_cast<ModelParamsView&>(input_params);
     input_params_new.expert.expert_array = expert_array;
 
     RollingLayerGuard rolling_guard(rolling_mgr_);

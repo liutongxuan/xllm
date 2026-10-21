@@ -38,7 +38,7 @@ limitations under the License.
 #include "core/framework/config/scheduler_config.h"
 #include "core/framework/config/service_config.h"
 #include "core/framework/model/model_args.h"
-#include "core/framework/model/model_input_params.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/framework/multimodal/mm_visitor.h"
 #include "core/framework/request/sequence.h"
 #include "core/framework/sampling/sampling_params.h"

@@ -442,7 +442,7 @@ void Glm5NextKDAImpl::verify_loaded_weights(const std::string& prefix) const {
 }
 
 torch::Tensor Glm5NextKDAImpl::get_linear_state_indices(
-    const ModelInputParams& input_params,
+    const ModelParamsView& input_params,
     const torch::Device& device) const {
   CHECK(!input_params.embedding.linear_state_ids.empty())
       << "linear_state_ids must be populated for GLM5-Next KDA";
@@ -457,7 +457,7 @@ torch::Tensor Glm5NextKDAImpl::get_linear_state_indices(
 torch::Tensor Glm5NextKDAImpl::forward(const torch::Tensor& hidden_states,
                                        const AttentionMetadata& attn_metadata,
                                        KVCache& kv_cache,
-                                       const ModelInputParams& input_params) {
+                                       const ModelParamsView& input_params) {
   const int64_t num_tokens = hidden_states.size(0);
   if (input_params.is_spec_verify) {
     CHECK(attn_metadata.is_chunked_prefill)

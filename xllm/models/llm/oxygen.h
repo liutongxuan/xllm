@@ -28,11 +28,11 @@ class OxygenModelImpl : public QWen3ModelImpl {
   virtual ModelOutput forward(torch::Tensor tokens,
                               torch::Tensor positions,
                               std::vector<KVCache>& kv_caches,
-                              const ModelInputParams& input_params) {
+                              const ModelParamsView& input_params) {
     const bool use_deepstack = input_params.has_multimodal() &&
                                !input_params.multimodal().deep_stacks.empty();
-    ModelInputParams& input_params_new =
-        const_cast<ModelInputParams&>(input_params);
+    ModelParamsView& input_params_new =
+        const_cast<ModelParamsView&>(input_params);
     std::vector<torch::Tensor> deep_stacks;
 
     if (tokens.numel() == 0) {

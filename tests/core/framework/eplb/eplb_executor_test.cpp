@@ -44,7 +44,7 @@ class RecordingModel final : public CausalLM {
   ModelOutput forward(const torch::Tensor&,
                       const torch::Tensor&,
                       std::vector<KVCache>&,
-                      const ModelInputParams&) override {
+                      const ModelParamsView&) override {
     return {};
   }
 

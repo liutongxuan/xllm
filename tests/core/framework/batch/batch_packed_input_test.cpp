@@ -35,7 +35,8 @@ limitations under the License.
 #include "core/common/global_flags.h"
 #include "core/framework/batch/forward_input_builder.h"
 #include "core/framework/config/execution_config.h"
-#include "core/framework/model/model_input_params.h"
+#include "core/framework/model/dit_model_params.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/framework/request/stopping_checker.h"
 #include "core/framework/sampling/json_object_grammar.h"
 #include "core/kv_cache/block/block_manager_impl.h"
@@ -154,17 +155,18 @@ TEST(ForwardSharedMemoryShutdownTest,
       name, /*size=*/1 << 20, is_creator, ForwardType::RAW_INPUT);
   stopped_reader.stop_input_read();
   DiTForwardInput source;
-  source.batch_size = 1;
-  source.prompts = {"Keep the pending request for active readers."};
+  source.model_params.batch_size = 1;
+  source.model_params.prompts = {
+      "Keep the pending request for active readers."};
   ASSERT_TRUE(writer.input_write(source));
   DiTForwardInput cancelled;
-  cancelled.batch_size = 7;
+  cancelled.model_params.batch_size = 7;
   EXPECT_FALSE(stopped_reader.input_read(cancelled));
-  EXPECT_EQ(cancelled.batch_size, 7);
+  EXPECT_EQ(cancelled.model_params.batch_size, 7);
   DiTForwardInput received;
   ASSERT_TRUE(active_reader.input_read(received));
-  EXPECT_EQ(received.batch_size, source.batch_size);
-  EXPECT_EQ(received.prompts, source.prompts);
+  EXPECT_EQ(received.model_params.batch_size, source.model_params.batch_size);
+  EXPECT_EQ(received.model_params.prompts, source.model_params.prompts);
 }
 
 void expect_linear_state_cache_op_eq(const LinearStateCacheOp& actual,
@@ -177,18 +179,26 @@ void expect_linear_state_cache_op_eq(const LinearStateCacheOp& actual,
 
 void expect_dit_forward_input_eq(const DiTForwardInput& actual,
                                  const DiTForwardInput& expected) {
-  EXPECT_EQ(actual.batch_size, expected.batch_size);
-  EXPECT_EQ(actual.prompts, expected.prompts);
-  EXPECT_EQ(actual.prompts_2, expected.prompts_2);
-  EXPECT_EQ(actual.negative_prompts, expected.negative_prompts);
-  EXPECT_EQ(actual.negative_prompts_2, expected.negative_prompts_2);
-  EXPECT_EQ(actual.audio_prompt_text, expected.audio_prompt_text);
-  EXPECT_EQ(actual.generation_params, expected.generation_params);
+  EXPECT_EQ(actual.model_params.batch_size, expected.model_params.batch_size);
+  EXPECT_EQ(actual.model_params.prompts, expected.model_params.prompts);
+  EXPECT_EQ(actual.model_params.prompts_2, expected.model_params.prompts_2);
+  EXPECT_EQ(actual.model_params.negative_prompts,
+            expected.model_params.negative_prompts);
+  EXPECT_EQ(actual.model_params.negative_prompts_2,
+            expected.model_params.negative_prompts_2);
+  EXPECT_EQ(actual.model_params.audio_prompt_text,
+            expected.model_params.audio_prompt_text);
+  EXPECT_EQ(actual.model_params.generation_params,
+            expected.model_params.generation_params);
 
-  ASSERT_EQ(actual.media_sources.size(), expected.media_sources.size());
-  for (size_t index = 0; index < expected.media_sources.size(); ++index) {
-    const MediaNamedTensor& actual_source = actual.media_sources.at(index);
-    const MediaNamedTensor& expected_source = expected.media_sources.at(index);
+  ASSERT_EQ(actual.model_params.media_sources.size(),
+            expected.model_params.media_sources.size());
+  for (size_t index = 0; index < expected.model_params.media_sources.size();
+       ++index) {
+    const MediaNamedTensor& actual_source =
+        actual.model_params.media_sources.at(index);
+    const MediaNamedTensor& expected_source =
+        expected.model_params.media_sources.at(index);
     EXPECT_EQ(actual_source.name, expected_source.name);
     EXPECT_EQ(actual_source.modality, expected_source.modality);
     EXPECT_TRUE(actual_source.tensor.device().is_cpu());
@@ -197,11 +207,14 @@ void expect_dit_forward_input_eq(const DiTForwardInput& actual,
     EXPECT_TRUE(torch::equal(actual_source.tensor, expected_source.tensor));
   }
 
-  ASSERT_EQ(actual.tensor_sources.size(), expected.tensor_sources.size());
-  for (size_t index = 0; index < expected.tensor_sources.size(); ++index) {
-    const NamedTensor& actual_source = actual.tensor_sources.entries()[index];
+  ASSERT_EQ(actual.model_params.tensor_sources.size(),
+            expected.model_params.tensor_sources.size());
+  for (size_t index = 0; index < expected.model_params.tensor_sources.size();
+       ++index) {
+    const NamedTensor& actual_source =
+        actual.model_params.tensor_sources.entries()[index];
     const NamedTensor& expected_source =
-        expected.tensor_sources.entries()[index];
+        expected.model_params.tensor_sources.entries()[index];
     EXPECT_EQ(actual_source.name, expected_source.name);
     EXPECT_TRUE(actual_source.tensor.device().is_cpu());
     EXPECT_EQ(actual_source.tensor.scalar_type(),
@@ -1030,16 +1043,16 @@ TEST(BatchPackedInputTest, NativeDomainsRejectUnsupportedPackedSchemas) {
       EXPECT_FALSE(llm_input.runtime.input_host_buffer.defined());
       EXPECT_FALSE(vlm_input.runtime.input_host_buffer.defined());
       EXPECT_FALSE(rec_input.runtime.input_host_buffer.defined());
-      EXPECT_EQ(dit_input.tensor_sources.size(), 0u);
+      EXPECT_EQ(dit_input.model_params.tensor_sources.size(), 0u);
     }
   }
 }
 
 TEST(BatchPackedInputTest, PackedTokenDecoderRejectsNativeDiTDomain) {
   DiTForwardInput input;
-  input.batch_size = 1;
-  input.prompts = {"prompt"};
-  input.tensor_sources.add("latent", torch::tensor({1.5f, 2.5f}));
+  input.model_params.batch_size = 1;
+  input.model_params.prompts = {"prompt"};
+  input.model_params.tensor_sources.add("latent", torch::tensor({1.5f, 2.5f}));
   proto::PackedForwardInput packed_input;
   ASSERT_TRUE(input.to_packed_proto(&packed_input));
 
@@ -1114,8 +1127,8 @@ TEST(BatchPackedInputTest, NativeRecDecoderRejectsTokenAndDiTPayloads) {
   EXPECT_FALSE(input.from_packed_proto(token_payload));
   EXPECT_FALSE(input.runtime.input_host_buffer.defined());
   DiTForwardInput dit_input;
-  dit_input.batch_size = 1;
-  dit_input.prompts = {"prompt"};
+  dit_input.model_params.batch_size = 1;
+  dit_input.model_params.prompts = {"prompt"};
   proto::PackedForwardInput dit_payload;
   ASSERT_TRUE(dit_input.to_packed_proto(&dit_payload));
   EXPECT_FALSE(input.from_packed_proto(dit_payload));
@@ -1222,11 +1235,11 @@ TEST(BatchPackedInputTest, BorrowedExecutionViewUpdatesNativeMetadata) {
   static_assert(!std::is_copy_constructible_v<LlmModelParams>);
   static_assert(!std::is_copy_constructible_v<VlmModelParams>);
   static_assert(!std::is_copy_constructible_v<RecModelParams>);
-  static_assert(!std::is_default_constructible_v<ModelInputParams>);
-  static_assert(!std::is_constructible_v<ModelInputParams, RecModelParams&>);
+  static_assert(!std::is_default_constructible_v<ModelParamsView>);
+  static_assert(!std::is_constructible_v<ModelParamsView, RecModelParams&>);
   LlmModelParams owner;
   owner.attention.host.kv_seq_lens = {2};
-  ModelInputParams view(owner);
+  ModelParamsView view(owner);
   EXPECT_EQ(view.attention.host.kv_seq_lens.data(),
             owner.attention.host.kv_seq_lens.data());
   view.attention.host.kv_seq_lens[0] = 7;
@@ -1243,7 +1256,7 @@ TEST(BatchPackedInputTest,
     VlmModelParams owner;
     owner.attention.host.kv_seq_lens = {2};
     owner.multimodal.deep_stacks = {torch::tensor({1.0F, 3.0F})};
-    ModelInputParams borrowed(owner);
+    ModelParamsView borrowed(owner);
     auto retained = borrowed.clone().view();
     borrowed.attention.host.kv_seq_lens[0] = 9;
     return retained;
@@ -1258,7 +1271,7 @@ TEST(BatchPackedInputTest,
 
 TEST(BatchPackedInputTest, LlmSnapshotTransferMovesSpecExecutionTensors) {
   LlmModelParams owner;
-  ModelInputParams params(owner);
+  ModelParamsView params(owner);
   const torch::Tensor values = torch::tensor({1, 2}, torch::kInt32);
   params.embedding.mtp_shifted_token_ids = values;
   params.embedding.mtp_bootstrap_embeddings = values;
@@ -1284,7 +1297,7 @@ TEST(BatchPackedInputTest, LlmSnapshotTransferMovesSpecExecutionTensors) {
   params.mtp_topk_state = MtpTopkState::from_tensor(values);
 
   const torch::Device target_device("meta");
-  ModelInputParams converted = params.clone().to(target_device).view();
+  ModelParamsView converted = params.clone().to(target_device).view();
 
   const std::vector<torch::Tensor> transferred_tensors = {
       converted.embedding.mtp_shifted_token_ids,
@@ -1410,26 +1423,29 @@ TEST(BatchPackedInputTest, NativeVlmReadyCopyRetainsRuntimeLifetime) {
 TEST(BatchPackedInputTest,
      NativeDiTPackedProtoPreservesInputsAndGenerationParams) {
   DiTForwardInput dit_input;
-  dit_input.batch_size = 2;
-  dit_input.prompts = {"first prompt", "second prompt"};
-  dit_input.prompts_2 = {"first detail", "second detail"};
-  dit_input.negative_prompts = {"first exclusion", "second exclusion"};
-  dit_input.negative_prompts_2 = {"first negative detail",
-                                  "second negative detail"};
-  dit_input.audio_prompt_text = "spoken prompt transcript";
-  dit_input.media_sources.add(
+  dit_input.model_params.batch_size = 2;
+  dit_input.model_params.prompts = {"first prompt", "second prompt"};
+  dit_input.model_params.prompts_2 = {"first detail", "second detail"};
+  dit_input.model_params.negative_prompts = {"first exclusion",
+                                             "second exclusion"};
+  dit_input.model_params.negative_prompts_2 = {"first negative detail",
+                                               "second negative detail"};
+  dit_input.model_params.audio_prompt_text = "spoken prompt transcript";
+  dit_input.model_params.media_sources.add(
       "unknown", "image", torch::tensor({1, 2}, torch::dtype(torch::kUInt8)));
-  dit_input.media_sources.add(
+  dit_input.model_params.media_sources.add(
       "unknown", "image", torch::tensor({3, 4}, torch::dtype(torch::kUInt8)));
-  dit_input.media_sources.add(
+  dit_input.model_params.media_sources.add(
       "mask_image",
       "image",
       torch::tensor({5, 6}, torch::dtype(torch::kUInt8)));
-  dit_input.media_sources.add(
+  dit_input.model_params.media_sources.add(
       "prompt_audio", "audio", torch::tensor({0.25f, 0.5f}));
-  dit_input.tensor_sources.add("prompt_embed", torch::tensor({1.5f, 2.5f}));
-  dit_input.tensor_sources.add("latent", torch::tensor({3.5f, 4.5f}));
-  DiTGenerationParams& params = dit_input.generation_params;
+  dit_input.model_params.tensor_sources.add("prompt_embed",
+                                            torch::tensor({1.5f, 2.5f}));
+  dit_input.model_params.tensor_sources.add("latent",
+                                            torch::tensor({3.5f, 4.5f}));
+  DiTGenerationParams& params = dit_input.model_params.generation_params;
   params.width = 640;
   params.height = 480;
   params.num_inference_steps = 31;
@@ -1486,14 +1502,15 @@ TEST(BatchPackedInputTest, NativeDiTPackedProtoOwnsSourcesAfterPayloadRelease) {
   DiTForwardInput unpacked_input;
   {
     DiTForwardInput source;
-    source.batch_size = 1;
-    source.prompts = {"retained prompt"};
-    source.media_sources.add(
+    source.model_params.batch_size = 1;
+    source.model_params.prompts = {"retained prompt"};
+    source.model_params.media_sources.add(
         "image", "image", torch::tensor({1, 2}, torch::dtype(torch::kUInt8)));
-    source.media_sources.add(
+    source.model_params.media_sources.add(
         "prompt_audio", "audio", torch::tensor({0.25f, 0.5f}));
-    source.tensor_sources.add("latent", torch::tensor({1.5f, 2.5f}));
-    source.tensor_sources.add(
+    source.model_params.tensor_sources.add("latent",
+                                           torch::tensor({1.5f, 2.5f}));
+    source.model_params.tensor_sources.add(
         "empty", torch::empty({0, 2}, torch::dtype(torch::kFloat32)));
     proto::PackedForwardInput packed_input;
     ASSERT_TRUE(source.to_packed_proto(&packed_input));
@@ -1501,22 +1518,28 @@ TEST(BatchPackedInputTest, NativeDiTPackedProtoOwnsSourcesAfterPayloadRelease) {
     packed_input.mutable_payload()->assign(packed_input.payload().size(), '\0');
   }
 
-  EXPECT_EQ(unpacked_input.prompts,
+  EXPECT_EQ(unpacked_input.model_params.prompts,
             std::vector<std::string>({"retained prompt"}));
-  ASSERT_EQ(unpacked_input.media_sources.size(), 2u);
-  EXPECT_TRUE(torch::equal(unpacked_input.media_sources.at(0).tensor,
-                           torch::tensor({1, 2}, torch::dtype(torch::kUInt8))));
-  EXPECT_TRUE(torch::equal(unpacked_input.media_sources.at(1).tensor,
-                           torch::tensor({0.25f, 0.5f})));
-  ASSERT_EQ(unpacked_input.tensor_sources.size(), 2u);
-  EXPECT_TRUE(torch::equal(unpacked_input.tensor_sources.entries()[0].tensor,
-                           torch::tensor({1.5f, 2.5f})));
-  EXPECT_TRUE(unpacked_input.tensor_sources.entries()[1].tensor.defined());
-  EXPECT_EQ(unpacked_input.tensor_sources.entries()[1].tensor.sizes().vec(),
+  ASSERT_EQ(unpacked_input.model_params.media_sources.size(), 2u);
+  EXPECT_TRUE(
+      torch::equal(unpacked_input.model_params.media_sources.at(0).tensor,
+                   torch::tensor({1, 2}, torch::dtype(torch::kUInt8))));
+  EXPECT_TRUE(
+      torch::equal(unpacked_input.model_params.media_sources.at(1).tensor,
+                   torch::tensor({0.25f, 0.5f})));
+  ASSERT_EQ(unpacked_input.model_params.tensor_sources.size(), 2u);
+  EXPECT_TRUE(torch::equal(
+      unpacked_input.model_params.tensor_sources.entries()[0].tensor,
+      torch::tensor({1.5f, 2.5f})));
+  EXPECT_TRUE(
+      unpacked_input.model_params.tensor_sources.entries()[1].tensor.defined());
+  EXPECT_EQ(unpacked_input.model_params.tensor_sources.entries()[1]
+                .tensor.sizes()
+                .vec(),
             std::vector<int64_t>({0, 2}));
 
-  const DiTForwardInput prepared_input =
-      unpacked_input.to(torch::Device(torch::kCPU));
+  const DiTModelParams prepared_input =
+      unpacked_input.model_params.to(torch::Device(torch::kCPU));
   EXPECT_EQ(prepared_input.media_sources.at(0).tensor.scalar_type(),
             torch::kUInt8);
   EXPECT_EQ(prepared_input.media_sources.at(1).tensor.scalar_type(),
@@ -1531,6 +1554,69 @@ TEST(BatchPackedInputTest, NativeDiTPackedProtoOwnsSourcesAfterPayloadRelease) {
                            torch::tensor({0.25f, 0.5f})));
 }
 
+TEST(BatchPackedInputTest,
+     DiTModelParamsConversionRetainsInputsAfterSourceRelease) {
+  const TensorParameters image_parameters = {{"frame_count", int64_t{2}}};
+  const TensorParameters latent_parameters = {{"layout", std::string("BCHW")}};
+  DiTModelParams prepared;
+  {
+    DiTModelParams source;
+    source.batch_size = 1;
+    source.prompts = {"prompt"};
+    source.prompts_2 = {"detail"};
+    source.negative_prompts = {"exclusion"};
+    source.negative_prompts_2 = {"negative detail"};
+    source.audio_prompt_text = "spoken transcript";
+    source.generation_params.width = 640;
+    source.generation_params.seed = 0;
+    source.generation_params.seed_is_set = true;
+    source.media_sources.add("image",
+                             "image",
+                             torch::tensor({1, 2}, torch::kUInt8),
+                             image_parameters);
+    source.media_sources.add(
+        "prompt_audio", "audio", torch::tensor({0.25f, 0.5f}));
+    source.tensor_sources.add(
+        "latent", torch::tensor({1.5f, 2.5f}), latent_parameters);
+
+    prepared = source.to(torch::Device(torch::kCPU), torch::kBFloat16);
+    ASSERT_EQ(prepared.tensor_sources.size(), 1u);
+    ASSERT_EQ(prepared.media_sources.size(), 2u);
+    EXPECT_EQ(source.tensor_sources.entries()[0].tensor.scalar_type(),
+              torch::kFloat32);
+    EXPECT_NE(prepared.tensor_sources.entries()[0].tensor.data_ptr(),
+              source.tensor_sources.entries()[0].tensor.data_ptr());
+    EXPECT_EQ(prepared.media_sources.at(0).tensor.data_ptr(),
+              source.media_sources.at(0).tensor.data_ptr());
+    source.prompts[0] = "changed prompt";
+    source.generation_params.width = 128;
+  }
+
+  EXPECT_EQ(prepared.batch_size, 1);
+  EXPECT_EQ(prepared.prompts, std::vector<std::string>{"prompt"});
+  EXPECT_EQ(prepared.prompts_2, std::vector<std::string>{"detail"});
+  EXPECT_EQ(prepared.negative_prompts, std::vector<std::string>{"exclusion"});
+  EXPECT_EQ(prepared.negative_prompts_2,
+            std::vector<std::string>{"negative detail"});
+  EXPECT_EQ(prepared.audio_prompt_text, "spoken transcript");
+  EXPECT_EQ(prepared.generation_params.width, 640);
+  EXPECT_EQ(prepared.generation_params.seed, 0);
+  EXPECT_TRUE(prepared.generation_params.seed_is_set);
+  ASSERT_EQ(prepared.media_sources.size(), 2u);
+  EXPECT_EQ(prepared.media_sources.at(0).name, "image");
+  EXPECT_EQ(prepared.media_sources.at(0).modality, "image");
+  EXPECT_EQ(prepared.media_sources.at(0).parameters, image_parameters);
+  EXPECT_TRUE(torch::equal(prepared.media_sources.at(0).tensor,
+                           torch::tensor({1, 2}, torch::kUInt8)));
+  EXPECT_TRUE(torch::equal(prepared.media_sources.at(1).tensor,
+                           torch::tensor({0.25f, 0.5f})));
+  ASSERT_EQ(prepared.tensor_sources.size(), 1u);
+  EXPECT_EQ(prepared.tensor_sources.entries()[0].name, "latent");
+  EXPECT_EQ(prepared.tensor_sources.entries()[0].parameters, latent_parameters);
+  EXPECT_TRUE(torch::equal(prepared.tensor_sources.entries()[0].tensor,
+                           torch::tensor({1.5f, 2.5f}, torch::kBFloat16)));
+}
+
 TEST(BatchPackedInputTest, NativeDiTPackedProtoRoundTripsEmptyInput) {
   DiTForwardInput input;
   proto::PackedForwardInput packed_input;
@@ -1543,9 +1629,9 @@ TEST(BatchPackedInputTest, NativeDiTPackedProtoRoundTripsEmptyInput) {
 
 TEST(BatchPackedInputTest, NativeDiTPackedProtoRejectsMalformedPayloads) {
   DiTForwardInput input;
-  input.batch_size = 1;
-  input.prompts = {"prompt"};
-  input.tensor_sources.add("latent", torch::tensor({1.5f, 2.5f}));
+  input.model_params.batch_size = 1;
+  input.model_params.prompts = {"prompt"};
+  input.model_params.tensor_sources.add("latent", torch::tensor({1.5f, 2.5f}));
   proto::PackedForwardInput packed_input;
   ASSERT_TRUE(input.to_packed_proto(&packed_input));
   DiTForwardInput baseline;

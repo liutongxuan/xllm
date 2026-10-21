@@ -130,7 +130,7 @@ struct Fa3AttentionMetadata {
 // reused by all layers. This avoids redundant computation and memory allocation
 // for metadata that is identical across layers (e.g., sequence lengths, paged
 // KV cache indices, plan_info). Use
-// AttentionMetadataBuilder to build instances from ModelInputParams.
+// AttentionMetadataBuilder to build instances from ModelParamsView.
 struct AttentionMetadata {
   torch::Tensor q_cu_seq_lens;
   // Optional Host metadata retained for asynchronous attention preparation.

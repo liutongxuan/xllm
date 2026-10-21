@@ -30,7 +30,7 @@ limitations under the License.
 #include "core/kv_cache/storage/kv_cache.h"
 #include "core/kv_cache/storage/kv_cache_utils.h"
 #include "core/kv_cache/transfer/host_transfer/transfer.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "platform/device.h"
 #include "util/threadpool.h"
 
@@ -99,7 +99,7 @@ class HierarchyKVCacheTransfer final {
   std::vector<uint8_t> prefetch_kv_blocks(
       Slice<BlockTransferInfo>& block_transfer_info);
   std::optional<HostKVLoadHandle> take_load_handle(uint64_t batch_id);
-  void set_layer_synchronizer(ModelInputParams& params);
+  void set_layer_synchronizer(ModelParamsView& params);
   [[nodiscard]] bool supports_block_type(BlockType block_type) const;
   [[nodiscard]] bool supports_block_type(CacheRole role,
                                          BlockType block_type) const;

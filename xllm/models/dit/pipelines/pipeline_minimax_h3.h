@@ -30,12 +30,13 @@ limitations under the License.
 
 #include "core/framework/config/dit_config.h"
 #include "core/framework/config/load_config.h"
+#include "core/framework/model/dit_model_output.h"
+#include "core/framework/model/dit_model_params.h"
 #include "core/framework/model_context/dit_model_context.h"
 #include "core/framework/model_loader/dit_model_loader.h"
 #if defined(USE_NPU)
 #include "core/layers/npu/loader/rolling_weight_buffer.h"
 #endif
-#include "core/runtime/dit_forward_params.h"
 #include "models/dit/autoencoders/autoencoder_kl_minimax_h3_audio.h"
 #include "models/dit/autoencoders/autoencoder_kl_minimax_h3_video.h"
 #include "models/dit/processors/minimax_h3_audio_processor.h"
@@ -133,7 +134,7 @@ class MiniMaxH3PipelineImpl final : public torch::nn::Module {
   }
 #endif
 
-  DiTForwardOutput forward(const DiTForwardInput& input) {
+  DiTForwardOutput forward(const DiTModelParams& input) {
     torch::NoGradGuard no_grad;
     CHECK_EQ(input.batch_size, 1)
         << "MiniMax-H3 native T2VA currently supports batch_size=1";
@@ -1066,7 +1067,7 @@ class MiniMaxH3PipelineImpl final : public torch::nn::Module {
         torch::TensorOptions().device(torch::kCPU).dtype(torch::kFloat32));
   }
 
-  ReferenceData prepare_reference_data(const DiTForwardInput& input,
+  ReferenceData prepare_reference_data(const DiTModelParams& input,
                                        int64_t num_frames,
                                        double video_fps,
                                        torch::Generator& generator) {
@@ -1233,7 +1234,7 @@ class MiniMaxH3PipelineImpl final : public torch::nn::Module {
   }
 
   torch::Tensor prepare_fl_frame_data(
-      const DiTForwardInput& input,
+      const DiTModelParams& input,
       int64_t height,
       int64_t width,
       torch::Generator& generator,

@@ -26,7 +26,7 @@ limitations under the License.
 #include "core/kv_cache/storage/kv_cache.h"
 #include "core/kv_cache/storage/kv_cache_utils.h"
 #include "framework/model/model_args.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "framework/parallel_state/parallel_state.h"
 #include "framework/quantization/quant_args.h"
 #include "framework/state_dict/state_dict.h"
@@ -248,10 +248,10 @@ class Qwen3_5GatedDeltaNetTest : public ::testing::Test {
     return KVCache(LinearAttentionKVCacheTensors{conv_cache, ssm_cache});
   }
 
-  ModelInputParams MakeSpecVerifyInputParams(
+  ModelParamsView MakeSpecVerifyInputParams(
       const std::vector<int64_t>& accepted_lengths) {
     auto opts_int = torch::dtype(torch::kInt32).device(device_);
-    ModelInputParams input_params = ModelInputSnapshot(LlmModelParams()).view();
+    ModelParamsView input_params = ModelInputSnapshot(LlmModelParams()).view();
     input_params.is_spec_verify = true;
     input_params.num_accepted_tokens =
         torch::tensor(accepted_lengths, opts_int);
@@ -266,7 +266,7 @@ class Qwen3_5GatedDeltaNetTest : public ::testing::Test {
 
   void ExpectSpecVerifySsmCheckpointsWritten(
       const KVCache& kv_cache,
-      const ModelInputParams& input_params,
+      const ModelParamsView& input_params,
       int64_t q_max_seq_len) {
     std::vector<int64_t> checkpoint_rows;
     checkpoint_rows.reserve(input_params.embedding.linear_state_ids.size() *
@@ -338,7 +338,7 @@ TEST_F(Qwen3_5GatedDeltaNetTest, PrefillForward) {
   auto hidden = MakeHidden(num_tokens);
   auto metadata = MakePrefillMetadata(batch_size, seq_len);
 
-  ModelInputParams input_params = ModelInputSnapshot(LlmModelParams()).view();
+  ModelParamsView input_params = ModelInputSnapshot(LlmModelParams()).view();
   input_params.embedding.linear_state_ids = {1};
 
   auto output = layer->forward(hidden, metadata, kv_cache_, input_params);
@@ -362,7 +362,7 @@ TEST_F(Qwen3_5GatedDeltaNetTest, PrefillStoresSsmStateAtCheckpointGroupBase) {
   auto hidden = MakeHidden(kSequenceLength);
   auto metadata = MakePrefillMetadata(/*batch_size=*/1, kSequenceLength);
   auto spec_kv_cache = MakeSpecVerifyKvCache(kCheckpointStride);
-  ModelInputParams input_params = ModelInputSnapshot(LlmModelParams()).view();
+  ModelParamsView input_params = ModelInputSnapshot(LlmModelParams()).view();
   input_params.embedding.linear_state_ids = {kStateId};
 
   layer->forward(hidden, metadata, spec_kv_cache, input_params);
@@ -387,7 +387,7 @@ TEST_F(Qwen3_5GatedDeltaNetTest, DecodeForward) {
   auto hidden = MakeHidden(num_tokens);
   auto metadata = MakeDecodeMetadata(batch_size);
 
-  ModelInputParams input_params = ModelInputSnapshot(LlmModelParams()).view();
+  ModelParamsView input_params = ModelInputSnapshot(LlmModelParams()).view();
   input_params.embedding.linear_state_ids = {1, 2};
 
   auto output = layer->forward(hidden, metadata, kv_cache_, input_params);

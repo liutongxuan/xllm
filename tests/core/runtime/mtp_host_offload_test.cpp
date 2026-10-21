@@ -25,7 +25,7 @@ limitations under the License.
 #include <vector>
 
 #include "core/framework/model/model_args.h"
-#include "core/framework/model/model_input_params.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/framework/parallel_state/parallel_args.h"
 #include "core/kv_cache/layout/kv_cache_capacity.h"
 #include "core/kv_cache/layout/kv_cache_shape.h"

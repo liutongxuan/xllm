@@ -19,7 +19,7 @@ limitations under the License.
 #include <span>
 #include <vector>
 
-#include "core/framework/model/model_input_params.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/framework/sampling/sampling_params.h"
 #include "core/platform/stream.h"
 
@@ -150,8 +150,8 @@ class SlotBuffer final {
 
   const torch::Tensor& tokens() const { return tokens_; }
   const torch::Tensor& positions() const { return positions_; }
-  ModelInputParams& model_params() { return model_params_; }
-  const ModelInputParams& model_params() const { return model_params_; }
+  ModelParamsView& model_params() { return model_params_; }
+  const ModelParamsView& model_params() const { return model_params_; }
   // Configure a model-only buffer before admitting any tasks.
   Status configure_sampling(const SlotBufferCapacity& capacity);
   Status validate_sampling(const SamplingParameters& input,
@@ -334,7 +334,7 @@ class SlotBuffer final {
   ModelTensors model_host_;
   ModelTensors model_device_;
   LlmModelParams native_model_params_;
-  ModelInputParams model_params_{native_model_params_};
+  ModelParamsView model_params_{native_model_params_};
   torch::Tensor tokens_;
   torch::Tensor positions_;
   // Sampling and result storage have equal Host/device capacities.

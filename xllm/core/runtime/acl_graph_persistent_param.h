@@ -24,7 +24,7 @@ limitations under the License.
 #include <vector>
 
 #include "core/framework/model/model_args.h"
-#include "core/framework/model/model_input_params.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/framework/model/rec_model_params.h"
 #include "core/kernels/npu/paged_attention_tiling_layout.h"
 #include "core/runtime/options.h"
@@ -40,7 +40,7 @@ struct TilingBufferInfo;
 
 namespace xllm::npu {
 
-int32_t get_mla_capture_kv_seq_len_bucket(const ModelInputParams& params,
+int32_t get_mla_capture_kv_seq_len_bucket(const ModelParamsView& params,
                                           const runtime::Options& options);
 
 struct PagedAttentionPlanDescriptor {
@@ -104,7 +104,7 @@ class GraphPersistentParam final {
   // hidden behind this interface.
   void update_spec_verify_inputs(const torch::Tensor& tokens,
                                  const torch::Tensor& positions,
-                                 const ModelInputParams& params,
+                                 const ModelParamsView& params,
                                  uint32_t padded_num_tokens,
                                  SpecVerifyInputUpdateScope scope);
 
@@ -160,7 +160,7 @@ class GraphPersistentParam final {
   classify_spec_verify_paged_attention_plan(const torch::Tensor& tokens,
                                             const torch::Tensor& k_cache,
                                             const torch::Tensor& v_cache,
-                                            const ModelInputParams& params);
+                                            const ModelParamsView& params);
   torch::Tensor hidden_states(uint32_t actual_tokens = 0) const {
     if (actual_tokens > 0) {
       return hidden_states_.slice(
@@ -267,7 +267,7 @@ class GraphPersistentParam final {
                                    bool copy_to_device = true);
 
   std::vector<int32_t> update_expanded_spec_decode_attention(
-      const ModelInputParams& input_params,
+      const ModelParamsView& input_params,
       uint32_t actual_num_tokens,
       uint32_t padded_num_tokens);
 

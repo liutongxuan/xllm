@@ -29,7 +29,7 @@ namespace xllm {
 ModelOutput XliteExecutorImpl::run(const torch::Tensor& tokens,
                                    const torch::Tensor& positions,
                                    std::vector<KVCache>& kv_caches,
-                                   const ModelInputParams& params) {
+                                   const ModelParamsView& params) {
   auto* holder = model_->get_xlite_holder();
   CHECK(holder != nullptr) << "xlite backend requires xlite-backed model";
   CHECK(holder->xlite_ready()) << "xlite model not initialized";

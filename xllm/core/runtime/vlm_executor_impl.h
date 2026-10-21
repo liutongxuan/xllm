@@ -26,8 +26,8 @@ limitations under the License.
 #include "framework/encoder_cache/encoder_cache.h"
 #include "framework/model/causal_lm.h"
 #include "framework/model/causal_vlm.h"
-#include "framework/model/model_input_params.h"
 #include "framework/model/model_output.h"
+#include "framework/model/model_params_view.h"
 #include "runtime/executor_impl.h"
 #include "runtime/options.h"
 
@@ -45,14 +45,14 @@ class VlmExecutorImpl : public ExecutorImpl {
   ModelOutput run(const torch::Tensor& tokens,
                   const torch::Tensor& positions,
                   std::vector<KVCache>& kv_caches,
-                  const ModelInputParams& params) override;
+                  const ModelParamsView& params) override;
 
   void prepare_graph_input(const torch::Tensor& tokens,
                            const torch::Tensor& positions,
                            std::vector<KVCache>& kv_caches,
-                           const ModelInputParams& params) override;
+                           const ModelParamsView& params) override;
 
-  virtual MMDict encode(const ModelInputParams& params);
+  virtual MMDict encode(const ModelParamsView& params);
 
   // not own
   CausalVLM* model_;

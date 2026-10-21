@@ -24,8 +24,8 @@ limitations under the License.
 #include <vector>
 
 #include "core/framework/model/causal_lm.h"
-#include "core/framework/model/model_input_params.h"
 #include "core/framework/model/model_output.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/kv_cache/storage/kv_cache.h"
 #include "core/layers/xlite/xlite_attn_meta_builder.h"
 #include "core/layers/xlite/xlite_causal_lm_base.h"
@@ -49,7 +49,7 @@ class XliteExecutorImpl : public BaseExecutorImpl {
   ModelOutput run(const torch::Tensor& tokens,
                   const torch::Tensor& positions,
                   std::vector<KVCache>& kv_caches,
-                  const ModelInputParams& params) override;
+                  const ModelParamsView& params) override;
 
  private:
   CausalLM* model_;

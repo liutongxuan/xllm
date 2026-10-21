@@ -26,8 +26,8 @@ limitations under the License.
 #include <tuple>
 #include <vector>
 
-#include "core/framework/model/model_input_params.h"
 #include "core/framework/model/model_output.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/framework/model_context/model_context.h"
 #include "core/kernels/mlu/mlu_ops_api.h"
 #include "core/layers/common/attention_metadata_builder.h"
@@ -79,7 +79,7 @@ class Glm5NextModelImpl final
   ModelOutput forward(torch::Tensor tokens,
                       torch::Tensor positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) override {
+                      const ModelParamsView& input_params) override {
     torch::NoGradGuard no_grad;
     CHECK_EQ(kv_caches.size(), layers_.size())
         << "GLM5-Next requires one layer-specific cache object per layer.";

@@ -1137,16 +1137,18 @@ inline void write_dit_generation_params(RawInputSerializeContext& context,
 
 inline void write_dit_forward_input(RawInputSerializeContext& context,
                                     const DiTForwardInput& input) {
-  write_data(context.descriptor, input.batch_size);
+  write_data(context.descriptor, input.model_params.batch_size);
 
-  write_string_vector(context.descriptor, input.prompts);
-  write_string_vector(context.descriptor, input.prompts_2);
-  write_string_vector(context.descriptor, input.negative_prompts);
-  write_string_vector(context.descriptor, input.negative_prompts_2);
+  write_string_vector(context.descriptor, input.model_params.prompts);
+  write_string_vector(context.descriptor, input.model_params.prompts_2);
+  write_string_vector(context.descriptor, input.model_params.negative_prompts);
+  write_string_vector(context.descriptor,
+                      input.model_params.negative_prompts_2);
 
   write_data(context.descriptor,
-             static_cast<uint64_t>(input.media_sources.size()));
-  for (const MediaNamedTensor& source : input.media_sources.entries()) {
+             static_cast<uint64_t>(input.model_params.media_sources.size()));
+  for (const MediaNamedTensor& source :
+       input.model_params.media_sources.entries()) {
     write_string(context.descriptor, source.name);
     write_string(context.descriptor, source.modality);
     write_tensor(context, source.tensor);
@@ -1158,8 +1160,9 @@ inline void write_dit_forward_input(RawInputSerializeContext& context,
         });
   }
   write_data(context.descriptor,
-             static_cast<uint64_t>(input.tensor_sources.size()));
-  for (const NamedTensor& tensor_input : input.tensor_sources.entries()) {
+             static_cast<uint64_t>(input.model_params.tensor_sources.size()));
+  for (const NamedTensor& tensor_input :
+       input.model_params.tensor_sources.entries()) {
     write_string(context.descriptor, tensor_input.name);
     write_tensor(context, tensor_input.tensor);
     write_tensor_parameters_impl(
@@ -1169,9 +1172,9 @@ inline void write_dit_forward_input(RawInputSerializeContext& context,
           write_string(context.descriptor, value);
         });
   }
-  write_string(context.descriptor, input.audio_prompt_text);
+  write_string(context.descriptor, input.model_params.audio_prompt_text);
 
-  write_dit_generation_params(context, input.generation_params);
+  write_dit_generation_params(context, input.model_params.generation_params);
 }
 
 inline void write_dit_forward_output(char*& buffer,
@@ -2157,10 +2160,11 @@ inline void clone_tensor_if_defined(torch::Tensor& tensor) {
 }
 
 inline void stabilize_dit_forward_input_tensors(DiTForwardInput& input) {
-  for (MediaNamedTensor& source : input.media_sources.entries()) {
+  for (MediaNamedTensor& source : input.model_params.media_sources.entries()) {
     clone_tensor_if_defined(source.tensor);
   }
-  for (NamedTensor& tensor_input : input.tensor_sources.entries()) {
+  for (NamedTensor& tensor_input :
+       input.model_params.tensor_sources.entries()) {
     clone_tensor_if_defined(tensor_input.tensor);
   }
 }
@@ -2168,12 +2172,12 @@ inline void stabilize_dit_forward_input_tensors(DiTForwardInput& input) {
 inline void read_dit_forward_input(ReadContext& context,
                                    DiTForwardInput& input,
                                    bool stabilize_host_tensors = false) {
-  read_data(context, input.batch_size);
+  read_data(context, input.model_params.batch_size);
 
-  read_string_vector(context, input.prompts);
-  read_string_vector(context, input.prompts_2);
-  read_string_vector(context, input.negative_prompts);
-  read_string_vector(context, input.negative_prompts_2);
+  read_string_vector(context, input.model_params.prompts);
+  read_string_vector(context, input.model_params.prompts_2);
+  read_string_vector(context, input.model_params.negative_prompts);
+  read_string_vector(context, input.model_params.negative_prompts_2);
 
   uint64_t media_source_count = 0;
   read_data(context, media_source_count);
@@ -2192,10 +2196,10 @@ inline void read_dit_forward_input(ReadContext& context,
         parameters,
         [&](auto& value) { read_data(context, value); },
         [&](std::string& value) { read_string(context, value); });
-    input.media_sources.add(std::move(name),
-                            std::move(modality),
-                            std::move(tensor),
-                            std::move(parameters));
+    input.model_params.media_sources.add(std::move(name),
+                                         std::move(modality),
+                                         std::move(tensor),
+                                         std::move(parameters));
   }
   uint64_t tensor_input_count = 0;
   read_data(context, tensor_input_count);
@@ -2212,12 +2216,12 @@ inline void read_dit_forward_input(ReadContext& context,
         parameters,
         [&](auto& value) { read_data(context, value); },
         [&](std::string& value) { read_string(context, value); });
-    input.tensor_sources.add(
+    input.model_params.tensor_sources.add(
         std::move(name), std::move(tensor), std::move(parameters));
   }
-  read_string(context, input.audio_prompt_text);
+  read_string(context, input.model_params.audio_prompt_text);
 
-  read_dit_generation_params(context, input.generation_params);
+  read_dit_generation_params(context, input.model_params.generation_params);
   if (stabilize_host_tensors) {
     stabilize_dit_forward_input_tensors(input);
   }

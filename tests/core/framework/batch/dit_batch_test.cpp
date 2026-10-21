@@ -51,20 +51,22 @@ TEST(DiTBatchTest, BuilderPreservesPromptOrderAndStacksTensorInputs) {
   ASSERT_EQ(batches.size(), 1);
   ASSERT_EQ(batches[0].size(), 2);
   auto input = batches[0].prepare_forward_input();
-  EXPECT_EQ(input.batch_size, 2);
-  EXPECT_EQ(input.prompts, (std::vector<std::string>{"first", "second"}));
-  ASSERT_EQ(input.media_sources.size(), 1U);
-  EXPECT_EQ(input.media_sources.at(0).name, "image");
+  EXPECT_EQ(input.model_params.batch_size, 2);
+  EXPECT_EQ(input.model_params.prompts,
+            (std::vector<std::string>{"first", "second"}));
+  ASSERT_EQ(input.model_params.media_sources.size(), 1U);
+  EXPECT_EQ(input.model_params.media_sources.at(0).name, "image");
   EXPECT_TRUE(
-      torch::equal(input.media_sources.at(0).tensor[0],
+      torch::equal(input.model_params.media_sources.at(0).tensor[0],
                    first->state().input_params().media_sources.at(0).tensor));
   EXPECT_TRUE(
-      torch::equal(input.media_sources.at(0).tensor[1],
+      torch::equal(input.model_params.media_sources.at(0).tensor[1],
                    second->state().input_params().media_sources.at(0).tensor));
-  auto prompt_embeds = input.tensor_sources.get("prompt_embed");
+  auto prompt_embeds = input.model_params.tensor_sources.get("prompt_embed");
   ASSERT_TRUE(prompt_embeds.has_value());
   EXPECT_EQ(prompt_embeds->sizes().vec(), (std::vector<int64_t>{2, 2, 4}));
-  EXPECT_TRUE(input.generation_params == first->state().generation_params());
+  EXPECT_TRUE(input.model_params.generation_params ==
+              first->state().generation_params());
 }
 
 TEST(DiTBatchTest, BatchKeepsRequestsAliveAfterSchedulerReleasesThem) {
@@ -77,7 +79,7 @@ TEST(DiTBatchTest, BatchKeepsRequestsAliveAfterSchedulerReleasesThem) {
     batches = factory.create_batches({request});
   }
   EXPECT_FALSE(retained.expired());
-  EXPECT_EQ(batches[0].prepare_forward_input().prompts,
+  EXPECT_EQ(batches[0].prepare_forward_input().model_params.prompts,
             (std::vector<std::string>{"retained"}));
   batches.clear();
   EXPECT_TRUE(retained.expired());
@@ -117,11 +119,12 @@ TEST(DiTBatchTest, SingleRequestSourcesUseBatchViews) {
   batch.add(request);
   DiTForwardInput forward_input = batch.prepare_forward_input();
 
-  const torch::Tensor& batched_image = forward_input.media_sources.at(0).tensor;
+  const torch::Tensor& batched_image =
+      forward_input.model_params.media_sources.at(0).tensor;
   const torch::Tensor batched_embed =
-      *forward_input.tensor_sources.get("prompt_embed");
+      *forward_input.model_params.tensor_sources.get("prompt_embed");
   const torch::Tensor batched_audio =
-      *forward_input.tensor_sources.get("prompt_audio");
+      *forward_input.model_params.tensor_sources.get("prompt_audio");
 
   EXPECT_EQ(batched_image.sizes(), torch::IntArrayRef({1, 3, 2, 2}));
   EXPECT_EQ(batched_embed.sizes(), torch::IntArrayRef({1, 4, 8}));

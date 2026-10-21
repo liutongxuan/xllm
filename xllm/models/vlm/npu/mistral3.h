@@ -24,7 +24,7 @@ limitations under the License.
 
 #include "core/common/global_flags.h"
 #include "core/framework/config/model_config.h"
-#include "core/framework/model/model_input_params.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/framework/model_context/model_context.h"
 #include "core/kv_cache/storage/kv_cache.h"
 #include "core/layers/npu/npu_lm_head_impl.h"
@@ -53,7 +53,7 @@ class Mistral3_VisionBlockImpl : public torch::nn::Module {
                         torch::Tensor& m_sin_pos,
                         torch::Tensor& cu_seq_len,
                         std::vector<int>& cu_seq_len_vec,
-                        ModelInputParams& input_params,
+                        ModelParamsView& input_params,
                         int node_id) {
     return encoder_layer_(x,
                           m_cos_pos,
@@ -348,7 +348,7 @@ class Mistral3_VisionTransformerImpl : public torch::nn::Module {
 
   torch::Tensor forward(torch::Tensor hidden_states,
                         torch::Tensor image_grid_thw,
-                        const ModelInputParams& input_params) {
+                        const ModelParamsView& input_params) {
     auto grid_h = hidden_states.size(2) / patch_size_;
     auto grid_w = hidden_states.size(3) / patch_size_;
     int64_t C = hidden_states.size(1);
@@ -425,8 +425,8 @@ class Mistral3_VisionTransformerImpl : public torch::nn::Module {
                                     .device(hidden_states.device());
     torch::Tensor seq_lens = torch::tensor(seq_lens_vec, opts);
 
-    ModelInputParams& input_params_new =
-        const_cast<ModelInputParams&>(input_params);
+    ModelParamsView& input_params_new =
+        const_cast<ModelParamsView&>(input_params);
 
     // 24 vision encoder layers
     for (int32_t idx = 0; idx < static_cast<int32_t>(layers_.size()); ++idx) {
@@ -513,7 +513,7 @@ class Mistral3ForConditionalGenerationImpl : public torch::nn::Module {
   }
 
   void prepare_encoder_input(
-      const ModelInputParams& input_params,
+      const ModelParamsView& input_params,
       std::optional<Mistral3_VLImageInputs>& image_inputs) {
     const auto& mm_data = input_params.multimodal().mm_data;
 
@@ -532,7 +532,7 @@ class Mistral3ForConditionalGenerationImpl : public torch::nn::Module {
     }
   }
 
-  MMDict get_multimodal_embeddings(const ModelInputParams& input_params) {
+  MMDict get_multimodal_embeddings(const ModelParamsView& input_params) {
     const auto& mm_data = input_params.multimodal().mm_data;
     bool has_pixel = mm_data.get<torch::Tensor>("pixel_values").has_value();
     bool has_thw = mm_data.get<torch::Tensor>("image_grid_thw").has_value();
@@ -577,7 +577,7 @@ class Mistral3ForConditionalGenerationImpl : public torch::nn::Module {
   }
 
   torch::Tensor get_input_embeddings(const torch::Tensor input_ids,
-                                     const ModelInputParams& input_params) {
+                                     const ModelParamsView& input_params) {
     const auto& mm_data = input_params.multimodal().mm_data;
     torch::Tensor multimodal_embeds;
     // Pipeline stores image embeddings under "image|embedding" key
@@ -604,7 +604,7 @@ class Mistral3ForConditionalGenerationImpl : public torch::nn::Module {
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) {
+                      const ModelParamsView& input_params) {
     auto model_output =
         language_model_->forward(tokens, positions, kv_caches, input_params);
     // Mistral3 is used for Flux2 text_encoder:

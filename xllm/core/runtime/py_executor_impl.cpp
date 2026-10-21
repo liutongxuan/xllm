@@ -57,7 +57,7 @@ namespace py = pybind11;
 namespace xllm {
 namespace {
 
-py::object mtp_topk_indices(const ModelInputParams& params) {
+py::object mtp_topk_indices(const ModelParamsView& params) {
   if (params.mtp_topk_state != nullptr) {
     const auto tensor = params.mtp_topk_state->as_tensor();
     CHECK(tensor.has_value())
@@ -234,7 +234,7 @@ py::object PyExecutorImpl::mtp_sparse_attention_metadata_view(
       layer::AttentionMetadataBuilder::build_mtp_sparse_decode(
           block_table, kv_seq_lens, slots, options_.block_size()));
   LlmModelParams storage;
-  ModelInputParams params(storage);
+  ModelParamsView params(storage);
   const int32_t rows = static_cast<int32_t>(kv_seq_lens.numel());
   params.parallel.dp_global_token_nums = {rows};
   params.parallel.dp_global_sequence_nums = {rows};
@@ -388,7 +388,7 @@ void PyExecutorImpl::bind_kv_caches(std::vector<KVCache>& kv_caches) {
 }
 
 void PyExecutorImpl::prepare_attention_metadata(std::vector<KVCache>& kv_caches,
-                                                ModelInputParams& params) {
+                                                ModelParamsView& params) {
   CHECK(supports_prepared_metadata_);
   CHECK(params.attn_metadata != nullptr);
   py::gil_scoped_acquire gil;
@@ -403,7 +403,7 @@ void PyExecutorImpl::prepare_attention_metadata(std::vector<KVCache>& kv_caches,
 void PyExecutorImpl::warmup_prepared_graph(const torch::Tensor& tokens,
                                            const torch::Tensor& positions,
                                            std::vector<KVCache>& kv_caches,
-                                           const ModelInputParams& params) {
+                                           const ModelParamsView& params) {
   CHECK(params.python_attention_metadata != nullptr);
   py::gil_scoped_acquire gil;
   bind_kv_caches(kv_caches);
@@ -422,7 +422,7 @@ void PyExecutorImpl::warmup_prepared_graph(const torch::Tensor& tokens,
 ModelOutput PyExecutorImpl::run(const torch::Tensor& tokens,
                                 const torch::Tensor& positions,
                                 std::vector<KVCache>& kv_caches,
-                                const ModelInputParams& params) {
+                                const ModelParamsView& params) {
   torch::NoGradGuard no_grad;
   PyCausalLM::set_active_instance(py_causal_lm_);
 

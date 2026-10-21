@@ -145,7 +145,7 @@ class DeepseekV4ModelImpl final
   ModelOutput forward(torch::Tensor tokens,
                       torch::Tensor positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) override {
+                      const ModelParamsView& input_params) override {
     torch::NoGradGuard no_grad;
     const bool is_empty_dp_rank = input_params.meta.q_max_seq_len == 0 ||
                                   input_params.meta.num_sequences == 0 ||
@@ -172,7 +172,7 @@ class DeepseekV4ModelImpl final
 
     const bool mlu_graph_forward = deepseek_v4_uses_mlu_graph(input_params);
 
-    ModelInputParams modified_input_params = input_params.clone().view();
+    ModelParamsView modified_input_params = input_params.clone().view();
     if (is_empty_dp_rank && !mlu_graph_forward) {
       layer::fill_dsv4_empty_dp_params(
           modified_input_params, group_infos_, window_size_);
@@ -289,7 +289,7 @@ DeepseekV4Base::create_graph_forward_metadata_state() {
 void DeepseekV4Base::prepare_graph_forward_metadata(
     ModelGraphMetadataState* state,
     const torch::Tensor& positions,
-    ModelInputParams& input_params) {
+    ModelParamsView& input_params) {
   CHECK(state != nullptr)
       << "DeepSeek V4 MLU graph metadata state must be initialized";
   auto* dsv4_state = dynamic_cast<DeepseekV4GraphMetadataState*>(state);
@@ -345,7 +345,7 @@ class DeepseekV4ForCausalLMImpl final
 
   void prepare_graph_forward_metadata(ModelGraphMetadataState* state,
                                       const torch::Tensor& positions,
-                                      ModelInputParams& input_params) {
+                                      ModelParamsView& input_params) {
     this->model_->prepare_graph_forward_metadata(
         state, positions, input_params);
   }

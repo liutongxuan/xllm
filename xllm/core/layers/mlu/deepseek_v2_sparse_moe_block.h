@@ -21,7 +21,7 @@ limitations under the License.
 
 #include "deepseek_v2_attention.h"
 #include "framework/model/model_args.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "framework/parallel_state/parallel_args.h"
 #include "framework/parallel_state/parallel_state.h"
 #include "framework/quantization/quant_args.h"
@@ -76,17 +76,17 @@ class DeepseekV2SparseMoEBlockImpl : public torch::nn::Module {
   void load_state_dict(const StateDict& state_dict);
   void verify_loaded_weights() const;
 
-  ExecCfg plan_exec(const ModelInputParams& input_params) const;
+  ExecCfg plan_exec(const ModelParamsView& input_params) const;
   PrepOut prep_in(torch::Tensor x,
                   const torch::Tensor& residual,
-                  const ModelInputParams& input_params,
+                  const ModelParamsView& input_params,
                   const ExecCfg& exec,
                   DeepseekV2AttentionImpl::PostAttnLayout attn_layout) const;
   torch::Tensor gather_in(const PrepOut& prep,
-                          const ModelInputParams& input_params) const;
+                          const ModelParamsView& input_params) const;
   torch::Tensor merge_out(torch::Tensor x,
                           const PrepOut& prep,
-                          const ModelInputParams& input_params) const;
+                          const ModelParamsView& input_params) const;
   bool has_shared() const;
 
   ForwardResult forward(torch::Tensor x,

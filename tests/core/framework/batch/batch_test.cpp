@@ -2164,21 +2164,22 @@ TEST(BatchTest, ForwardInputPackedRoundTripPreservesTransportFields) {
 
 TEST(BatchTest, NativeDiTShmRoundTripOwnsTensorSourcesAcrossSegmentOverwrite) {
   DiTForwardInput input;
-  input.batch_size = 2;
-  input.prompts = {"first prompt", "second prompt"};
-  input.prompts_2 = {"first detail", "second detail"};
-  input.negative_prompts = {"first exclusion", "second exclusion"};
-  input.negative_prompts_2 = {"first negative detail",
-                              "second negative detail"};
-  input.audio_prompt_text = "spoken prompt transcript";
-  input.generation_params.width = 640;
-  input.generation_params.height = 480;
-  input.generation_params.seed = 1234567;
-  input.generation_params.seed_is_set = true;
-  input.generation_params.audio_sampling_rate = 48000;
-  input.tensor_sources.add("latent", torch::tensor({1.5f, 2.5f}));
-  input.tensor_sources.add("prompt_embed", torch::tensor({3.5f, 4.5f}));
-  input.media_sources.add(
+  input.model_params.batch_size = 2;
+  input.model_params.prompts = {"first prompt", "second prompt"};
+  input.model_params.prompts_2 = {"first detail", "second detail"};
+  input.model_params.negative_prompts = {"first exclusion", "second exclusion"};
+  input.model_params.negative_prompts_2 = {"first negative detail",
+                                           "second negative detail"};
+  input.model_params.audio_prompt_text = "spoken prompt transcript";
+  input.model_params.generation_params.width = 640;
+  input.model_params.generation_params.height = 480;
+  input.model_params.generation_params.seed = 1234567;
+  input.model_params.generation_params.seed_is_set = true;
+  input.model_params.generation_params.audio_sampling_rate = 48000;
+  input.model_params.tensor_sources.add("latent", torch::tensor({1.5f, 2.5f}));
+  input.model_params.tensor_sources.add("prompt_embed",
+                                        torch::tensor({3.5f, 4.5f}));
+  input.model_params.media_sources.add(
       "prompt_audio", "audio", torch::tensor({0.25f, 0.5f}));
 
   DiTForwardInput round_trip;
@@ -2202,36 +2203,46 @@ TEST(BatchTest, NativeDiTShmRoundTripOwnsTensorSourcesAcrossSegmentOverwrite) {
     reader_manager.input_read(round_trip);
 
     DiTForwardInput overwrite_input = input;
-    overwrite_input.batch_size = 9;
-    for (NamedTensor& source : overwrite_input.tensor_sources.entries()) {
+    overwrite_input.model_params.batch_size = 9;
+    for (NamedTensor& source :
+         overwrite_input.model_params.tensor_sources.entries()) {
       source.tensor = torch::zeros_like(source.tensor);
     }
-    for (MediaNamedTensor& source : overwrite_input.media_sources.entries()) {
+    for (MediaNamedTensor& source :
+         overwrite_input.model_params.media_sources.entries()) {
       source.tensor = torch::zeros_like(source.tensor);
     }
     ASSERT_TRUE(writer_manager.input_write(overwrite_input));
 
     DiTForwardInput overwritten_round_trip;
     reader_manager.input_read(overwritten_round_trip);
-    EXPECT_EQ(overwritten_round_trip.batch_size, 9);
-    ASSERT_EQ(overwritten_round_trip.media_sources.size(), 1u);
-    EXPECT_TRUE(
-        torch::equal(overwritten_round_trip.media_sources.entries()[0].tensor,
-                     torch::zeros({2}, torch::dtype(torch::kFloat32))));
+    EXPECT_EQ(overwritten_round_trip.model_params.batch_size, 9);
+    ASSERT_EQ(overwritten_round_trip.model_params.media_sources.size(), 1u);
+    EXPECT_TRUE(torch::equal(
+        overwritten_round_trip.model_params.media_sources.entries()[0].tensor,
+        torch::zeros({2}, torch::dtype(torch::kFloat32))));
   }
 
-  EXPECT_EQ(round_trip.batch_size, input.batch_size);
-  EXPECT_EQ(round_trip.prompts, input.prompts);
-  EXPECT_EQ(round_trip.prompts_2, input.prompts_2);
-  EXPECT_EQ(round_trip.negative_prompts, input.negative_prompts);
-  EXPECT_EQ(round_trip.negative_prompts_2, input.negative_prompts_2);
-  EXPECT_EQ(round_trip.audio_prompt_text, input.audio_prompt_text);
-  EXPECT_EQ(round_trip.generation_params, input.generation_params);
+  EXPECT_EQ(round_trip.model_params.batch_size, input.model_params.batch_size);
+  EXPECT_EQ(round_trip.model_params.prompts, input.model_params.prompts);
+  EXPECT_EQ(round_trip.model_params.prompts_2, input.model_params.prompts_2);
+  EXPECT_EQ(round_trip.model_params.negative_prompts,
+            input.model_params.negative_prompts);
+  EXPECT_EQ(round_trip.model_params.negative_prompts_2,
+            input.model_params.negative_prompts_2);
+  EXPECT_EQ(round_trip.model_params.audio_prompt_text,
+            input.model_params.audio_prompt_text);
+  EXPECT_EQ(round_trip.model_params.generation_params,
+            input.model_params.generation_params);
 
-  ASSERT_EQ(round_trip.media_sources.size(), input.media_sources.size());
-  for (size_t index = 0; index < input.media_sources.size(); ++index) {
-    const MediaNamedTensor& actual_source = round_trip.media_sources.at(index);
-    const MediaNamedTensor& expected_source = input.media_sources.at(index);
+  ASSERT_EQ(round_trip.model_params.media_sources.size(),
+            input.model_params.media_sources.size());
+  for (size_t index = 0; index < input.model_params.media_sources.size();
+       ++index) {
+    const MediaNamedTensor& actual_source =
+        round_trip.model_params.media_sources.at(index);
+    const MediaNamedTensor& expected_source =
+        input.model_params.media_sources.at(index);
     EXPECT_EQ(actual_source.name, expected_source.name);
     EXPECT_EQ(actual_source.modality, expected_source.modality);
     EXPECT_EQ(actual_source.tensor.scalar_type(), torch::kFloat32);
@@ -2239,19 +2250,22 @@ TEST(BatchTest, NativeDiTShmRoundTripOwnsTensorSourcesAcrossSegmentOverwrite) {
     EXPECT_TRUE(torch::equal(actual_source.tensor, expected_source.tensor));
   }
 
-  ASSERT_EQ(round_trip.tensor_sources.size(), input.tensor_sources.size());
-  for (size_t index = 0; index < input.tensor_sources.size(); ++index) {
+  ASSERT_EQ(round_trip.model_params.tensor_sources.size(),
+            input.model_params.tensor_sources.size());
+  for (size_t index = 0; index < input.model_params.tensor_sources.size();
+       ++index) {
     const NamedTensor& actual_source =
-        round_trip.tensor_sources.entries()[index];
-    const NamedTensor& expected_source = input.tensor_sources.entries()[index];
+        round_trip.model_params.tensor_sources.entries()[index];
+    const NamedTensor& expected_source =
+        input.model_params.tensor_sources.entries()[index];
     EXPECT_EQ(actual_source.name, expected_source.name);
     EXPECT_EQ(actual_source.tensor.scalar_type(), torch::kFloat32);
     EXPECT_TRUE(actual_source.tensor.device().is_cpu());
     EXPECT_TRUE(torch::equal(actual_source.tensor, expected_source.tensor));
   }
 
-  const DiTForwardInput prepared_input =
-      round_trip.to(torch::Device(torch::kCPU));
+  const DiTModelParams prepared_input =
+      round_trip.model_params.to(torch::Device(torch::kCPU));
   EXPECT_EQ(prepared_input.tensor_sources.entries()[0].tensor.scalar_type(),
             torch::kBFloat16);
   EXPECT_EQ(prepared_input.media_sources.entries()[0].tensor.scalar_type(),

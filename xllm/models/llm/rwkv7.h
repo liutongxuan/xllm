@@ -37,8 +37,8 @@ limitations under the License.
 #include <vector>
 
 #include "core/framework/model/model_args.h"
-#include "core/framework/model/model_input_params.h"
 #include "core/framework/model/model_output.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/framework/model_context/model_context.h"
 #include "core/framework/model_loader/model_loader.h"
 #include "core/kv_cache/storage/kv_cache.h"
@@ -92,7 +92,7 @@ class RWKV7ModelImpl : public torch::nn::Module {
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& /*positions*/,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) {
+                      const ModelParamsView& input_params) {
     torch::Tensor h = emb_(tokens);  // [total_tokens, hidden_size]
 
     // v_first is a cross-layer state initialised by block 0 and passed
@@ -173,7 +173,7 @@ class RWKV7ForCausalLMImpl : public torch::nn::Module {
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) {
+                      const ModelParamsView& input_params) {
     return model_(tokens, positions, kv_caches, input_params);
   }
 

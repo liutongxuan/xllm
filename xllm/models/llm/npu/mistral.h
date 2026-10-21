@@ -44,7 +44,7 @@ class MistralDecoderLayerImpl : public torch::nn::Module {
                       torch::Tensor& sin_pos,
                       torch::Tensor& attn_mask,
                       KVCache& kv_cache,
-                      ModelInputParams& input_params,
+                      ModelParamsView& input_params,
                       int node_id) {
     auto hidden_states = decoder_layer_(
         x, cos_pos, sin_pos, attn_mask, kv_cache, input_params, node_id);
@@ -188,7 +188,7 @@ class MistralModelImpl : public torch::nn::Module {
   ModelOutput forward(torch::Tensor tokens,
                       torch::Tensor positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) {
+                      const ModelParamsView& input_params) {
     // Reuse pre-computed input embedding from VlmExecutorImpl::run() if
     // available, to avoid calling npu_embed_tokens_ twice per step. The ATB
     // word_embedding all_gather accumulates async HCCL resources and fails
@@ -202,8 +202,8 @@ class MistralModelImpl : public torch::nn::Module {
     }
     auto cos_pos = cos_pos_.index_select(0, positions);
     auto sin_pos = sin_pos_.index_select(0, positions);
-    ModelInputParams& input_params_new =
-        const_cast<ModelInputParams&>(input_params);
+    ModelParamsView& input_params_new =
+        const_cast<ModelParamsView&>(input_params);
     torch::Tensor max_of_seq =
         torch::max(input_params.attention.device.kv_seq_lens);
     max_seq_len_ =
@@ -450,7 +450,7 @@ class MistralForCausalLMImpl : public torch::nn::Module {
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) {
+                      const ModelParamsView& input_params) {
     auto hidden_states = model_(tokens, positions, kv_caches, input_params);
     return ModelOutput(hidden_states);
   }

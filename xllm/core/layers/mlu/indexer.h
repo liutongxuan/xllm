@@ -23,7 +23,7 @@ limitations under the License.
 
 #include "attention.h"
 #include "core/kv_cache/layout/kv_shard_layout.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "framework/parallel_state/parallel_args.h"
 #include "framework/parallel_state/process_group.h"
 #include "framework/quantization/quant_args.h"

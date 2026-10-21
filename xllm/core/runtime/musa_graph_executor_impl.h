@@ -45,7 +45,7 @@ using c10::musa::MUSAStream;
 
 #include "core/common/macros.h"
 #include "core/framework/model/causal_lm.h"
-#include "core/framework/model/model_input_params.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/framework/model/rec_model.h"
 #include "core/kernels/musa/llm_decode_metadata_update.h"
 #include "core/kv_cache/storage/kv_cache.h"
@@ -75,13 +75,13 @@ class MusaGraphPersistentParam final {
   // return_capture_params is true. padded_num_tokens must then be > 0.
   // Otherwise, only update persistent buffers and return std::nullopt.
 
-  std::optional<ModelInputParams> update(const torch::Tensor& tokens,
-                                         const torch::Tensor& k_cache,
-                                         const torch::Tensor& v_cache,
-                                         const torch::Tensor& positions,
-                                         const ModelInputParams& params,
-                                         uint32_t padded_num_tokens = 0,
-                                         bool return_capture_params = false);
+  std::optional<ModelParamsView> update(const torch::Tensor& tokens,
+                                        const torch::Tensor& k_cache,
+                                        const torch::Tensor& v_cache,
+                                        const torch::Tensor& positions,
+                                        const ModelParamsView& params,
+                                        uint32_t padded_num_tokens = 0,
+                                        bool return_capture_params = false);
 
   std::optional<RecModelParams> update(const torch::Tensor& tokens,
                                        const torch::Tensor& k_cache,
@@ -296,7 +296,7 @@ class MusaGraph final {
                const runtime::Options& options,
                const torch::Tensor& tokens,
                const torch::Tensor& positions,
-               const ModelInputParams& params,
+               const ModelParamsView& params,
                std::vector<KVCache>& kv_cache,
                uint32_t bucket_num_tokens,
                const c10::musa::MempoolId_t& pool,
@@ -318,7 +318,7 @@ class MusaGraph final {
   ModelOutput replay(const torch::Tensor& tokens,
                      const torch::Tensor& positions,
                      std::vector<KVCache>& kv_cache,
-                     const ModelInputParams& params);
+                     const ModelParamsView& params);
 
   ModelOutput replay(const torch::Tensor& tokens,
                      const torch::Tensor& positions,
@@ -461,7 +461,7 @@ class MusaGraphExecutorImpl final : public ExecutorImpl,
   ModelOutput run(const torch::Tensor& tokens,
                   const torch::Tensor& positions,
                   std::vector<KVCache>& kv_caches,
-                  const ModelInputParams& params) override;
+                  const ModelParamsView& params) override;
   ModelOutput run(const torch::Tensor& tokens,
                   const torch::Tensor& positions,
                   std::vector<KVCache>& kv_caches,

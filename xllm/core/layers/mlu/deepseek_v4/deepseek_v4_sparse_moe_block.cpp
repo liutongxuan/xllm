@@ -148,7 +148,7 @@ FusedMoEImpl::RouteInfo DeepseekV4SparseMoEBlockImpl::make_route(
 
 std::vector<int32_t> DeepseekV4SparseMoEBlockImpl::get_row_dp_tokens(
     int64_t hidden_rows,
-    const ModelInputParams& input_params) const {
+    const ModelParamsView& input_params) const {
   const std::vector<int32_t>& token_nums =
       input_params.parallel.dp_global_token_nums;
   CHECK(!token_nums.empty()) << "dp_global_token_nums is empty";
@@ -181,7 +181,7 @@ torch::Tensor DeepseekV4SparseMoEBlockImpl::forward_selected(
     const torch::Tensor& hidden_states,
     const torch::Tensor& topk_weights,
     const torch::Tensor& topk_ids,
-    const ModelInputParams& input_params) {
+    const ModelParamsView& input_params) {
   CHECK(moe_) << "MoE weights must be loaded before forward";
   std::vector<int64_t> hidden_shape = hidden_states.sizes().vec();
   torch::Tensor hidden_rows =

@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-// Build xlite XModelAttnMeta from xllm ModelInputParams.
+// Build xlite XModelAttnMeta from xllm ModelParamsView.
 
 #pragma once
 
@@ -23,14 +23,14 @@ limitations under the License.
 #include <cstdint>
 #include <vector>
 
-#include "core/framework/model/model_input_params.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/layers/xlite/xlite_init_utils.h"
 
 namespace xllm::xlite {
 
 class XliteAttnMetaBuilder {
  public:
-  static void Build(const ModelInputParams& params,
+  static void Build(const ModelParamsView& params,
                     const torch::Tensor& positions,
                     uint32_t block_size,
                     XModelAttnMeta& m,

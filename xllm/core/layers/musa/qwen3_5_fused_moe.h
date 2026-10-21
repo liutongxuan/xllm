@@ -22,7 +22,7 @@ limitations under the License.
 #include <vector>
 
 #include "framework/model/model_args.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "framework/parallel_state/parallel_args.h"
 #include "framework/quantization/quant_args.h"
 #include "framework/state_dict/state_dict.h"
@@ -47,7 +47,7 @@ class Qwen3_5FusedMoEImpl final : public torch::nn::Module {
                       const torch::TensorOptions& options);
 
   torch::Tensor forward(const torch::Tensor& hidden_states,
-                        const ModelInputParams& input_params);
+                        const ModelParamsView& input_params);
 
   void load_state_dict(const StateDict& state_dict);
   void verify_loaded_weights() const;

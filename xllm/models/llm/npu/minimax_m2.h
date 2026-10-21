@@ -27,8 +27,8 @@ limitations under the License.
 #include <vector>
 
 #include "core/framework/config/scheduler_config.h"
-#include "core/framework/model/model_input_params.h"
 #include "core/framework/model/model_output.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/framework/model_context/model_context.h"
 #include "core/framework/model_loader/hf_model_loader.h"
 #include "core/framework/model_loader/model_loader.h"
@@ -64,7 +64,7 @@ class MiniMaxM2MoeDecoderLayerImpl : public torch::nn::Module {
                         torch::Tensor& positions,
                         const layer::AttentionMetadata& attn_metadata,
                         KVCache& kv_cache,
-                        const ModelInputParams& input_params) {
+                        const ModelParamsView& input_params) {
     return layer_->forward(
         x, residual, positions, attn_metadata, kv_cache, input_params);
   }
@@ -225,8 +225,8 @@ class MiniMaxM2ModelImpl : public torch::nn::Module {
   ModelOutput forward(torch::Tensor tokens,
                       torch::Tensor positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) {
-    ModelInputParams modified_input_params = input_params.clone().view();
+                      const ModelParamsView& input_params) {
+    ModelParamsView modified_input_params = input_params.clone().view();
     torch::Tensor h;
     if (input_params.embedding.input_embedding.defined()) {
       h = input_params.embedding.input_embedding;
@@ -284,9 +284,8 @@ class MiniMaxM2ModelImpl : public torch::nn::Module {
   }
 
  private:
-  layer::AttentionMetadata get_attention_metadata(
-      const ModelInputParams& params,
-      const torch::Tensor& h) {
+  layer::AttentionMetadata get_attention_metadata(const ModelParamsView& params,
+                                                  const torch::Tensor& h) {
     if (params.meta.q_max_seq_len == 0) {
       return layer::AttentionMetadataBuilder::build(params, enable_mla_);
     }
@@ -341,7 +340,7 @@ class MiniMaxM2ForCausalLMImpl : public torch::nn::Module {
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) {
+                      const ModelParamsView& input_params) {
     return model_(tokens, positions, kv_caches, input_params);
   }
 

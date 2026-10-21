@@ -167,7 +167,7 @@ class QWen3ModelImpl : public LlmModelImplBase<QWen3DecoderLayer> {
   ModelOutput forward(torch::Tensor tokens,
                       torch::Tensor positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) override {
+                      const ModelParamsView& input_params) override {
     auto local_params = input_params;
     return forward_impl(tokens, positions, kv_caches, local_params);
   }
@@ -301,7 +301,7 @@ class QWen3ModelImpl : public LlmModelImplBase<QWen3DecoderLayer> {
                      event_flag);
 
       rolling_guard.after_layer(layer_index);
-      if constexpr (std::is_same_v<InputParams, ModelInputParams>) {
+      if constexpr (std::is_same_v<InputParams, ModelParamsView>) {
         if (input_params.has_multimodal()) {
           const auto& deep_stacks = input_params.multimodal().deep_stacks;
           if (i < deep_stacks.size()) {

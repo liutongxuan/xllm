@@ -165,7 +165,7 @@ class HybridConv1dMockLM final : public CausalLM {
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& params) override {
+                      const ModelParamsView& params) override {
     const int64_t num_tokens = tokens.size(0);
     auto token_emb = torch::embedding(token_embedding_table_, tokens);
     auto pos_emb = torch::embedding(pos_embedding_table_, positions);
@@ -591,7 +591,7 @@ class AclGraphTaskUpdateTest : public ::testing::Test {
     graph_exec->run({capture_fi.token_ids},
                     {capture_fi.positions},
                     kv_graph,
-                    {ModelInputParams(capture_fi.input_params)});
+                    {ModelParamsView(capture_fi.input_params)});
     ASSERT_TRUE(model_->saw_causal_conv_and_fia_graph_tasks());
     EXPECT_EQ(model_->captured_fia_batch_size(), expected_bucket);
 
@@ -606,16 +606,14 @@ class AclGraphTaskUpdateTest : public ::testing::Test {
     populate_query_start_loc(replay_fi.input_params);
 
     auto kv_eager = clone_kv_caches(kv_graph);
-    auto graph_out =
-        graph_exec->run({replay_fi.token_ids},
-                        {replay_fi.positions},
-                        kv_graph,
-                        {ModelInputParams(replay_fi.input_params)});
-    auto eager_out =
-        model_->forward({replay_fi.token_ids},
-                        {replay_fi.positions},
-                        kv_eager,
-                        {ModelInputParams(replay_fi.input_params)});
+    auto graph_out = graph_exec->run({replay_fi.token_ids},
+                                     {replay_fi.positions},
+                                     kv_graph,
+                                     {ModelParamsView(replay_fi.input_params)});
+    auto eager_out = model_->forward({replay_fi.token_ids},
+                                     {replay_fi.positions},
+                                     kv_eager,
+                                     {ModelParamsView(replay_fi.input_params)});
 
     const int64_t real_tokens = static_cast<int64_t>(replay_batch_size);
     ASSERT_EQ(graph_out.hidden_states.size(0), real_tokens);
@@ -716,7 +714,7 @@ class AclGraphTaskUpdateTest : public ::testing::Test {
       }
     }
     layer::ExpandedDecodeMetadataBuilder::populate_expanded_layout(
-        ModelInputParams(fi.input_params),
+        ModelParamsView(fi.input_params),
         expanded_kv_seq_lens,
         expanded_bt,
         expanded_kv_vec,
@@ -789,7 +787,7 @@ TEST_F(AclGraphTaskUpdateTest, Qwen35DpPrepareSkipsUnsupportedDecodeSteps) {
   (void)graph_exec->run(input.token_ids,
                         input.positions,
                         kv_graph,
-                        ModelInputParams(input.input_params));
+                        ModelParamsView(input.input_params));
 
   auto second_input = input.clone();
   second_input.token_ids.add_(1);
@@ -797,7 +795,7 @@ TEST_F(AclGraphTaskUpdateTest, Qwen35DpPrepareSkipsUnsupportedDecodeSteps) {
   (void)graph_exec->run(second_input.token_ids,
                         second_input.positions,
                         kv_graph,
-                        ModelInputParams(second_input.input_params));
+                        ModelParamsView(second_input.input_params));
   ASSERT_EQ(graph_exec->get_graph_count(), 2);
   ASSERT_FALSE(graph_exec->graph_slot_prepared_for_test(/*slot_idx=*/0));
 
@@ -812,16 +810,15 @@ TEST_F(AclGraphTaskUpdateTest, Qwen35DpPrepareSkipsUnsupportedDecodeSteps) {
         prepared_input.token_ids,
         prepared_input.positions,
         kv_graph,
-        ModelInputParams(prepared_input.input_params));
+        ModelParamsView(prepared_input.input_params));
     EXPECT_FALSE(graph_exec->graph_slot_prepared_for_test(/*slot_idx=*/0));
   }
 
   set_dp_layout(prepared_input.input_params, balanced_token_counts);
-  graph_exec->prepare_graph_input(
-      prepared_input.token_ids,
-      prepared_input.positions,
-      kv_graph,
-      ModelInputParams(prepared_input.input_params));
+  graph_exec->prepare_graph_input(prepared_input.token_ids,
+                                  prepared_input.positions,
+                                  kv_graph,
+                                  ModelParamsView(prepared_input.input_params));
   EXPECT_TRUE(graph_exec->graph_slot_prepared_for_test(/*slot_idx=*/0));
 }
 
@@ -850,16 +847,16 @@ TEST_F(AclGraphTaskUpdateTest, CaptureReplayVsEagerDecodeBranch) {
         graph_exec->prepare_graph_input(input.token_ids,
                                         input.positions,
                                         kv_graph,
-                                        ModelInputParams(input.input_params));
+                                        ModelParamsView(input.input_params));
       }
       auto eager_out = model_->forward(input.token_ids,
                                        input.positions,
                                        kv_eager,
-                                       ModelInputParams(input.input_params));
+                                       ModelParamsView(input.input_params));
       auto graph_out = graph_exec->run(input.token_ids,
                                        input.positions,
                                        kv_graph,
-                                       ModelInputParams(input.input_params));
+                                       ModelParamsView(input.input_params));
       EXPECT_TRUE(torch::allclose(eager_out.hidden_states.to(torch::kFloat32),
                                   graph_out.hidden_states.to(torch::kFloat32),
                                   /*rtol=*/1e-2,
@@ -901,7 +898,7 @@ TEST_F(AclGraphTaskUpdateTest, DcpReplayUpdatesZeroShardAcrossBlockBoundary) {
   graph_exec->run(capture_input.token_ids,
                   capture_input.positions,
                   kv_graph,
-                  ModelInputParams(capture_input.input_params));
+                  ModelParamsView(capture_input.input_params));
 
   reset_sequences();
   auto replay_input = make_input(/*prompt_size=*/128, /*token_seed=*/300);
@@ -910,12 +907,12 @@ TEST_F(AclGraphTaskUpdateTest, DcpReplayUpdatesZeroShardAcrossBlockBoundary) {
       graph_exec->run(replay_input.token_ids,
                       replay_input.positions,
                       kv_graph,
-                      ModelInputParams(replay_input.input_params));
+                      ModelParamsView(replay_input.input_params));
   const ModelOutput eager_output =
       model_->forward(replay_input.token_ids,
                       replay_input.positions,
                       kv_eager,
-                      ModelInputParams(replay_input.input_params));
+                      ModelParamsView(replay_input.input_params));
 
   EXPECT_TRUE(torch::allclose(eager_output.hidden_states.to(torch::kFloat32),
                               graph_output.hidden_states.to(torch::kFloat32),
@@ -944,7 +941,7 @@ TEST_F(AclGraphTaskUpdateTest,
       {forward_input.token_ids},
       {forward_input.positions},
       kv_eager,
-      {ModelInputParams(forward_input.input_params)});
+      {ModelParamsView(forward_input.input_params)});
 
   auto kv_graph = create_hybrid_kv_caches();
   auto graph_exec = std::make_unique<npu::AclGraphExecutorImpl>(
@@ -953,7 +950,7 @@ TEST_F(AclGraphTaskUpdateTest,
       graph_exec->run({forward_input.token_ids},
                       {forward_input.positions},
                       kv_graph,
-                      {ModelInputParams(forward_input.input_params)});
+                      {ModelParamsView(forward_input.input_params)});
 
   EXPECT_EQ(shared_workspace_model->fia_graph_task_count(), 2);
   EXPECT_TRUE(shared_workspace_model->all_fia_graph_tasks_share_workspace());
@@ -989,7 +986,7 @@ TEST_F(AclGraphTaskUpdateTest,
       non_qwen_model->forward({forward_input.token_ids},
                               {forward_input.positions},
                               kv_eager,
-                              {ModelInputParams(forward_input.input_params)});
+                              {ModelParamsView(forward_input.input_params)});
 
   auto kv_graph = create_hybrid_kv_caches();
   auto graph_exec = std::make_unique<npu::AclGraphExecutorImpl>(
@@ -998,7 +995,7 @@ TEST_F(AclGraphTaskUpdateTest,
       graph_exec->run({forward_input.token_ids},
                       {forward_input.positions},
                       kv_graph,
-                      {ModelInputParams(forward_input.input_params)});
+                      {ModelParamsView(forward_input.input_params)});
 
   EXPECT_TRUE(non_qwen_model->saw_causal_conv_graph_task());
   EXPECT_FALSE(non_qwen_model->saw_fia_graph_task());
@@ -1035,16 +1032,15 @@ TEST_F(AclGraphTaskUpdateTest,
       pa_model->forward(forward_input.token_ids,
                         forward_input.positions,
                         kv_eager,
-                        ModelInputParams(forward_input.input_params));
+                        ModelParamsView(forward_input.input_params));
 
   auto kv_graph = create_hybrid_kv_caches();
   auto graph_exec = std::make_unique<npu::AclGraphExecutorImpl>(
       pa_model.get(), model_args_, *device_, options_);
-  auto graph_out =
-      graph_exec->run(forward_input.token_ids,
-                      forward_input.positions,
-                      kv_graph,
-                      ModelInputParams(forward_input.input_params));
+  auto graph_out = graph_exec->run(forward_input.token_ids,
+                                   forward_input.positions,
+                                   kv_graph,
+                                   ModelParamsView(forward_input.input_params));
 
   EXPECT_TRUE(pa_model->saw_causal_conv_graph_task());
   EXPECT_FALSE(pa_model->saw_fia_graph_task());
@@ -1070,13 +1066,13 @@ TEST_F(AclGraphTaskUpdateTest,
   auto out1 = graph_exec->run({fi1.token_ids},
                               {fi1.positions},
                               kv_graph,
-                              {ModelInputParams(fi1.input_params)});
+                              {ModelParamsView(fi1.input_params)});
 
   auto kv_eager1 = create_hybrid_kv_caches();
   auto eager1 = model_->forward({fi1.token_ids},
                                 {fi1.positions},
                                 kv_eager1,
-                                {ModelInputParams(fi1.input_params)});
+                                {ModelParamsView(fi1.input_params)});
   EXPECT_TRUE(torch::allclose(out1.hidden_states.to(torch::kFloat32),
                               eager1.hidden_states.to(torch::kFloat32),
                               /*rtol=*/1e-2,
@@ -1101,7 +1097,7 @@ TEST_F(AclGraphTaskUpdateTest,
   auto out2 = graph_exec->run({fi2.token_ids},
                               {fi2.positions},
                               kv_graph,
-                              {ModelInputParams(fi2.input_params)});
+                              {ModelParamsView(fi2.input_params)});
 
   EXPECT_FALSE(torch::allclose(out1_saved.to(torch::kFloat32),
                                out2.hidden_states.to(torch::kFloat32),
@@ -1144,13 +1140,13 @@ TEST_F(AclGraphTaskUpdateTest, CaptureReplayVsEagerSpecVerifyBranch) {
 
   auto kv_eager = create_hybrid_kv_caches();
   auto eager_out = model_->forward(
-      fi.token_ids, fi.positions, kv_eager, ModelInputParams(fi.input_params));
+      fi.token_ids, fi.positions, kv_eager, ModelParamsView(fi.input_params));
 
   auto kv_graph = create_hybrid_kv_caches();
   auto graph_exec = std::make_unique<npu::AclGraphExecutorImpl>(
       model_.get(), model_args_, *device_, options_);
   auto graph_out = graph_exec->run(
-      fi.token_ids, fi.positions, kv_graph, ModelInputParams(fi.input_params));
+      fi.token_ids, fi.positions, kv_graph, ModelParamsView(fi.input_params));
 
   EXPECT_EQ(eager_out.hidden_states.sizes(), graph_out.hidden_states.sizes());
   EXPECT_TRUE(torch::allclose(eager_out.hidden_states.to(torch::kFloat32),
@@ -1186,7 +1182,7 @@ TEST_F(AclGraphTaskUpdateTest, StaticMtpPrepareReplaysFiaSpecVerifyWidths) {
     graph_exec->run(forward_input.token_ids,
                     forward_input.positions,
                     kv_graph,
-                    ModelInputParams(forward_input.input_params));
+                    ModelParamsView(forward_input.input_params));
     ASSERT_TRUE(fia_model->saw_causal_conv_and_fia_graph_tasks());
 
     auto kv_eager = clone_kv_caches(kv_graph);
@@ -1227,12 +1223,12 @@ TEST_F(AclGraphTaskUpdateTest, StaticMtpPrepareReplaysFiaSpecVerifyWidths) {
         graph_exec->run(forward_input.token_ids,
                         forward_input.positions,
                         kv_graph,
-                        ModelInputParams(forward_input.input_params));
+                        ModelParamsView(forward_input.input_params));
     auto eager_out =
         fia_model->forward(forward_input.token_ids,
                            forward_input.positions,
                            kv_eager,
-                           ModelInputParams(forward_input.input_params));
+                           ModelParamsView(forward_input.input_params));
 
     EXPECT_EQ(eager_out.hidden_states.sizes(), graph_out.hidden_states.sizes());
     EXPECT_TRUE(torch::allclose(eager_out.hidden_states.to(torch::kFloat32),

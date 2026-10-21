@@ -418,7 +418,7 @@ torch::Tensor NpuGlm4MoeDecoderLiteImpl::forward(
     torch::Tensor& sin_pos,
     torch::Tensor& attn_mask,
     KVCache& kv_cache,
-    const ModelInputParams& input_params,
+    const ModelParamsView& input_params,
     aclrtEvent* event,
     std::atomic<bool>* event_flag,
     int node_id) {
@@ -459,7 +459,7 @@ void NpuGlm4MoeDecoderLiteImpl::build_node_variant_pack(
     torch::Tensor& sin_pos,
     torch::Tensor& attn_mask,
     KVCache& kv_cache,
-    const ModelInputParams& input_params,
+    const ModelParamsView& input_params,
     bool is_prefill) {
   internal_tensor_ = atb_speed::Utils::AtTensor2Tensor(x);
   auto& dp_ep_padding = input_params.parallel.dp_ep_padding_data;

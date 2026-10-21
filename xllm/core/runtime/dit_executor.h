@@ -15,17 +15,7 @@ limitations under the License.
 
 #pragma once
 
-#include <torch/types.h>
-
-#include <cstdint>
-#include <memory>
-
-#include "common/macros.h"
-#include "core/framework/model_loader/dit_model_loader.h"
-#include "forward_params.h"
-#include "framework/model/dit_model.h"
-#include "framework/model/model_input_params.h"
-#include "framework/request/dit_request_state.h"
+#include "core/framework/model/dit_model.h"
 
 namespace xllm {
 
@@ -35,7 +25,7 @@ class DiTExecutor {
 
   ~DiTExecutor() = default;
 
-  DiTForwardOutput forward(const DiTForwardInput& input);
+  DiTForwardOutput forward(const DiTModelParams& params);
 
  private:
   // not own

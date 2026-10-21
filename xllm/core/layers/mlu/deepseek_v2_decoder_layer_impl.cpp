@@ -190,7 +190,7 @@ DeepseekV2DecoderLayerImpl::MoeInputPrepResult
 DeepseekV2DecoderLayerImpl::prepare_moe_inputs(
     torch::Tensor x,
     const torch::Tensor& residual,
-    const ModelInputParams& input_params,
+    const ModelParamsView& input_params,
     DeepseekV2AttentionImpl::PostAttnLayout attn_layout) {
   MoeInputPrepResult result;
   if (!sparse_moe_) {
@@ -306,7 +306,7 @@ torch::Tensor DeepseekV2DecoderLayerImpl::forward(
     torch::Tensor& positions,
     const AttentionMetadata& attn_metadata,
     KVCache& kv_cache,
-    const ModelInputParams& input_params,
+    const ModelParamsView& input_params,
     const std::optional<torch::Tensor>& input_ids,
     DsaTopkRelay* topk_relay) {
   return forward_impl(x,
@@ -327,7 +327,7 @@ torch::Tensor DeepseekV2DecoderLayerImpl::forward_mtp(
     torch::Tensor& positions,
     const AttentionMetadata& attn_metadata,
     KVCache& kv_cache,
-    const ModelInputParams& input_params,
+    const ModelParamsView& input_params,
     const std::optional<torch::Tensor>& input_ids,
     const std::optional<DsaTopkState>& topk_input,
     std::optional<DsaTopkState>& topk_output) {
@@ -349,7 +349,7 @@ torch::Tensor DeepseekV2DecoderLayerImpl::forward_impl(
     torch::Tensor& positions,
     const AttentionMetadata& attn_metadata,
     KVCache& kv_cache,
-    const ModelInputParams& input_params,
+    const ModelParamsView& input_params,
     const std::optional<torch::Tensor>&,
     DsaTopkRelay* topk_relay,
     const std::optional<DsaTopkState>* mtp_topk_input,

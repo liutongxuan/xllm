@@ -26,7 +26,7 @@ limitations under the License.
 
 #include "core/kv_cache/storage/kv_cache.h"
 #include "framework/model/model_args.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "framework/model_context/model_context.h"
 #include "framework/quantization/quant_args.h"
 #include "framework/state_dict/state_dict.h"
@@ -144,10 +144,10 @@ KVCache make_kv_cache(const torch::Device& device) {
   return KVCache(LinearAttentionKVCacheTensors{conv_cache, ssm_cache});
 }
 
-ModelInputParams make_input_params(int32_t num_sequences,
-                                   const std::vector<int32_t>& q_lens,
-                                   const torch::Device& device) {
-  ModelInputParams params = ModelInputSnapshot(LlmModelParams()).view();
+ModelParamsView make_input_params(int32_t num_sequences,
+                                  const std::vector<int32_t>& q_lens,
+                                  const torch::Device& device) {
+  ModelParamsView params = ModelInputSnapshot(LlmModelParams()).view();
   params.meta.num_sequences = num_sequences;
 
   std::vector<int32_t> q_cu_seq_lens;

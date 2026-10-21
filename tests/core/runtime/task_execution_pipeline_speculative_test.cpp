@@ -109,7 +109,7 @@ class CountingModel final : public CausalLM {
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& /*kv_caches*/,
-                      const ModelInputParams& params) override {
+                      const ModelParamsView& params) override {
     forward_inputs.emplace_back(tokens.clone());
     forward_positions.emplace_back(positions.clone());
     forward_slots.emplace_back(params.attention.device.new_cache_slots.clone());
@@ -139,7 +139,7 @@ class CountingModel final : public CausalLM {
                                const torch::Tensor& positions,
                                const torch::Tensor& device_cache_slots,
                                std::vector<KVCache>& /*kv_caches*/,
-                               const ModelInputParams& params) override {
+                               const ModelParamsView& params) override {
     context_hidden.emplace_back(target_hidden.clone());
     context_positions.emplace_back(positions.clone());
     context_slots.emplace_back(device_cache_slots.clone());
@@ -201,12 +201,12 @@ class PreparedTestExecutor final : public ExecutorImpl {
   explicit PreparedTestExecutor(CausalLM* model) : model_(model) {}
   bool supports_prepared_attention_metadata() const override { return true; }
   void prepare_attention_metadata(std::vector<KVCache>& /*kv_caches*/,
-                                  ModelInputParams& /*params*/) override {}
+                                  ModelParamsView& /*params*/) override {}
   // The model double stays eager; validate final Slot views during warmup.
   void warmup_prepared_graph(const torch::Tensor& tokens,
                              const torch::Tensor& positions,
                              std::vector<KVCache>& /*kv_caches*/,
-                             const ModelInputParams& params) override {
+                             const ModelParamsView& params) override {
     EXPECT_GT(tokens.numel(), 0);
     EXPECT_EQ(tokens.numel(), positions.numel());
     EXPECT_EQ(tokens.numel(), params.attention.device.new_cache_slots.numel());
@@ -214,7 +214,7 @@ class PreparedTestExecutor final : public ExecutorImpl {
   ModelOutput run(const torch::Tensor& tokens,
                   const torch::Tensor& positions,
                   std::vector<KVCache>& kv_caches,
-                  const ModelInputParams& params) override {
+                  const ModelParamsView& params) override {
     return model_->forward(tokens, positions, kv_caches, params);
   }
 
@@ -720,7 +720,7 @@ TEST_F(SpeculativePipelineTest,
   std::weak_ptr<NPULayerSynchronizerImpl> synchronizer;
   target_->after_forward = [&model_finished]() { model_finished.set_value(); };
   TaskKVPush push = [&](const std::vector<TransferKVInfo>& infos,
-                        ModelInputParams& params) {
+                        ModelParamsView& params) {
     push_started.set_value();
     readable.wait();
     observed = infos;
@@ -792,7 +792,7 @@ TEST_P(MtpKvPushPipelineTest,
       [](folly::Promise<bool>& completion,
          std::weak_ptr<NPULayerSynchronizerImpl>& observed) -> TaskKVPush {
     return [&completion, &observed](const std::vector<TransferKVInfo>& infos,
-                                    ModelInputParams& params) {
+                                    ModelParamsView& params) {
       EXPECT_EQ(infos.size(), 1U);
       params.parallel.layer_synchronizer =
           std::make_shared<NPULayerSynchronizerImpl>(/*num_layers=*/1);
@@ -859,7 +859,7 @@ TEST_F(SpeculativePipelineTest,
   uint32_t draft_pushes = 0;
   const auto push = [](uint32_t& count) -> TaskKVPush {
     return [&count](const std::vector<TransferKVInfo>& infos,
-                    ModelInputParams& params) {
+                    ModelParamsView& params) {
       EXPECT_EQ(infos.size(), 1U);
       ++count;
       params.parallel.layer_synchronizer =

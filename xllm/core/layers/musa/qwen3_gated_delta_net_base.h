@@ -23,7 +23,7 @@ limitations under the License.
 
 #include "core/kv_cache/storage/kv_cache.h"
 #include "framework/model/model_args.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "framework/parallel_state/parallel_args.h"
 #include "framework/quantization/quant_args.h"
 #include "framework/state_dict/state_dict.h"
@@ -49,7 +49,7 @@ class Qwen3GatedDeltaNetBaseImpl : public torch::nn::Module {
   torch::Tensor forward(const torch::Tensor& hidden_states,
                         const AttentionMetadata& attn_metadata,
                         KVCache& kv_cache,
-                        const ModelInputParams& input_params);
+                        const ModelParamsView& input_params);
 
  protected:
   virtual std::pair<torch::Tensor, torch::Tensor> project_decode_inputs(
@@ -61,7 +61,7 @@ class Qwen3GatedDeltaNetBaseImpl : public torch::nn::Module {
   void load_common_state_dict(const StateDict& state_dict);
   void verify_common_loaded_weights(const std::string& prefix) const;
 
-  torch::Tensor get_linear_state_indices(const ModelInputParams& input_params,
+  torch::Tensor get_linear_state_indices(const ModelParamsView& input_params,
                                          const torch::Device& device) const;
 
   std::pair<torch::Tensor, torch::Tensor> project_padded_inputs(

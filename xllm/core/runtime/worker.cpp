@@ -38,7 +38,7 @@ limitations under the License.
 #include "core/runtime/unified_mtp_worker_impl.h"
 #endif
 #include "core/kv_cache/storage/kv_cache.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "framework/state_dict/state_dict.h"
 #include "runtime/dflash2_worker_impl.h"
 #include "runtime/dflash_worker_impl.h"

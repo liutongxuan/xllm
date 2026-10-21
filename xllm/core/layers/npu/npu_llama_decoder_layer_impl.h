@@ -28,7 +28,7 @@ limitations under the License.
 
 #include "atb/atb_infer.h"
 #include "core/kv_cache/storage/kv_cache.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "framework/model_context/model_context.h"
 #include "framework/state_dict/state_dict.h"
 #include "nlohmann/json.hpp"
@@ -58,7 +58,7 @@ class NpuLlamaDecoderLayerImpl : public BaseLayer {
                         torch::Tensor& sin_pos,
                         torch::Tensor& attn_mask,
                         KVCache& kv_cache,
-                        ModelInputParams& input_params,
+                        ModelParamsView& input_params,
                         int node_id = 0);
 
  private:
@@ -68,7 +68,7 @@ class NpuLlamaDecoderLayerImpl : public BaseLayer {
                                torch::Tensor& sin_pos,
                                torch::Tensor& attn_mask,
                                KVCache& kv_cache,
-                               ModelInputParams& input_params,
+                               ModelParamsView& input_params,
                                bool is_prefill);
 
   int64_t init_node(atb_speed::Model::Node& node,

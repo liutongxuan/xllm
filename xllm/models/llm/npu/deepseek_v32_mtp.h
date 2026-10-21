@@ -60,7 +60,7 @@ class DeepseekV32MtpModelImpl
                      torch::Tensor& sin_pos,
                      torch::Tensor& attn_mask,
                      KVCache& kv_cache,
-                     const ModelInputParams& input_params,
+                     const ModelParamsView& input_params,
                      torch::Tensor& topk_indices,
                      int32_t layer_index,
                      aclrtEvent* event,

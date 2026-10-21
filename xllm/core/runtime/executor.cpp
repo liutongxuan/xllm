@@ -48,28 +48,28 @@ bool Executor::supports_prepared_attention_metadata() const {
 }
 
 void Executor::prepare_attention_metadata(std::vector<KVCache>& kv_caches,
-                                          ModelInputParams& params) {
+                                          ModelParamsView& params) {
   impl_->prepare_attention_metadata(kv_caches, params);
 }
 
 void Executor::warmup_prepared_graph(const torch::Tensor& tokens,
                                      const torch::Tensor& positions,
                                      std::vector<KVCache>& kv_caches,
-                                     const ModelInputParams& params) {
+                                     const ModelParamsView& params) {
   impl_->warmup_prepared_graph(tokens, positions, kv_caches, params);
 }
 
 ModelOutput Executor::forward(const torch::Tensor& tokens,
                               const torch::Tensor& positions,
                               std::vector<KVCache>& kv_caches,
-                              const ModelInputParams& params) {
+                              const ModelParamsView& params) {
   return impl_->run(tokens, positions, kv_caches, params);
 }
 
 void Executor::prepare_graph_input(const torch::Tensor& tokens,
                                    const torch::Tensor& positions,
                                    std::vector<KVCache>& kv_caches,
-                                   const ModelInputParams& params) {
+                                   const ModelParamsView& params) {
   impl_->prepare_graph_input(tokens, positions, kv_caches, params);
 }
 

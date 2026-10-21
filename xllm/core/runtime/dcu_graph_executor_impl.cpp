@@ -958,7 +958,7 @@ DcuStream DcuGraphExecutorImpl::get_capture_stream(
 ModelOutput DcuGraphExecutorImpl::run(const torch::Tensor& tokens,
                                       const torch::Tensor& positions,
                                       std::vector<KVCache>& kv_caches,
-                                      const ModelInputParams& params) {
+                                      const ModelParamsView& params) {
   return run_impl(model_, tokens, positions, kv_caches, params);
 }
 
@@ -1165,13 +1165,13 @@ ModelOutput DcuGraphExecutorImpl::run_impl(ModelType* model,
   return attach_aux_hidden_states_if_needed(hidden_states, local_actual_tokens);
 }
 
-template std::optional<ModelInputParams>
-DcuGraphPersistentParam::update<ModelInputParams>(const torch::Tensor&,
-                                                  const torch::Tensor&,
-                                                  const ModelInputParams&,
-                                                  uint32_t,
-                                                  bool,
-                                                  uint32_t);
+template std::optional<ModelParamsView>
+DcuGraphPersistentParam::update<ModelParamsView>(const torch::Tensor&,
+                                                 const torch::Tensor&,
+                                                 const ModelParamsView&,
+                                                 uint32_t,
+                                                 bool,
+                                                 uint32_t);
 template std::optional<RecModelParams>
 DcuGraphPersistentParam::update<RecModelParams>(const torch::Tensor&,
                                                 const torch::Tensor&,
@@ -1179,12 +1179,12 @@ DcuGraphPersistentParam::update<RecModelParams>(const torch::Tensor&,
                                                 uint32_t,
                                                 bool,
                                                 uint32_t);
-template ModelInputParams DcuGraphPersistentParam::init_decode_params<
-    ModelInputParams>(const torch::Tensor&,
-                      const torch::Tensor&,
-                      const ModelInputParams&,
-                      uint32_t,
-                      uint32_t);
+template ModelParamsView DcuGraphPersistentParam::init_decode_params<
+    ModelParamsView>(const torch::Tensor&,
+                     const torch::Tensor&,
+                     const ModelParamsView&,
+                     uint32_t,
+                     uint32_t);
 template RecModelParams DcuGraphPersistentParam::init_decode_params<
     RecModelParams>(const torch::Tensor&,
                     const torch::Tensor&,
@@ -1192,10 +1192,10 @@ template RecModelParams DcuGraphPersistentParam::init_decode_params<
                     uint32_t,
                     uint32_t);
 template void DcuGraphPersistentParam::update_decode_input_buffer<
-    ModelInputParams>(const torch::Tensor&,
-                      const torch::Tensor&,
-                      const ModelInputParams&,
-                      uint32_t);
+    ModelParamsView>(const torch::Tensor&,
+                     const torch::Tensor&,
+                     const ModelParamsView&,
+                     uint32_t);
 template void DcuGraphPersistentParam::update_decode_input_buffer<
     RecModelParams>(const torch::Tensor&,
                     const torch::Tensor&,

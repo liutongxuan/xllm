@@ -26,7 +26,6 @@ limitations under the License.
 #include <unordered_set>
 #include <vector>
 
-#include "core/framework/model/model_input_params.h"
 #include "core/framework/state_dict/state_dict.h"
 #include "models/dit/schedulers/scheduler.h"
 #include "models/model_registry.h"

@@ -23,7 +23,7 @@ limitations under the License.
 #include <vector>
 
 #include "framework/model/model_args.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "framework/model_context/model_context.h"
 #include "framework/parallel_state/parallel_args.h"
 #include "framework/quantization/quant_args.h"
@@ -59,7 +59,7 @@ class DeepseekV4SparseMoEBlockImpl final : public torch::nn::Module {
   torch::Tensor forward_selected(const torch::Tensor& hidden_states,
                                  const torch::Tensor& topk_weights,
                                  const torch::Tensor& topk_ids,
-                                 const ModelInputParams& input_params);
+                                 const ModelParamsView& input_params);
   torch::Tensor forward_cp(const torch::Tensor& local_hidden_states,
                            const std::optional<torch::Tensor>& local_input_ids,
                            const mlu_v4_cp::DeepseekV4CpContext& cp_context);
@@ -72,7 +72,7 @@ class DeepseekV4SparseMoEBlockImpl final : public torch::nn::Module {
                                      int64_t hidden_rows) const;
   std::vector<int32_t> get_row_dp_tokens(
       int64_t hidden_rows,
-      const ModelInputParams& input_params) const;
+      const ModelParamsView& input_params) const;
 
   std::optional<ModelContext> context_;
   bool use_hash_ = false;

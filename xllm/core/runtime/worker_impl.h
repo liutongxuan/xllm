@@ -32,7 +32,7 @@ limitations under the License.
 #include "executor.h"
 #include "forward_params.h"
 #include "framework/model/causal_lm.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "framework/model_context/model_context.h"
 #include "framework/parallel_state/parallel_args.h"
 #include "framework/parallel_state/parallel_state.h"
@@ -410,7 +410,7 @@ class WorkerImpl {
   // Restore on the caller's current stream only when this worker owns recurrent
   // caches. Overlap callers must use compute_stream_ after the preceding
   // forward.
-  void try_restore_linear_state_slots(const ModelInputParams& params);
+  void try_restore_linear_state_slots(const ModelParamsView& params);
   // Only used for deepseek chunked prefill ops on npu device
   void prepare_mla_prefixcache_inputs(LlmModelParams& input_params);
   void prepare_mla_prefixcache_inputs(VlmModelParams& input_params);

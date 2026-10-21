@@ -301,7 +301,7 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
     const torch::Tensor& hidden_states,
     const AttentionMetadata& attn_metadata,
     KVCache& kv_cache,
-    const ModelInputParams& input_params) {
+    const ModelParamsView& input_params) {
   const int64_t original_num_tokens = hidden_states.size(0);
   auto [qkvz_padded, ba_padded] =
       project_padded_inputs(hidden_states, attn_metadata);
@@ -498,7 +498,7 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::reshape_qkvz_unpad(
 }
 
 torch::Tensor Qwen3GatedDeltaNetBaseImpl::get_linear_state_indices(
-    const ModelInputParams& input_params,
+    const ModelParamsView& input_params,
     const torch::Device& device) const {
   CHECK(!input_params.embedding.linear_state_ids.empty())
       << "linear_state_ids must be populated for gated delta net";
@@ -566,7 +566,7 @@ torch::Tensor Qwen3_5GatedDeltaNetImpl::forward(
     const torch::Tensor& hidden_states,
     const AttentionMetadata& attn_metadata,
     KVCache& kv_cache,
-    const ModelInputParams& input_params) {
+    const ModelParamsView& input_params) {
   auto mixed_qkv_flat = in_proj_qkv_->forward(hidden_states);
   auto z_flat = in_proj_z_->forward(hidden_states);
   auto b_flat = in_proj_b_->forward(hidden_states);

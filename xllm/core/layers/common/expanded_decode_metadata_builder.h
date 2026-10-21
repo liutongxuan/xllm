@@ -25,7 +25,7 @@ limitations under the License.
 #include "layers/common/attention_metadata.h"
 
 namespace xllm {
-class ModelInputParams;
+class ModelParamsView;
 
 namespace layer {
 
@@ -48,13 +48,13 @@ inline int32_t kv_last_page_len(int32_t kv_seq_len, int32_t block_size) {
 class ExpandedDecodeMetadataBuilder final {
  public:
   template <typename Source>
-  static void populate(ModelInputParams target,
+  static void populate(ModelParamsView target,
                        const Source& source,
                        const torch::Tensor& kv_seq_lens,
                        int32_t block_size);
 
   static void populate_expanded_layout(
-      ModelInputParams target,
+      ModelParamsView target,
       const torch::Tensor& expanded_kv_seq_lens,
       const torch::Tensor& expanded_block_tables,
       std::vector<int32_t> expanded_host_kv_seq_lens,
@@ -64,7 +64,7 @@ class ExpandedDecodeMetadataBuilder final {
       const std::vector<int32_t>& q_seq_lens,
       const std::vector<int32_t>& kv_seq_lens);
 
-  static ExpandedDecodeMetadata build(const ModelInputParams& params);
+  static ExpandedDecodeMetadata build(const ModelParamsView& params);
 
   static void validate(const ExpandedDecodeMetadata& metadata,
                        int64_t expected_sequence_count = -1,

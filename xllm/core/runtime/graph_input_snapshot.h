@@ -15,15 +15,15 @@ limitations under the License.
 
 #pragma once
 
-#include "core/framework/model/model_input_params.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/framework/model/rec_model_params.h"
 #include "core/util/rec_model_utils.h"
 
 namespace xllm {
 
-// ModelInputParams retains its cloned owner; Rec snapshots own the native
+// ModelParamsView retains its cloned owner; Rec snapshots own the native
 // aggregate directly. Tensor handles intentionally share storage.
-inline ModelInputParams clone_graph_input(const ModelInputParams& params) {
+inline ModelParamsView clone_graph_input(const ModelParamsView& params) {
   return params.clone().view();
 }
 
@@ -31,7 +31,7 @@ inline RecModelParams clone_graph_input(const RecModelParams& params) {
   return params.clone();
 }
 
-inline bool is_rec_multi_round_graph_input(const ModelInputParams&) {
+inline bool is_rec_multi_round_graph_input(const ModelParamsView&) {
   return false;
 }
 
@@ -39,7 +39,7 @@ inline bool is_rec_multi_round_graph_input(const RecModelParams&) {
   return is_rec_multi_round_mode();
 }
 
-inline bool has_llmrec_graph_input(const ModelInputParams&) { return false; }
+inline bool has_llmrec_graph_input(const ModelParamsView&) { return false; }
 
 inline bool has_llmrec_graph_input(const RecModelParams& params) {
   return params.has_llmrec_params();

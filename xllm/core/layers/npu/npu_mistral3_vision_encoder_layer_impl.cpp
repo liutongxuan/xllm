@@ -148,7 +148,7 @@ torch::Tensor NpuMistral3VisionEncoderLayerImpl::forward(
     torch::Tensor& sin_pos,
     torch::Tensor& cu_seqlen,
     std::vector<int>& cu_seqlen_vec,
-    ModelInputParams& input_params,
+    ModelParamsView& input_params,
     int node_id) {
   atb::Status st;
 
@@ -173,7 +173,7 @@ void NpuMistral3VisionEncoderLayerImpl::build_node_variant_pack(
     torch::Tensor& sin_pos,
     torch::Tensor& cu_seqlen,
     std::vector<int>& cu_seqlen_vec,
-    ModelInputParams& input_params) {
+    ModelParamsView& input_params) {
   internal_tensors_ = atb_speed::Utils::AtTensor2Tensor(x);
 
   // ATB graph weight count = 6, runtime inputs start at index 6

@@ -34,7 +34,7 @@ limitations under the License.
 #include "core/kv_cache/transfer/kv_transfer_completion.h"
 #include "framework/eplb/eplb_utils.h"
 #include "framework/model/model_args.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #if defined(USE_CUDA) || defined(USE_ILU) || defined(USE_MUSA)
 #include "layers/cuda/flashinfer_workspace.h"
 #endif
@@ -235,7 +235,7 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_for_schedule_overlap(
   // writes on compute_stream_, rather than preparing them on prepare_stream_.
   if (has_request_state_cache()) {
     c10::StreamGuard restore_guard = compute_stream_->set_stream_guard();
-    try_restore_linear_state_slots(ModelInputParams(input.input_params));
+    try_restore_linear_state_slots(ModelParamsView(input.input_params));
   }
   return execute_no_sync_on_stream(input, *compute_stream_);
 }
@@ -296,7 +296,7 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_internal(
   }
 
   // call model executor forward to get hidden states
-  ModelInputParams execution_params(input.input_params);
+  ModelParamsView execution_params(input.input_params);
   auto model_output = model_executor_->forward(
       input.token_ids, input.positions, kv_caches_, execution_params);
   if (eplb_executor_ != nullptr) {

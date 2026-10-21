@@ -100,11 +100,11 @@ class GraphInputView final {
 #endif
 };
 
-class ModelInputParams;
+class ModelParamsView;
 class ModelInputSnapshotOwner {
  public:
   virtual ~ModelInputSnapshotOwner() = default;
-  virtual ModelInputParams view() = 0;
+  virtual ModelParamsView view() = 0;
   virtual std::shared_ptr<ModelInputSnapshotOwner> to(
       const torch::Device& device) const = 0;
 };
@@ -119,18 +119,18 @@ class ModelInputSnapshot final {
   ModelInputSnapshot& operator=(ModelInputSnapshot&&) = default;
   // A returned view retains this explicit native snapshot and can outlive
   // the snapshot handle, including when returned from a graph helper.
-  ModelInputParams view() const;
+  ModelParamsView view() const;
   ModelInputSnapshot to(const torch::Device& device) const;
 
  private:
-  friend class ModelInputParams;
+  friend class ModelParamsView;
   explicit ModelInputSnapshot(std::shared_ptr<ModelInputSnapshotOwner> owner)
       : owner_(std::move(owner)) {}
   std::shared_ptr<ModelInputSnapshotOwner> owner_;
 };
 // Shallow borrowed execution view: construction and copying never copy native
 // host vectors or multimodal payloads.
-class ModelInputParams final {
+class ModelParamsView final {
  private:
   enum class Domain { LLM, VLM };
   std::shared_ptr<ModelInputSnapshotOwner> snapshot_owner_;
@@ -139,16 +139,16 @@ class ModelInputParams final {
   VlmVisionInput* multimodal_ = nullptr;
 
  public:
-  explicit ModelInputParams(LlmModelParams& owner)
-      : ModelInputParams(owner, owner, Domain::LLM) {}
-  explicit ModelInputParams(VlmModelParams& owner)
-      : ModelInputParams(owner, owner, Domain::VLM) {
+  explicit ModelParamsView(LlmModelParams& owner)
+      : ModelParamsView(owner, owner, Domain::LLM) {}
+  explicit ModelParamsView(VlmModelParams& owner)
+      : ModelParamsView(owner, owner, Domain::VLM) {
     multimodal_ = &owner.multimodal;
   }
-  ModelInputParams(const ModelInputParams&) = default;
-  ModelInputParams(ModelInputParams&&) = default;
-  ModelInputParams& operator=(const ModelInputParams&) = delete;
-  ModelInputParams& operator=(ModelInputParams&&) = delete;
+  ModelParamsView(const ModelParamsView&) = default;
+  ModelParamsView(ModelParamsView&&) = default;
+  ModelParamsView& operator=(const ModelParamsView&) = delete;
+  ModelParamsView& operator=(ModelParamsView&&) = delete;
   ModelInputSnapshot clone() const;
   ModelInputSnapshot to(const torch::Device& device) const;
   bool has_multimodal() const { return multimodal_ != nullptr; }
@@ -164,34 +164,33 @@ class ModelInputParams final {
   }
 
   void print() const {
-    LOG(INFO) << "ModelInputParams: batch_forward_type is "
+    LOG(INFO) << "ModelParamsView: batch_forward_type is "
               << meta.batch_forward_type.to_string() << " , num_sequences is "
               << meta.num_sequences << " , kv_max_seq_len is "
               << meta.kv_max_seq_len << " , q_max_seq_len is "
               << meta.q_max_seq_len;
-    LOG(INFO) << "ModelInputParams: attention.host.kv_seq_lens is "
+    LOG(INFO) << "ModelParamsView: attention.host.kv_seq_lens is "
               << attention.host.kv_seq_lens;
-    LOG(INFO) << "ModelInputParams: attention.host.q_seq_lens is "
+    LOG(INFO) << "ModelParamsView: attention.host.q_seq_lens is "
               << attention.host.q_seq_lens;
-    LOG(INFO) << "ModelInputParams: batch_forward_type is "
+    LOG(INFO) << "ModelParamsView: batch_forward_type is "
               << meta.batch_forward_type.to_string();
     print_tensor(
-        attention.device.kv_seq_lens, "ModelInputParams: kv_seq_lens", 4);
+        attention.device.kv_seq_lens, "ModelParamsView: kv_seq_lens", 4);
+    print_tensor(attention.device.q_seq_lens, "ModelParamsView: q_seq_lens", 4);
     print_tensor(
-        attention.device.q_seq_lens, "ModelInputParams: q_seq_lens", 4);
-    print_tensor(
-        attention.device.q_cu_seq_lens, "ModelInputParams: q_cu_seq_lens", 4);
+        attention.device.q_cu_seq_lens, "ModelParamsView: q_cu_seq_lens", 4);
     print_tensor(attention.device.new_cache_slots,
-                 "ModelInputParams: new_cache_slots",
+                 "ModelParamsView: new_cache_slots",
                  4);
     print_tensor(
-        attention.device.block_tables, "ModelInputParams: block_tables", 4);
-    LOG(INFO) << "ModelInputParams: dp_global_token_nums is "
+        attention.device.block_tables, "ModelParamsView: block_tables", 4);
+    LOG(INFO) << "ModelParamsView: dp_global_token_nums is "
               << parallel.dp_global_token_nums
               << ", dp_is_decode: " << parallel.dp_is_decode;
-    LOG(INFO) << "ModelInputParams: is_spec_verify is " << is_spec_verify;
+    LOG(INFO) << "ModelParamsView: is_spec_verify is " << is_spec_verify;
     print_tensor(num_accepted_tokens,
-                 "ModelInputParams: num_accepted_tokens",
+                 "ModelParamsView: num_accepted_tokens",
                  /*max_elements=*/4);
   }
 
@@ -269,7 +268,7 @@ class ModelInputParams final {
  private:
   friend class ModelInputSnapshot;
   template <typename Owner, typename Spec>
-  ModelInputParams(Owner& owner, Spec& spec, Domain domain)
+  ModelParamsView(Owner& owner, Spec& spec, Domain domain)
       : native_owner_(&owner),
         domain_(domain),
         meta(owner.meta),
@@ -297,7 +296,7 @@ class NativeModelInputSnapshotOwner final : public ModelInputSnapshotOwner {
  public:
   explicit NativeModelInputSnapshotOwner(NativeParams params)
       : params_(std::move(params)) {}
-  ModelInputParams view() override { return ModelInputParams(params_); }
+  ModelParamsView view() override { return ModelParamsView(params_); }
   std::shared_ptr<ModelInputSnapshotOwner> to(
       const torch::Device& device) const override {
     return std::make_shared<NativeModelInputSnapshotOwner>(params_.to(device));
@@ -310,9 +309,9 @@ template <typename NativeParams>
 ModelInputSnapshot::ModelInputSnapshot(NativeParams params)
     : owner_(std::make_shared<NativeModelInputSnapshotOwner<NativeParams>>(
           std::move(params))) {}
-inline ModelInputParams ModelInputSnapshot::view() const {
+inline ModelParamsView ModelInputSnapshot::view() const {
   CHECK(owner_ != nullptr) << "cannot view an empty model input snapshot";
-  ModelInputParams params = owner_->view();
+  ModelParamsView params = owner_->view();
   params.snapshot_owner_ = owner_;
   return params;
 }
@@ -321,7 +320,7 @@ inline ModelInputSnapshot ModelInputSnapshot::to(
   CHECK(owner_ != nullptr);
   return ModelInputSnapshot(owner_->to(device));
 }
-inline ModelInputSnapshot ModelInputParams::to(
+inline ModelInputSnapshot ModelParamsView::to(
     const torch::Device& device) const {
   CHECK(native_owner_ != nullptr);
   if (snapshot_owner_ != nullptr) {
@@ -338,7 +337,7 @@ inline ModelInputSnapshot ModelInputParams::to(
   LOG(FATAL) << "unknown model input domain";
   return ModelInputSnapshot();
 }
-inline ModelInputSnapshot ModelInputParams::clone() const {
+inline ModelInputSnapshot ModelParamsView::clone() const {
   switch (domain_) {
     case Domain::LLM:
       return ModelInputSnapshot(

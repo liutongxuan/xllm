@@ -75,56 +75,58 @@ DiTForwardInput DiTForwardInputBuilder::build_forward_input() const {
   }
 
   DiTForwardInput input;
-  input.batch_size = requests_.size();
-  input.generation_params = requests_[0]->state().generation_params();
+  DiTModelParams& model_params = input.model_params;
+  model_params.batch_size = requests_.size();
+  model_params.generation_params = requests_[0]->state().generation_params();
 
   const size_t batch_size = requests_.size();
-  input.prompts.reserve(batch_size);
-  input.prompts_2.reserve(batch_size);
-  input.negative_prompts.reserve(batch_size);
-  input.negative_prompts_2.reserve(batch_size);
+  model_params.prompts.reserve(batch_size);
+  model_params.prompts_2.reserve(batch_size);
+  model_params.negative_prompts.reserve(batch_size);
+  model_params.negative_prompts_2.reserve(batch_size);
   for (const auto& request : requests_) {
     const auto& generation_params = request->state().generation_params();
-    CHECK(input.generation_params == generation_params)
+    CHECK(model_params.generation_params == generation_params)
         << "DiT generation params must be equal in the same batch";
 
     const auto& input_params = request->state().input_params();
     if (!input_params.prompt.empty()) {
-      input.prompts.emplace_back(input_params.prompt);
+      model_params.prompts.emplace_back(input_params.prompt);
     }
 
     if (!input_params.prompt_2.empty()) {
-      input.prompts_2.emplace_back(input_params.prompt_2);
+      model_params.prompts_2.emplace_back(input_params.prompt_2);
     }
 
     if (!input_params.negative_prompt.empty()) {
-      input.negative_prompts.emplace_back(input_params.negative_prompt);
+      model_params.negative_prompts.emplace_back(input_params.negative_prompt);
     }
 
     if (!input_params.negative_prompt_2.empty()) {
-      input.negative_prompts_2.emplace_back(input_params.negative_prompt_2);
+      model_params.negative_prompts_2.emplace_back(
+          input_params.negative_prompt_2);
     }
 
     if (!input_params.audio_prompt_text.empty() &&
-        input.audio_prompt_text.empty()) {
-      input.audio_prompt_text = input_params.audio_prompt_text;
+        model_params.audio_prompt_text.empty()) {
+      model_params.audio_prompt_text = input_params.audio_prompt_text;
     }
   }
 
-  if (input.prompts.size() != requests_.size()) {
-    input.prompts.clear();
+  if (model_params.prompts.size() != requests_.size()) {
+    model_params.prompts.clear();
   }
 
-  if (input.prompts_2.size() != requests_.size()) {
-    input.prompts_2.clear();
+  if (model_params.prompts_2.size() != requests_.size()) {
+    model_params.prompts_2.clear();
   }
 
-  if (input.negative_prompts.size() != requests_.size()) {
-    input.negative_prompts.clear();
+  if (model_params.negative_prompts.size() != requests_.size()) {
+    model_params.negative_prompts.clear();
   }
 
-  if (input.negative_prompts_2.size() != requests_.size()) {
-    input.negative_prompts_2.clear();
+  if (model_params.negative_prompts_2.size() != requests_.size()) {
+    model_params.negative_prompts_2.clear();
   }
 
   const DiTMediaSources& first_media_sources =
@@ -141,10 +143,10 @@ DiTForwardInput DiTForwardInputBuilder::build_forward_input() const {
           request->state().input_params().media_sources.at(index).tensor);
     }
     const MediaNamedTensor& source = first_media_sources.at(index);
-    input.media_sources.add(source.name,
-                            source.modality,
-                            batch_tensors(tensors),
-                            source.parameters);
+    model_params.media_sources.add(source.name,
+                                   source.modality,
+                                   batch_tensors(tensors),
+                                   source.parameters);
   }
 
   const DiTTensorSources& first_tensor_sources =
@@ -162,7 +164,7 @@ DiTForwardInput DiTForwardInputBuilder::build_forward_input() const {
       CHECK(tensor.has_value());
       tensors.emplace_back(*tensor);
     }
-    input.tensor_sources.add(
+    model_params.tensor_sources.add(
         tensor_input.name, batch_tensors(tensors), tensor_input.parameters);
   }
 

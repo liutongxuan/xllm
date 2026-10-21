@@ -32,8 +32,8 @@ limitations under the License.
 
 #include "common/macros.h"
 #include "core/framework/model/model_args.h"
-#include "core/framework/model/model_input_params.h"
 #include "core/framework/model/model_output.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/framework/model/model_traits.h"
 #include "core/framework/quantization/quant_args.h"
 #include "core/framework/state_dict/state_dict.h"
@@ -71,7 +71,7 @@ class CausalLM : public torch::nn::Module, public Model {
   virtual ModelOutput forward(const torch::Tensor& tokens,
                               const torch::Tensor& positions,
                               std::vector<KVCache>& kv_caches,
-                              const ModelInputParams& parameters) = 0;
+                              const ModelParamsView& parameters) = 0;
 
   virtual bool requires_graph_forward_metadata() { return false; }
 
@@ -86,7 +86,7 @@ class CausalLM : public torch::nn::Module, public Model {
 
   virtual void prepare_graph_forward_metadata(ModelGraphMetadataState*,
                                               const torch::Tensor&,
-                                              ModelInputParams&) {}
+                                              ModelParamsView&) {}
 
   // hidden_states: [num_tokens, hidden_size]
   // seleted_idxes: [num_tokens]
@@ -154,7 +154,7 @@ class CausalLM : public torch::nn::Module, public Model {
                                        const torch::Tensor& positions,
                                        const torch::Tensor& device_cache_slots,
                                        std::vector<KVCache>& kv_caches,
-                                       const ModelInputParams& input_params) {
+                                       const ModelParamsView& input_params) {
     NOT_IMPLEMENTED();
     return {};
   }
@@ -199,7 +199,7 @@ class CausalLMImpl : public CausalLM {
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& parameters) override {
+                      const ModelParamsView& parameters) override {
     return model_->forward(tokens, positions, kv_caches, parameters);
   }
 
@@ -240,7 +240,7 @@ class CausalLMImpl : public CausalLM {
 
   void prepare_graph_forward_metadata(ModelGraphMetadataState* state,
                                       const torch::Tensor& positions,
-                                      ModelInputParams& parameters) override {
+                                      ModelParamsView& parameters) override {
     if constexpr (detail::has_prepare_graph_forward_metadata<
                       ModelType>::value) {
       model_->prepare_graph_forward_metadata(state, positions, parameters);
@@ -275,7 +275,7 @@ class CausalLMImpl : public CausalLM {
                                const torch::Tensor& positions,
                                const torch::Tensor& device_cache_slots,
                                std::vector<KVCache>& kv_caches,
-                               const ModelInputParams& input_params) override {
+                               const ModelParamsView& input_params) override {
     if constexpr (detail::has_write_context_kv<ModelType>::value) {
       return model_->write_context_kv(target_hidden,
                                       positions,

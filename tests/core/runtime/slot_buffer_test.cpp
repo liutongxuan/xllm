@@ -176,7 +176,7 @@ TEST_F(SlotBufferTest, PrefillUsesFixedInputsAndUncachedLengths) {
       make_forward_input(input, BatchForwardType::PREFILL, 2, 41, true);
   ASSERT_TRUE(prepare_model(forward, *transfer_).ok());
   expect_device_input(input);
-  const ModelInputParams& params = binding_->model_params();
+  const ModelParamsView& params = binding_->model_params();
   EXPECT_EQ(params.attention.host.kv_cache_tokens_nums,
             (std::vector<int32_t>{0, 0}));
   EXPECT_EQ(params.attention.host.q_cu_seq_lens, (std::vector<int32_t>{3, 5}));

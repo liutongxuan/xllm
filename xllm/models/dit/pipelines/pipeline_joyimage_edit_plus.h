@@ -28,7 +28,9 @@ limitations under the License.
 
 #include "core/framework/config/kernel_config.h"
 #include "core/framework/dit_cache/dit_cache.h"
-#include "core/framework/model/model_input_params.h"
+#include "core/framework/model/dit_model_output.h"
+#include "core/framework/model/dit_model_params.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/framework/model_context/model_context.h"
 #include "core/framework/model_loader/dit_model_loader.h"
 #include "core/framework/multimodal/mm_input.h"
@@ -37,7 +39,6 @@ limitations under the License.
 #include "core/framework/state_dict/state_dict.h"
 #include "core/framework/tokenizer/tokenizer.h"
 #include "core/kv_cache/storage/kv_cache.h"
-#include "core/runtime/dit_forward_params.h"
 #include "models/dit/autoencoders/autoencoder_kl_wan.h"
 #include "models/dit/processors/vae_image_processor.h"
 #include "models/dit/schedulers/flowmatch_euler_discrete_scheduler.h"
@@ -261,7 +262,7 @@ class JoyImageEditPlusPipelineImpl : public torch::nn::Module,
     return std::make_tuple(padded, target_mask, all_shapes);
   }
 
-  DiTForwardOutput forward(const DiTForwardInput& input) {
+  DiTForwardOutput forward(const DiTModelParams& input) {
     torch::NoGradGuard no_grad;
     const auto& gp = input.generation_params;
     int64_t num_inference_steps = gp.num_inference_steps;
@@ -593,7 +594,7 @@ class JoyImageEditPlusPipelineImpl : public torch::nn::Module,
     VlmModelParams multimodal_params;
     multimodal_params.multimodal.mm_data = mm_batch;
     MMDict multimodal_embeddings = text_encoder_->get_multimodal_embeddings(
-        ModelInputParams(multimodal_params));
+        ModelParamsView(multimodal_params));
     EncoderOutputScatterVisitor output_scatter(multimodal_embeddings);
     CHECK(mm_batch.foreach (output_scatter));
     CHECK(output_scatter.finish())
@@ -609,7 +610,7 @@ class JoyImageEditPlusPipelineImpl : public torch::nn::Module,
         << "JoyImageEditPlus failed to gather Qwen3-VL embeddings";
     params.multimodal.mm_data = std::move(mm_batch);
     params.embedding.input_embedding =
-        text_encoder_->get_input_embeddings(tokens, ModelInputParams(params));
+        text_encoder_->get_input_embeddings(tokens, ModelParamsView(params));
     return params;
   }
 
@@ -665,7 +666,7 @@ class JoyImageEditPlusPipelineImpl : public torch::nn::Module,
         text_encoder_->forward(tokens,
                                positions,
                                text_encoder_empty_kv_caches_,
-                               ModelInputParams(input_params));
+                               ModelParamsView(input_params));
     CHECK(model_output.residual.defined())
         << "JoyImageEditPlus requires Qwen3-VL pre-norm hidden states from "
            "the TORCH backend.";

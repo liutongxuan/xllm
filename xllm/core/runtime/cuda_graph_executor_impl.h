@@ -35,7 +35,7 @@ limitations under the License.
 
 #include "core/common/macros.h"
 #include "core/framework/model/causal_lm.h"
-#include "core/framework/model/model_input_params.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/framework/model/rec_model.h"
 #include "core/kernels/cuda/llm_decode_metadata_update.h"
 #include "core/kernels/cuda/piecewise_graphs.h"
@@ -67,9 +67,9 @@ class CudaGraphPersistentParam {
   ~CudaGraphPersistentParam() = default;
 
   // Update persistent tensors with new input data
-  // If return_capture_params is true, returns a ModelInputParams with
+  // If return_capture_params is true, returns a ModelParamsView with
   // persistent buffer references. padded_num_tokens must be > 0 when
-  // return_capture_params is true, used for build new ModelInputParams for
+  // return_capture_params is true, used for build new ModelParamsView for
   // capture. If return_capture_params is false, only updates persistent buffers
   // and returns std::nullopt.
   template <typename Params>
@@ -263,7 +263,7 @@ class CudaGraph {
                const runtime::Options& options,
                const torch::Tensor& tokens,
                const torch::Tensor& positions,
-               const ModelInputParams& params,
+               const ModelParamsView& params,
                std::vector<KVCache>& kv_cache,
                uint32_t bucket_num_tokens,
                const at::cuda::MempoolId_t& pool,
@@ -313,8 +313,7 @@ class CudaGraph {
   void print_graph_tensors() const;
 
   // Destroy captured work before releasing its native input owner.
-  std::variant<std::monostate, ModelInputParams, RecModelParams>
-      capture_params_;
+  std::variant<std::monostate, ModelParamsView, RecModelParams> capture_params_;
 
   // CUDA graph for capturing and replaying (decode mode)
   at::cuda::CUDAGraph graph_;
@@ -354,7 +353,7 @@ class CudaGraphExecutorImpl final : public ExecutorImpl,
   ModelOutput run(const torch::Tensor& tokens,
                   const torch::Tensor& positions,
                   std::vector<KVCache>& kv_caches,
-                  const ModelInputParams& params) override;
+                  const ModelParamsView& params) override;
 
   ModelOutput run(const torch::Tensor& tokens,
                   const torch::Tensor& positions,

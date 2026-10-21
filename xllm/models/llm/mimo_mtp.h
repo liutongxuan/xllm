@@ -56,7 +56,7 @@ class MiMoMtpDecoderLayerImpl final : public torch::nn::Module {
                         torch::Tensor positions,
                         const layer::AttentionMetadata& attn_metadata,
                         KVCache& kv_cache,
-                        const ModelInputParams& input_params) {
+                        const ModelParamsView& input_params) {
     // Mask out embeddings at position 0 (not needed by MTP).
     // masked_fill avoids a D2H sync that .item<bool>() would introduce on
     // every forward pass; the unsqueeze broadcasts the [seq] mask to [seq,
@@ -152,8 +152,8 @@ class MiMoMtpModelImpl final : public torch::nn::Module {
   ModelOutput forward(torch::Tensor tokens,
                       torch::Tensor positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) {
-    ModelInputParams modified_input_params = input_params.clone().view();
+                      const ModelParamsView& input_params) {
+    ModelParamsView modified_input_params = input_params.clone().view();
     if (dp_size_ > 1) {
       if (tokens.numel() == 0) {
         tokens = torch::tensor({1}).to(torch::kInt32).to(device_);

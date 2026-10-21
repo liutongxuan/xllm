@@ -20,6 +20,8 @@ limitations under the License.
 #include <memory>
 #include <string>
 
+#include "core/framework/model/dit_model_output.h"
+#include "core/framework/model/dit_model_params.h"
 #include "core/framework/model_context/model_context.h"
 #include "core/framework/model_loader/dit_model_loader.h"
 #include "core/framework/parallel_state/parallel_args.h"
@@ -170,7 +172,7 @@ class LongCatImagePipelineImpl : public torch::nn::Module {
     register_module("scheduler", scheduler_);
   }
 
-  DiTForwardOutput forward(const DiTForwardInput& input) {
+  DiTForwardOutput forward(const DiTModelParams& input) {
     const auto& generation_params = input.generation_params;
 
     auto seed = generation_params.seed;
@@ -546,7 +548,7 @@ class LongCatImagePipelineImpl : public torch::nn::Module {
     VlmModelParams input_params =
         build_longcat_input_params(tokens_flat, positions_2d, attention_mask);
     auto model_output = text_encoder_->forward(
-        tokens_flat, positions_2d, kv_caches, ModelInputParams(input_params));
+        tokens_flat, positions_2d, kv_caches, ModelParamsView(input_params));
     torch::Tensor hidden_states_flat = model_output.hidden_states;
 
     int64_t hidden_size = hidden_states_flat.size(-1);
@@ -652,7 +654,7 @@ class LongCatImagePipelineImpl : public torch::nn::Module {
 
     // Let Qwen2_5_VL build multimodal-aware embeddings from tokens and params.
     params.embedding.input_embedding =
-        text_encoder_->get_input_embeddings(tokens, ModelInputParams(params));
+        text_encoder_->get_input_embeddings(tokens, ModelParamsView(params));
 
     if (attention_mask.defined() && attention_mask.size(0) > 0) {
       params.graph.attn_mask = attention_mask.view({-1}).to(torch::kFloat32);

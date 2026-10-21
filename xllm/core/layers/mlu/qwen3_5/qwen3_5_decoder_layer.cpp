@@ -24,8 +24,7 @@ limitations under the License.
 namespace xllm {
 namespace layer {
 namespace {
-bool use_moe_all2all(bool enable_deep_ep,
-                     const ModelInputParams& input_params) {
+bool use_moe_all2all(bool enable_deep_ep, const ModelParamsView& input_params) {
   return enable_deep_ep && all_dp_ranks_are_decode(input_params);
 }
 
@@ -149,7 +148,7 @@ void Qwen3_5DecoderLayerImpl::verify_loaded_weights(
 
 torch::Tensor Qwen3_5DecoderLayerImpl::run_moe(
     torch::Tensor x,
-    const ModelInputParams& input_params) {
+    const ModelParamsView& input_params) {
   const bool enable_moe_all2all =
       use_moe_all2all(enable_deep_ep_, input_params);
   if (need_dp_moe_gather(parallel_args_, enable_moe_all2all)) {
@@ -178,7 +177,7 @@ torch::Tensor Qwen3_5DecoderLayerImpl::forward(
     torch::Tensor& positions,
     const AttentionMetadata& attn_metadata,
     KVCache& kv_cache,
-    const ModelInputParams& input_params,
+    const ModelParamsView& input_params,
     const torch::Tensor& mrope_cos_sin) {
   // MLU attention/GDN does not use the mrope split; accept the argument to
   // satisfy the hybrid interface and discard it.

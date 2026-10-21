@@ -27,7 +27,7 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "util/timer.h"
 
 namespace xllm {

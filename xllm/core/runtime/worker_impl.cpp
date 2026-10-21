@@ -94,7 +94,7 @@ limitations under the License.
 #include "core/runtime/worker_memory_resources.h"
 #include "core/runtime/worker_rendezvous.h"
 #include "framework/model/aux_hidden_capture.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "framework/parallel_state/npu_cp_plan.h"
 #include "framework/sampling/sampler.h"
 #include "framework/state_dict/state_dict.h"
@@ -991,8 +991,7 @@ torch::Tensor WorkerImpl::remap_selected_token_idxes_for_lm_head(
   return (remapped + dp_offset).to(remapped.scalar_type()).contiguous();
 }
 
-void WorkerImpl::try_restore_linear_state_slots(
-    const ModelInputParams& params) {
+void WorkerImpl::try_restore_linear_state_slots(const ModelParamsView& params) {
 #if defined(USE_NPU) || defined(USE_MLU) || defined(USE_CUDA) || \
     defined(USE_MUSA)
   // Composite speculative workers restore through their cache-owning workers.
@@ -1016,7 +1015,7 @@ std::optional<ForwardOutput> WorkerImpl::step_for_schedule_overlap_impl(
     c10::StreamGuard compute_guard = compute_stream_->set_stream_guard();
     CHECK(compute_stream_->wait_event(input.runtime.metadata_ready_event))
         << "failed to wait input metadata ready event on compute stream";
-    try_restore_linear_state_slots(ModelInputParams(input.input_params));
+    try_restore_linear_state_slots(ModelParamsView(input.input_params));
     return step(input);
   }
 #endif
@@ -1559,7 +1558,7 @@ void WorkerImpl::prepare_work_before_execute_on_stream_impl(
       // Overlap restores in the worker thread on compute_stream_, after the
       // preceding chunk finishes writing its live slots.
       if (restore_linear_state && !enable_schedule_overlap()) {
-        try_restore_linear_state_slots(ModelInputParams(input_params));
+        try_restore_linear_state_slots(ModelParamsView(input_params));
       }
     }
 #endif
@@ -1570,7 +1569,7 @@ void WorkerImpl::prepare_work_before_execute_on_stream_impl(
         processed_input, npu_cp_plan_runtime_config());
 
     if (can_prepare_npu_graph_decode_input(input_params)) {
-      ModelInputParams execution_params(processed_input.input_params);
+      ModelParamsView execution_params(processed_input.input_params);
       model_executor_->prepare_graph_input(processed_input.token_ids,
                                            processed_input.positions,
                                            kv_caches_,
@@ -2344,7 +2343,7 @@ TaskModel WorkerImpl::task_model() {
     // The pipeline is created before KV allocation. Resolve the transfer
     // backend only when Launch runs; this worker outlives its pipeline.
     task.push_kv = [this](const std::vector<TransferKVInfo>& transfer_kv_infos,
-                          ModelInputParams& params) {
+                          ModelParamsView& params) {
       CHECK(kv_cache_transfer_ != nullptr) << "PD KV cache is not allocated.";
       std::shared_ptr<KVPushSynchronizerImpl> layer_synchronizer =
           std::make_shared<KVPushSynchronizerImpl>(
@@ -2871,7 +2870,7 @@ void WorkerImpl::clear_hierarchy_kv_cache_transfer() {
 void WorkerImpl::set_hierarchy_layer_synchronizer(
     LlmModelParams& input_params) {
   if (hierarchy_kv_cache_transfer_ != nullptr) {
-    ModelInputParams execution_params(input_params);
+    ModelParamsView execution_params(input_params);
     hierarchy_kv_cache_transfer_->set_layer_synchronizer(execution_params);
   }
 }
@@ -3137,7 +3136,7 @@ WorkerImpl::update_input_by_last_step_output_for_schedule_overlap(
 void WorkerImpl::set_hierarchy_layer_synchronizer(
     VlmModelParams& input_params) {
   if (hierarchy_kv_cache_transfer_ != nullptr) {
-    ModelInputParams execution_params(input_params);
+    ModelParamsView execution_params(input_params);
     hierarchy_kv_cache_transfer_->set_layer_synchronizer(execution_params);
   }
 }

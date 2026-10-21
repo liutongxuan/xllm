@@ -1103,7 +1103,7 @@ TEST(Glm5NextKPoolIndexerTest,
   params.attention.host.kpool_query_lens = query_lens;
   params.enable_graph = false;
   params.attention.rebuild_device_buffer(device);
-  ModelInputParams ready = ModelInputSnapshot(params.to(device)).view();
+  ModelParamsView ready = ModelInputSnapshot(params.to(device)).view();
   AttentionMetadata metadata =
       AttentionMetadataBuilder::build(ready, true, {}, device);
   prepare_glm5_next_kpool_metadata(metadata, device);

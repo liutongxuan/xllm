@@ -97,7 +97,7 @@ torch::Tensor DeepseekV2DecoderLayerImpl::forward(
     torch::Tensor& positions,
     const AttentionMetadata& attn_metadata,
     KVCache& kv_cache,
-    const ModelInputParams& input_params) {
+    const ModelParamsView& input_params) {
   // Pre-attention norm
   if (!residual.has_value()) {
     residual = x;

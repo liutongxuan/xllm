@@ -178,7 +178,7 @@ TEST(MtpAsyncInputBuilderTest, RefreshesVerifyPagesAfterAcceptedPrefix) {
       params.attention.host.kv_seq_lens =
           chunked ? std::vector<int32_t>{6, 5} : original_host_kv;
       layer::ExpandedDecodeMetadataBuilder::populate_expanded_layout(
-          ModelInputParams(params),
+          ModelParamsView(params),
           original_kv,
           expanded_tables,
           original_host_kv,
@@ -244,7 +244,7 @@ TEST(MtpAsyncInputBuilderTest, BuildsTokenwiseSpecVerifyKvLengths) {
 }
 
 TEST(MtpAsyncInputBuilderTest, KeepsGenericPagedMetadataSeparate) {
-  ModelInputParams params = ModelInputSnapshot(LlmModelParams()).view();
+  ModelParamsView params = ModelInputSnapshot(LlmModelParams()).view();
   params.attention.device.paged_kv_indptr = torch::tensor({0, 1}, torch::kInt);
   params.attention.device.paged_kv_indices = torch::tensor({99}, torch::kInt);
   params.attention.device.paged_kv_last_page_len =
@@ -317,7 +317,7 @@ TEST(MtpAsyncInputBuilderTest, PybindViewExposesLinearStateReadAndWriteSlots) {
   metadata->is_prefill = true;
   metadata->is_dummy = true;
 
-  ModelInputParams params = ModelInputSnapshot(LlmModelParams()).view();
+  ModelParamsView params = ModelInputSnapshot(LlmModelParams()).view();
   params.embedding.linear_state_ids = {3, 7};
   params.embedding.linear_state_indices = torch::tensor({3, 7}, torch::kInt);
 
@@ -383,7 +383,7 @@ TEST(MtpAsyncInputBuilderTest, PybindViewsPreserveGraphMetadataStorage) {
   runner.attr("attention_backend") = types.attr("SimpleNamespace")(
       py::arg("page_size") = kBlockSize, py::arg("is_mla") = false);
 
-  ModelInputParams params = ModelInputSnapshot(LlmModelParams()).view();
+  ModelParamsView params = ModelInputSnapshot(LlmModelParams()).view();
   // MTP may rewrite num_sequences to execution rows. The Python graph limit
   // must use the original requests, including a truly empty peer rank.
   params.meta.num_sequences = 6;

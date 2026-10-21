@@ -20,7 +20,7 @@ limitations under the License.
 #include <algorithm>
 #include <cstdint>
 
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 
 namespace {
 
@@ -47,7 +47,7 @@ int64_t group_block_num(const xllm::DSAGroupInfo& group_info, int32_t kv_len) {
 
 namespace xllm::layer {
 
-void fill_dsv4_empty_dp_params(ModelInputParams& params,
+void fill_dsv4_empty_dp_params(ModelParamsView& params,
                                const std::vector<DSAGroupInfo>& group_infos,
                                int64_t window_size) {
   const bool is_chunked_prefill =

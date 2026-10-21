@@ -27,7 +27,7 @@ limitations under the License.
 #include "core/framework/config/load_config.h"
 #include "core/framework/speculative/draft_extend_input.h"
 #include "core/kv_cache/storage/kv_cache.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "models/model_registry.h"
 #include "util/timer.h"
 
@@ -145,7 +145,7 @@ std::optional<ForwardOutput> VLMWorkerImpl::step_internal(
   torch::Tensor lm_head_selected_token_idxes;
   torch::Tensor selected_hidden_from_lm_head;
   {
-    ModelInputParams params(input.input_params);
+    ModelParamsView params(input.input_params);
     model_output = model_executor_->forward(
         input.token_ids, input.positions, kv_caches_, params);
     if (sampling_params.num_sample_seqs() > 0) {
@@ -228,7 +228,7 @@ std::optional<ForwardOutput> VLMWorkerImpl::step_for_schedule_overlap(
   // LLMs.
   if (has_linear_attention_layers(context_.get_model_args())) {
     c10::StreamGuard restore_guard = compute_stream_->set_stream_guard();
-    try_restore_linear_state_slots(ModelInputParams(input.input_params));
+    try_restore_linear_state_slots(ModelParamsView(input.input_params));
   }
   return execute_no_sync_on_stream(input, *compute_stream_);
 }

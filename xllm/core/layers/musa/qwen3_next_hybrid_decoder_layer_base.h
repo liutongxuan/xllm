@@ -21,7 +21,7 @@ limitations under the License.
 #include <string>
 
 #include "core/kv_cache/storage/kv_cache.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "framework/model_context/model_context.h"
 #include "framework/state_dict/state_dict.h"
 #include "layers/common/dense_mlp.h"
@@ -42,7 +42,7 @@ class Qwen3HybridDecoderLayerModule : public torch::nn::Module {
                                 torch::Tensor& positions,
                                 const AttentionMetadata& attn_metadata,
                                 KVCache& kv_cache,
-                                const ModelInputParams& input_params,
+                                const ModelParamsView& input_params,
                                 const torch::Tensor& mrope_cos_sin = {}) = 0;
   virtual torch::Tensor build_mrope_cos_sin(
       const torch::Tensor& positions) const {
@@ -69,7 +69,7 @@ class Qwen3HybridDecoderLayerImplBase : public Qwen3HybridDecoderLayerModule {
                         torch::Tensor& positions,
                         const AttentionMetadata& attn_metadata,
                         KVCache& kv_cache,
-                        const ModelInputParams& input_params,
+                        const ModelParamsView& input_params,
                         const torch::Tensor& mrope_cos_sin = {}) override;
 
   torch::Tensor build_mrope_cos_sin(

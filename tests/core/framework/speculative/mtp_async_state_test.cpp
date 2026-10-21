@@ -20,7 +20,7 @@ limitations under the License.
 
 #include <utility>
 
-#include "core/framework/model/model_input_params.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/framework/speculative/spec_verify.h"
 
 namespace xllm::mtp_async {
@@ -202,7 +202,7 @@ TEST(MtpAsyncStateTest, LeavesOrdinaryEagerTokensUnchanged) {
 TEST(MtpAsyncStateTest, SelectsGraphVerifyTokenOverrideForEagerExecution) {
   const torch::Tensor tokens = torch::tensor({1, 2}, torch::kInt);
   LlmModelParams native_params;
-  ModelInputParams params(native_params);
+  ModelParamsView params(native_params);
   const auto& graph_input = params.graph;
   graph_input.input_tokens_override =
       torch::tensor({10, -1, -1, 20, -1, -1}, torch::kInt);

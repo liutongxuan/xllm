@@ -16,7 +16,7 @@ limitations under the License.
 #include <gtest/gtest.h>
 #include <torch/torch.h>
 
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "framework/quantization/quant_args.h"
 #include "layers/common/dsa_metadata_builder.h"
 #include "layers/npu_torch/deepseek_sparse_attention.h"
@@ -71,7 +71,7 @@ TEST_F(DeepseekV4IndexerTest, ConstructorAndMetadataWorks) {
 }
 
 TEST_F(DeepseekV4IndexerTest, DsaTokenSlotsTrackCurrentDecodeStep) {
-  ModelInputParams params = ModelInputSnapshot(LlmModelParams()).view();
+  ModelParamsView params = ModelInputSnapshot(LlmModelParams()).view();
   params.meta.batch_forward_type = BatchForwardType::DECODE;
   params.meta.num_sequences = 2;
   params.attention.host.kv_seq_lens = {5, 8};
@@ -109,7 +109,7 @@ TEST_F(DeepseekV4IndexerTest, DsaTokenSlotsTrackCurrentDecodeStep) {
 }
 
 TEST_F(DeepseekV4IndexerTest, DsaSwaBlockTableUsesLogicalColumnsWithoutWrap) {
-  ModelInputParams params = ModelInputSnapshot(LlmModelParams()).view();
+  ModelParamsView params = ModelInputSnapshot(LlmModelParams()).view();
   params.meta.batch_forward_type = BatchForwardType::DECODE;
   params.meta.num_sequences = 1;
   params.attention.host.kv_seq_lens = {1537};
@@ -150,7 +150,7 @@ TEST_F(DeepseekV4IndexerTest, DsaSwaBlockTableUsesLogicalColumnsWithoutWrap) {
 }
 
 TEST_F(DeepseekV4IndexerTest, DsaSwaUsesExplicitBlockParallelSlots) {
-  ModelInputParams params = ModelInputSnapshot(LlmModelParams()).view();
+  ModelParamsView params = ModelInputSnapshot(LlmModelParams()).view();
   params.meta.batch_forward_type = BatchForwardType::CHUNKED_PREFILL;
   params.meta.num_sequences = 3;
   params.meta.q_max_seq_len = 1;
@@ -179,7 +179,7 @@ TEST_F(DeepseekV4IndexerTest, DsaSwaUsesExplicitBlockParallelSlots) {
 }
 
 TEST_F(DeepseekV4IndexerTest, DSparkSparseTilingUsesSupportedWindow) {
-  ModelInputParams params = ModelInputSnapshot(LlmModelParams()).view();
+  ModelParamsView params = ModelInputSnapshot(LlmModelParams()).view();
   params.meta.batch_forward_type = BatchForwardType::CHUNKED_PREFILL;
   params.meta.q_max_seq_len = 1;
 
@@ -289,7 +289,7 @@ TEST_F(DeepseekV4IndexerTest, DSparkNativeSwaIndicesMapExpandedMetadataRing) {
 }
 
 TEST_F(DeepseekV4IndexerTest, DsaDummyAttentionUsesPositionDevice) {
-  ModelInputParams params = ModelInputSnapshot(LlmModelParams()).view();
+  ModelParamsView params = ModelInputSnapshot(LlmModelParams()).view();
   params.meta.batch_forward_type = BatchForwardType::DECODE;
   params.meta.num_sequences = 1;
   params.meta.q_max_seq_len = 0;

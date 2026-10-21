@@ -193,7 +193,7 @@ void Qwen3_5GatedDeltaNetImpl::verify_loaded_weights(
 }
 
 torch::Tensor Qwen3_5GatedDeltaNetImpl::get_linear_state_indices(
-    const ModelInputParams& input_params,
+    const ModelParamsView& input_params,
     const torch::Device& device) const {
   CHECK(!input_params.embedding.linear_state_ids.empty())
       << "linear_state_ids must be populated for gated delta net";
@@ -209,7 +209,7 @@ torch::Tensor Qwen3_5GatedDeltaNetImpl::forward(
     const torch::Tensor& hidden_states,
     const AttentionMetadata& attn_metadata,
     KVCache& kv_cache,
-    const ModelInputParams& input_params) {
+    const ModelParamsView& input_params) {
   int64_t num_tokens = hidden_states.size(0);
   if (input_params.is_spec_verify) {
     CHECK(attn_metadata.is_chunked_prefill)

@@ -23,7 +23,7 @@ limitations under the License.
 
 #include "framework/eplb/expert_buffer_manager.h"
 #include "framework/eplb/expert_weight_buffer_shm.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "framework/model_context/model_context.h"
 #include "framework/parallel_state/npu_dp_ep_padding.h"
 #include "framework/state_dict/state_dict.h"
@@ -124,7 +124,7 @@ class NpuDeepseekV2DecoderLayerImpl : public BaseLayer {
                         torch::Tensor& sin_pos,
                         torch::Tensor& attn_mask,
                         KVCache& kv_cache,
-                        const ModelInputParams& input_params,
+                        const ModelParamsView& input_params,
                         aclrtEvent* event = nullptr,
                         std::atomic<bool>* event_flag = nullptr,
                         int node_id = 0);
@@ -199,7 +199,7 @@ class NpuDeepseekV2DecoderLayerImpl : public BaseLayer {
                                torch::Tensor& sin_pos,
                                torch::Tensor& attn_mask,
                                KVCache& kv_cache,
-                               ModelInputParams& input_params,
+                               ModelParamsView& input_params,
                                bool is_prefill);
 
   torch::Tensor block_tables_placeholder_;

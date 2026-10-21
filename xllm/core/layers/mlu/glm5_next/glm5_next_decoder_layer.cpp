@@ -175,7 +175,7 @@ torch::Tensor Glm5NextDecoderLayerImpl::forward(
     torch::Tensor& positions,
     const AttentionMetadata& attn_metadata,
     KVCache& kv_cache,
-    const ModelInputParams& input_params,
+    const ModelParamsView& input_params,
     DsaTopkRelay* topk_relay) {
   residual = std::nullopt;
 

@@ -48,7 +48,7 @@ class Glm4MoeMtpModelImpl
  protected:
   void prepare_legacy_expert_array(
       const torch::Tensor& hidden_states,
-      const ModelInputParams& input_params) override {
+      const ModelParamsView& input_params) override {
     auto& expert_input = const_cast<ExpertInput&>(input_params.expert);
     expert_input.expert_array =
         torch::arange(0,

@@ -28,7 +28,7 @@ limitations under the License.
 //   - CFG and APG guidance.
 //
 // Usage (registered as "audiodit"):
-//   DiTForwardInput input;
+//   DiTModelParams input;
 //   input.prompts = {"a jazz piano piece"};
 //   input.generation_params.audio_duration_frames = 500;
 //   input.generation_params.audio_steps = 16;
@@ -38,7 +38,8 @@ limitations under the License.
 
 #pragma once
 
-#include "core/runtime/dit_forward_params.h"
+#include "core/framework/model/dit_model_output.h"
+#include "core/framework/model/dit_model_params.h"
 #include "core/util/json_reader.h"
 #include "models/dit/transformers/transformer_longcat_audiodit.h"
 #include "models/model_registry.h"
@@ -127,7 +128,7 @@ class LongCatAudioDiTPipelineImpl final : public torch::nn::Module {
     text_encoder_ = register_module("text_encoder", UMT5TextEncoder(t5_ctx));
   }
 
-  DiTForwardOutput forward(const DiTForwardInput& input) {
+  DiTForwardOutput forward(const DiTModelParams& input) {
     torch::NoGradGuard no_grad;
     const auto& gp = input.generation_params;
 

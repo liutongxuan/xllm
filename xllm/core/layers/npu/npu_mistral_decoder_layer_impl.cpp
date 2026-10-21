@@ -179,14 +179,13 @@ int64_t NpuMistralDecoderLayerImpl::init_node(
   return atb::NO_ERROR;
 }
 
-torch::Tensor NpuMistralDecoderLayerImpl::forward(
-    torch::Tensor& x,
-    torch::Tensor& cos_pos,
-    torch::Tensor& sin_pos,
-    torch::Tensor& attn_mask,
-    KVCache& kv_cache,
-    ModelInputParams& input_params,
-    int node_id) {
+torch::Tensor NpuMistralDecoderLayerImpl::forward(torch::Tensor& x,
+                                                  torch::Tensor& cos_pos,
+                                                  torch::Tensor& sin_pos,
+                                                  torch::Tensor& attn_mask,
+                                                  KVCache& kv_cache,
+                                                  ModelParamsView& input_params,
+                                                  int node_id) {
   atb::Status st;
 
   if (!input_params.meta.batch_forward_type.is_decode()) {
@@ -226,7 +225,7 @@ void NpuMistralDecoderLayerImpl::build_node_variant_pack(
     torch::Tensor& sin_pos,
     at::Tensor& attn_mask,
     KVCache& kv_cache,
-    ModelInputParams& input_params,
+    ModelParamsView& input_params,
     bool is_prefill) {
   internal_tensors_ = atb_speed::Utils::AtTensor2Tensor(x);
   node.variantPack.inTensors.at(kWeightCountPerLayer) = internal_tensors_;

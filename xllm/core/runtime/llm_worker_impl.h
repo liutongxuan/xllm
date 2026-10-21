@@ -20,7 +20,7 @@ limitations under the License.
 #include "forward_params.h"
 #include "framework/eplb/eplb_executor.h"
 #include "framework/model/causal_lm.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "options.h"
 #include "runtime/worker_impl.h"
 
@@ -99,7 +99,7 @@ class LLMWorkerImpl : public WorkerImpl {
                                const torch::Tensor& positions,
                                const torch::Tensor& device_cache_slots,
                                LlmModelParams& input_params) {
-    ModelInputParams execution_params(input_params);
+    ModelParamsView execution_params(input_params);
     return model_->write_context_kv(target_hidden,
                                     positions,
                                     device_cache_slots,

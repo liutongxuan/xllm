@@ -24,7 +24,7 @@ limitations under the License.
 #include "core/layers/mlu/dsa_topk_relay.h"
 #include "deepseek_v2_attention.h"
 #include "framework/model/model_args.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "framework/model_context/model_context.h"
 #include "framework/parallel_state/parallel_args.h"
 #include "framework/parallel_state/parallel_state.h"
@@ -66,7 +66,7 @@ class DeepseekV2DecoderLayerImpl : public torch::nn::Module {
       torch::Tensor& positions,
       const AttentionMetadata& attn_metadata,
       KVCache& kv_cache,
-      const ModelInputParams& input_params,
+      const ModelParamsView& input_params,
       const std::optional<torch::Tensor>& input_ids = std::nullopt,
       DsaTopkRelay* topk_relay = nullptr);
 
@@ -75,7 +75,7 @@ class DeepseekV2DecoderLayerImpl : public torch::nn::Module {
                             torch::Tensor& positions,
                             const AttentionMetadata& attn_metadata,
                             KVCache& kv_cache,
-                            const ModelInputParams& input_params,
+                            const ModelParamsView& input_params,
                             const std::optional<torch::Tensor>& input_ids,
                             const std::optional<DsaTopkState>& topk_input,
                             std::optional<DsaTopkState>& topk_output);
@@ -114,7 +114,7 @@ class DeepseekV2DecoderLayerImpl : public torch::nn::Module {
   MoeInputPrepResult prepare_moe_inputs(
       torch::Tensor x,
       const torch::Tensor& residual,
-      const ModelInputParams& input_params,
+      const ModelParamsView& input_params,
       DeepseekV2AttentionImpl::PostAttnLayout attn_layout);
 
   bool can_keep_local_output(const PostAttnCarrier& carrier,
@@ -130,7 +130,7 @@ class DeepseekV2DecoderLayerImpl : public torch::nn::Module {
                              torch::Tensor& positions,
                              const AttentionMetadata& attn_metadata,
                              KVCache& kv_cache,
-                             const ModelInputParams& input_params,
+                             const ModelParamsView& input_params,
                              const std::optional<torch::Tensor>& input_ids,
                              DsaTopkRelay* topk_relay,
                              const std::optional<DsaTopkState>* mtp_topk_input,

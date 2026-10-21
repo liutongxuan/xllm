@@ -21,7 +21,7 @@ limitations under the License.
 #include <vector>
 
 #include "core/framework/batch/batch_forward_type.h"
-#include "core/framework/model/model_input_params.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/framework/multimodal/mm_data.h"
 #include "core/framework/request/sequence.h"
 #include "core/framework/request/sequences_group.h"

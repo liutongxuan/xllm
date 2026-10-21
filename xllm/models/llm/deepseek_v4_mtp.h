@@ -59,10 +59,10 @@ class DeepseekV4MultiTokenPredictorLayerImpl
                         torch::Tensor positions,
                         layer::AttentionMetadata& attn_metadata,
                         KVCache& kv_cache,
-                        const ModelInputParams& input_params,
+                        const ModelParamsView& input_params,
                         torch::Tensor tokens,
                         torch::Tensor* aux_hidden_states) {
-    ModelInputParams modified_input_params = input_params.clone().view();
+    ModelParamsView modified_input_params = input_params.clone().view();
     modified_input_params.embedding.input_embedding = previous_hidden_states;
     std::optional<torch::Tensor> residual;
     return MtpDecoderLayerImplBase<layer::DeepseekV4DecoderLayer>::forward(
@@ -215,7 +215,7 @@ class DeepseekV4MtpModelImpl final : public torch::nn::Module {
   ModelOutput forward(torch::Tensor tokens,
                       torch::Tensor positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) {
+                      const ModelParamsView& input_params) {
     torch::NoGradGuard no_grad;
 
     const bool acl_graph_forward = deepseek_v4_uses_acl_graph(input_params);
@@ -406,7 +406,7 @@ class DeepseekV4MtpModelImpl final : public torch::nn::Module {
 
   void prepare_graph_forward_metadata(ModelGraphMetadataState* state,
                                       const torch::Tensor& positions,
-                                      ModelInputParams& input_params) {
+                                      ModelParamsView& input_params) {
     CHECK(state != nullptr)
         << "[DeepseekV4Mtp] graph metadata state must be initialized";
     auto* dsa_state = dynamic_cast<DeepseekV4GraphMetadataState*>(state);
@@ -517,7 +517,7 @@ class DeepseekV4MtpModelImpl final : public torch::nn::Module {
   }
 
   void fill_empty_dp_rank_graph_metadata_input_params(
-      ModelInputParams& params) const {
+      ModelParamsView& params) const {
     params.attn_metadata = nullptr;
     const int64_t metadata_batch_size =
         std::max<int64_t>(params.meta.num_sequences, 1);
@@ -580,7 +580,7 @@ class DeepseekV4MtpModelImpl final : public torch::nn::Module {
     return metadata;
   }
 
-  void normalize_graph_metadata_input_params(ModelInputParams& params) const {
+  void normalize_graph_metadata_input_params(ModelParamsView& params) const {
     int64_t actual_metadata_rows =
         std::max<int64_t>(params.meta.actual_num_sequences, 0);
     int64_t padded_metadata_rows = actual_metadata_rows;
@@ -615,7 +615,7 @@ class DeepseekV4MtpModelImpl final : public torch::nn::Module {
         static_cast<int32_t>(actual_metadata_rows);
   }
 
-  void fill_empty_dp_rank_input_params(ModelInputParams& params) const {
+  void fill_empty_dp_rank_input_params(ModelParamsView& params) const {
     auto cpu_int_options = torch::TensorOptions()
                                .dtype(torch::kInt32)
                                .device(torch::kCPU)
@@ -656,7 +656,7 @@ class DeepseekV4MtpModelImpl final : public torch::nn::Module {
 
   std::shared_ptr<layer::AttentionMetadata>
   build_attention_metadata_for_forward(const torch::Tensor& positions,
-                                       const ModelInputParams& input_params) {
+                                       const ModelParamsView& input_params) {
     auto modified_input_params = input_params.clone().view();
     auto& dp_token_nums = modified_input_params.parallel.dp_global_token_nums;
     std::replace(dp_token_nums.begin(), dp_token_nums.end(), 0, 1);
@@ -676,7 +676,7 @@ class DeepseekV4MtpModelImpl final : public torch::nn::Module {
 
   void prepare_for_forward(layer::AttentionMetadata& attn_metadata,
                            const torch::Device& runtime_device,
-                           const ModelInputParams& input_params,
+                           const ModelParamsView& input_params,
                            bool pack_metadata = true,
                            bool build_rope = true) const {
     CHECK(attn_metadata.dsa_metadata)
@@ -710,7 +710,7 @@ class DeepseekV4MtpModelImpl final : public torch::nn::Module {
   // the kv extent has to shrink even though the replica is full.
   void rebuild_cp_local_query_metadata(
       layer::DSAMetadata& dsa,
-      ModelInputParams& params,
+      ModelParamsView& params,
       layer::v4_cp::DeepseekV4CpContext& cp_ctx) const {
     const auto& local_q = cp_ctx.local_q_seq_lens;
     const torch::Device device =
@@ -857,7 +857,7 @@ class DeepseekV4MtpModelImpl final : public torch::nn::Module {
   // attention layer passes at call time.
   void build_precomputed_metadata(
       layer::DSAMetadata& dsa,
-      const ModelInputParams& params,
+      const ModelParamsView& params,
       const torch::Tensor& cu_seqlens_ori_kv_override = torch::Tensor()) const {
     dsa.c1_metadata = torch::Tensor();
     dsa.c4_metadata = torch::Tensor();
@@ -1157,7 +1157,7 @@ class DeepseekV4MtpForCausalLMImpl final
 
   void prepare_graph_forward_metadata(ModelGraphMetadataState* state,
                                       const torch::Tensor& positions,
-                                      ModelInputParams& input_params) {
+                                      ModelParamsView& input_params) {
     this->model_->prepare_graph_forward_metadata(
         state, positions, input_params);
   }

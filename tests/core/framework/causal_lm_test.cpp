@@ -31,7 +31,7 @@ class TwoArgLogitsModel {
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& parameters) {
+                      const ModelParamsView& parameters) {
     (void)tokens;
     (void)positions;
     (void)kv_caches;

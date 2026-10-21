@@ -14,6 +14,8 @@ limitations under the License.
 ==============================================================================*/
 
 #pragma once
+#include "core/framework/model/dit_model_output.h"
+#include "core/framework/model/dit_model_params.h"
 #include "models/dit/pipelines/pipeline_flux_base.h"
 #include "models/dit/transformers/transformer_flux.h"
 // pipeline_flux_fill compatible with huggingface weights
@@ -68,7 +70,7 @@ class FluxFillPipelineImpl : public FluxPipelineBaseImpl {
     register_module("clip_text_model", clip_text_model_);
   }
 
-  DiTForwardOutput forward(const DiTForwardInput& input) {
+  DiTForwardOutput forward(const DiTModelParams& input) {
     const auto& generation_params = input.generation_params;
     int64_t height = generation_params.height;
     int64_t width = generation_params.width;

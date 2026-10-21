@@ -39,7 +39,7 @@ class FactoryTestExecutorImpl final : public ExecutorImpl {
   ModelOutput run(const torch::Tensor& /*tokens*/,
                   const torch::Tensor& /*positions*/,
                   std::vector<KVCache>& /*kv_caches*/,
-                  const ModelInputParams& /*params*/) override {
+                  const ModelParamsView& /*params*/) override {
     return ModelOutput{};
   }
 };

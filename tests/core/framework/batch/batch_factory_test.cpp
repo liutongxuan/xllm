@@ -32,7 +32,7 @@ limitations under the License.
 #include "core/framework/config/rec_config.h"
 #include "core/framework/config/scheduler_config.h"
 #include "core/framework/model/model_args.h"
-#include "core/framework/model/model_input_params.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/framework/model/rec_model_params.h"
 #include "core/framework/multimodal/mm_batch_data.h"
 #include "core/framework/multimodal/mm_data.h"
@@ -160,9 +160,9 @@ TEST(BatchFactoryTest, FactoriesKeepDomainsSeparateForTheSameInputContract) {
   static_assert(std::is_same_v<std::decay_t<decltype(input)>, RecForwardInput>);
   static_assert(std::is_same_v<decltype(input.input_params), RecModelParams>);
   static_assert(!std::is_base_of_v<LlmForwardInput, RecForwardInput>);
-  static_assert(!std::is_base_of_v<ModelInputParams, RecModelParams>);
+  static_assert(!std::is_base_of_v<ModelParamsView, RecModelParams>);
   static_assert(!std::is_convertible_v<RecForwardInput, LlmForwardInput>);
-  static_assert(!std::is_convertible_v<RecModelParams, ModelInputParams>);
+  static_assert(!std::is_convertible_v<RecModelParams, ModelParamsView>);
   EXPECT_FALSE(input.token_ids.defined());
 }
 

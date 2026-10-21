@@ -23,7 +23,7 @@ limitations under the License.
 #include "common/metrics.h"
 #include "core/kv_cache/storage/kv_cache.h"
 #include "framework/model/causal_vlm.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "models/model_registry.h"
 #include "options.h"
 #include "util/timer.h"
@@ -64,7 +64,7 @@ std::optional<ForwardOutput> MMEmbedVLMWorkerImpl::step(
   // call model executor forward to get hidden states
   CausalVLM* vlm_model = dynamic_cast<CausalVLM*>(model_.get());
   CHECK(vlm_model != nullptr) << "Model is not a CausalVLM.";
-  ModelInputParams execution_params(params);
+  ModelParamsView execution_params(params);
   auto encode_output = vlm_model->encode(execution_params);
   const auto it = encode_output.find("image|embedding");
   if (it == encode_output.end() ||

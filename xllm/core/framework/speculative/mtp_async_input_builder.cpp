@@ -118,7 +118,7 @@ void expand_decode_attention_metadata(LlmForwardInput& draft_input,
                                       const torch::Tensor& kv_seq_lens,
                                       int32_t block_size) {
   layer::ExpandedDecodeMetadataBuilder::populate(
-      ModelInputParams(draft_input.input_params),
+      ModelParamsView(draft_input.input_params),
       block_table_source.input_params,
       kv_seq_lens,
       block_size);
@@ -460,7 +460,7 @@ void prepare_target_verify_from_accepted_state(
     // The Python backend selects expanded_decode ahead of generic metadata.
     // Refresh lengths and page lists together after acceptance crosses a page.
     layer::ExpandedDecodeMetadataBuilder::populate_expanded_layout(
-        ModelInputParams(params),
+        ModelParamsView(params),
         expanded_kv_lens,
         params.graph.expanded_block_tables,
         params.graph.expanded_kv_seq_lens_vec,

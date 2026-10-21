@@ -163,7 +163,7 @@ void build_dflash_expanded_spec_verify_graph_input(LlmModelParams& input_params,
   torch::Tensor expanded_block_tables =
       torch::stack(expanded_block_rows, /*dim=*/0).contiguous();
   layer::ExpandedDecodeMetadataBuilder::populate_expanded_layout(
-      ModelInputParams(input_params),
+      ModelParamsView(input_params),
       expanded_kv_seq_lens_device,
       expanded_block_tables,
       std::move(expanded_kv_seq_lens),

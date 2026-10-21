@@ -135,7 +135,7 @@ torch::Tensor DeepseekV4DecoderLayerImpl::forward(
     torch::Tensor& positions,
     const AttentionMetadata& attn_metadata,
     KVCache& kv_cache,
-    const ModelInputParams& input_params,
+    const ModelParamsView& input_params,
     const std::optional<torch::Tensor>& input_ids,
     std::optional<PendingMHC>* pending_mhc,
     bool is_last_layer,

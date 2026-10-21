@@ -109,7 +109,7 @@ class QWen3ModelImpl : public LlmModelImplBase<layer::Qwen3DecoderLayer> {
   ModelOutput forward(torch::Tensor tokens,
                       torch::Tensor positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) override {
+                      const ModelParamsView& input_params) override {
     auto local_params = input_params.clone().view();
     return forward_impl(tokens, positions, kv_caches, local_params);
   }
@@ -185,7 +185,7 @@ class QWen3ModelImpl : public LlmModelImplBase<layer::Qwen3DecoderLayer> {
         return ModelOutput();
       }
 
-      if constexpr (std::is_same_v<InputParams, ModelInputParams>) {
+      if constexpr (std::is_same_v<InputParams, ModelParamsView>) {
         if (input_params.has_multimodal()) {
           const auto& deep_stacks = input_params.multimodal().deep_stacks;
           if (i < deep_stacks.size()) {
@@ -200,7 +200,7 @@ class QWen3ModelImpl : public LlmModelImplBase<layer::Qwen3DecoderLayer> {
 
  protected:
   virtual layer::AttentionMetadata get_attention_metadata(
-      const ModelInputParams& params,
+      const ModelParamsView& params,
       const torch::Tensor& h) {
     return build_attention_metadata(params, h);
   }
@@ -220,7 +220,7 @@ class QWen3ModelImpl : public LlmModelImplBase<layer::Qwen3DecoderLayer> {
     }
     max_seq_len_ = std::max(params.meta.kv_max_seq_len, max_seq_len_);
     bool is_spec_verify = false;
-    if constexpr (std::is_same_v<InputParams, ModelInputParams>) {
+    if constexpr (std::is_same_v<InputParams, ModelParamsView>) {
       is_spec_verify = params.is_spec_verify;
     }
     const bool use_append_mask =

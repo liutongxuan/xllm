@@ -28,7 +28,7 @@ limitations under the License.
 #include "core/framework/config/execution_config.h"
 #include "core/framework/config/rec_config.h"
 #include "framework/model/model_args.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "framework/model/rec_model_params.h"
 #include "layers/common/attention_metadata.h"
 #include "layers/common/expanded_decode_metadata_builder.h"
@@ -622,7 +622,7 @@ AttentionMetadata AttentionMetadataBuilder::build_mtp_sparse_decode(
 }
 
 AttentionMetadata AttentionMetadataBuilder::build(
-    const ModelInputParams& params,
+    const ModelParamsView& params,
     bool enable_mla,
     const std::optional<torch::Tensor>& attn_mask,
     const std::optional<torch::Device>& device,
@@ -632,7 +632,7 @@ AttentionMetadata AttentionMetadataBuilder::build(
 }
 
 AttentionMetadata AttentionMetadataBuilder::build(
-    const ModelInputParams& params,
+    const ModelParamsView& params,
     bool enable_mla,
     const std::string& compute_dtype,
     const std::optional<torch::Tensor>& attn_mask,

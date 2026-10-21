@@ -31,7 +31,7 @@ limitations under the License.
 #include "core/framework/config/scheduler_config.h"
 #include "core/framework/model/causal_lm.h"
 #include "core/framework/model/model_args.h"
-#include "core/framework/model/model_input_params.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/framework/model/rec_model.h"
 #include "core/layers/cuda/attention.h"
 #include "core/layers/cuda/flashinfer_workspace.h"
@@ -185,7 +185,7 @@ class FakeAttnCausalLM final : public CausalLM {
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& params) override {
+                      const ModelParamsView& params) override {
     (void)positions;
     CHECK(!kv_caches.empty());
 
@@ -305,8 +305,8 @@ RecModelParams make_native_rec_decode_params(const torch::Device& device,
   return params;
 }
 
-ModelInputParams MakeDecodeParams(const torch::Device& device) {
-  ModelInputParams p = ModelInputSnapshot(LlmModelParams()).view();
+ModelParamsView MakeDecodeParams(const torch::Device& device) {
+  ModelParamsView p = ModelInputSnapshot(LlmModelParams()).view();
   p.meta.batch_forward_type = BatchForwardType::DECODE;
   p.meta.num_sequences = 1;
   p.meta.kv_max_seq_len = 4;
@@ -332,11 +332,11 @@ ModelInputParams MakeDecodeParams(const torch::Device& device) {
   return p;
 }
 
-ModelInputParams MakeBatchDecodeParams(const torch::Device& device,
-                                       int32_t num_sequences) {
+ModelParamsView MakeBatchDecodeParams(const torch::Device& device,
+                                      int32_t num_sequences) {
   CHECK_GT(num_sequences, 0);
 
-  ModelInputParams p = ModelInputSnapshot(LlmModelParams()).view();
+  ModelParamsView p = ModelInputSnapshot(LlmModelParams()).view();
   p.meta.batch_forward_type = BatchForwardType::DECODE;
   p.meta.num_sequences = num_sequences;
   p.meta.kv_max_seq_len = 1;
@@ -359,11 +359,11 @@ ModelInputParams MakeBatchDecodeParams(const torch::Device& device,
   return p;
 }
 
-ModelInputParams MakePrefillParams(const torch::Device& device,
-                                   int32_t num_tokens) {
+ModelParamsView MakePrefillParams(const torch::Device& device,
+                                  int32_t num_tokens) {
   CHECK_GT(num_tokens, 0);
 
-  ModelInputParams p = ModelInputSnapshot(LlmModelParams()).view();
+  ModelParamsView p = ModelInputSnapshot(LlmModelParams()).view();
   p.meta.batch_forward_type = BatchForwardType::PREFILL;
   p.meta.num_sequences = 1;
   p.meta.kv_max_seq_len = num_tokens;
@@ -444,9 +444,8 @@ runtime::Options make_test_runtime_options(int64_t max_seqs_per_batch) {
   return options;
 }
 
-ModelInputParams make_multi_sequence_decode_params(
-    const torch::Device& device) {
-  ModelInputParams p = ModelInputSnapshot(LlmModelParams()).view();
+ModelParamsView make_multi_sequence_decode_params(const torch::Device& device) {
+  ModelParamsView p = ModelInputSnapshot(LlmModelParams()).view();
   p.meta.batch_forward_type = BatchForwardType::DECODE;
   p.meta.num_sequences = 2;
   p.meta.kv_max_seq_len = 9;
@@ -541,14 +540,14 @@ TEST(CudaGraphExecutorTest, DecodeMetadataFastPathUpdatesPersistentBuffers) {
       torch::TensorOptions().dtype(torch::kInt32).device(device);
   torch::Tensor tokens = torch::tensor({10, 11}, iopt);
   torch::Tensor positions = torch::tensor({20, 21}, iopt);
-  ModelInputParams params = make_multi_sequence_decode_params(device);
+  ModelParamsView params = make_multi_sequence_decode_params(device);
   std::vector<KVCache> kv = MakeKvCaches(device,
                                          /*num_pages=*/16,
                                          /*page_size=*/1,
                                          /*num_kv_heads=*/1,
                                          /*head_dim=*/128);
 
-  std::optional<ModelInputParams> updated =
+  std::optional<ModelParamsView> updated =
       persistent.update(tokens,
                         kv[0].get_k_cache(),
                         kv[0].get_v_cache(),
@@ -626,7 +625,7 @@ TEST(CudaGraphExecutorTest, DecodeMetadataFastPathUpdatesLinearStateIndices) {
       torch::TensorOptions().dtype(torch::kInt32).device(device);
   torch::Tensor tokens = torch::tensor({10, 11}, iopt);
   torch::Tensor positions = torch::tensor({20, 21}, iopt);
-  ModelInputParams params = make_multi_sequence_decode_params(device);
+  ModelParamsView params = make_multi_sequence_decode_params(device);
   params.embedding.linear_state_ids = {8, 6};
   params.embedding.linear_state_indices = torch::tensor({8, 6}, iopt);
   std::vector<KVCache> kv = MakeKvCaches(device,
@@ -635,7 +634,7 @@ TEST(CudaGraphExecutorTest, DecodeMetadataFastPathUpdatesLinearStateIndices) {
                                          /*num_kv_heads=*/1,
                                          /*head_dim=*/128);
 
-  std::optional<ModelInputParams> updated =
+  std::optional<ModelParamsView> updated =
       persistent.update(tokens,
                         kv[0].get_k_cache(),
                         kv[0].get_v_cache(),
@@ -672,8 +671,8 @@ TEST(CudaGraphExecutorTest, DecodeMetadataFastPathFallbackMatchesLegacyPath) {
       torch::TensorOptions().dtype(torch::kInt32).device(device);
   torch::Tensor tokens = torch::tensor({10, 11, 12}, iopt);
   torch::Tensor positions = torch::tensor({20, 21, 22}, iopt);
-  ModelInputParams fast_params = MakeBatchDecodeParams(device, 3);
-  ModelInputParams fallback_params = MakeBatchDecodeParams(device, 3);
+  ModelParamsView fast_params = MakeBatchDecodeParams(device, 3);
+  ModelParamsView fallback_params = MakeBatchDecodeParams(device, 3);
   torch::Tensor new_cache_slots_base =
       torch::tensor({0, 99, 1, 88, 2, 77}, iopt).view({3, 2});
   fallback_params.attention.device.new_cache_slots =
@@ -687,7 +686,7 @@ TEST(CudaGraphExecutorTest, DecodeMetadataFastPathFallbackMatchesLegacyPath) {
                                          /*num_kv_heads=*/1,
                                          /*head_dim=*/128);
 
-  std::optional<ModelInputParams> fast_updated =
+  std::optional<ModelParamsView> fast_updated =
       fast_path_persistent.update(tokens,
                                   kv[0].get_k_cache(),
                                   kv[0].get_v_cache(),
@@ -695,7 +694,7 @@ TEST(CudaGraphExecutorTest, DecodeMetadataFastPathFallbackMatchesLegacyPath) {
                                   fast_params,
                                   /*padded_num_tokens=*/4,
                                   /*return_capture_params=*/true);
-  std::optional<ModelInputParams> fallback_updated =
+  std::optional<ModelParamsView> fallback_updated =
       fallback_persistent.update(tokens,
                                  kv[0].get_k_cache(),
                                  kv[0].get_v_cache(),
@@ -861,7 +860,7 @@ TEST(CudaGraphExecutorTest, BatchDecodePaddedBucket100CaptureAndReplay) {
       torch::TensorOptions().dtype(torch::kInt32).device(device);
   torch::Tensor tokens = torch::arange(1, kActualBatchSize + 1, iopt);
   torch::Tensor positions = torch::zeros({kActualBatchSize}, iopt);
-  ModelInputParams params = MakeBatchDecodeParams(device, kActualBatchSize);
+  ModelParamsView params = MakeBatchDecodeParams(device, kActualBatchSize);
 
   std::vector<KVCache> kv = MakeKvCaches(device,
                                          /*num_pages=*/kActualBatchSize,
@@ -936,7 +935,7 @@ TEST(CudaGraphExecutorTest, BatchDecodeNoPaddingBucket100CaptureAndReplay) {
       torch::TensorOptions().dtype(torch::kInt32).device(device);
   torch::Tensor tokens = torch::arange(1, kActualBatchSize + 1, iopt);
   torch::Tensor positions = torch::zeros({kActualBatchSize}, iopt);
-  ModelInputParams params = MakeBatchDecodeParams(device, kActualBatchSize);
+  ModelParamsView params = MakeBatchDecodeParams(device, kActualBatchSize);
 
   std::vector<KVCache> kv = MakeKvCaches(device,
                                          /*num_pages=*/kActualBatchSize,

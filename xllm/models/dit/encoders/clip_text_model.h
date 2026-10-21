@@ -25,7 +25,6 @@ limitations under the License.
 #include <regex>
 #include <unordered_map>
 
-#include "core/framework/model/model_input_params.h"
 #include "core/framework/model_context/model_context.h"
 #include "core/framework/model_loader/dit_model_loader.h"
 #include "core/kv_cache/storage/kv_cache.h"

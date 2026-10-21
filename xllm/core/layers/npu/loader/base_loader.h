@@ -26,7 +26,7 @@ limitations under the License.
 
 #include "core/kv_cache/storage/kv_cache.h"
 #include "framework/eplb/expert_buffer_manager.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "framework/model_context/model_context.h"
 #include "framework/state_dict/state_dict.h"
 #include "xllm_atb_layers/pytorch/atb_torch/core/include/base_operation.h"

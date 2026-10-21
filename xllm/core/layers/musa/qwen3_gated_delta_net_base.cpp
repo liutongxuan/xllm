@@ -138,7 +138,7 @@ std::tuple<torch::Tensor, torch::Tensor> torch_recurrent_gated_delta_rule(
 // Host-side equivalent of expand_sequence_tensor_to_batch for a small int
 // vector. Used for num_accepted_tokens in the spec-verify loops so we avoid a
 // per-GDN-layer device->host copy + implicit stream sync (the host values are
-// already available in ModelInputParams::num_accepted_tokens_host).
+// already available in ModelParamsView::num_accepted_tokens_host).
 std::vector<int64_t> expand_int_vector_to_batch(const std::vector<int64_t>& src,
                                                 int64_t target_batch,
                                                 const char* name) {
@@ -506,7 +506,7 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
     const torch::Tensor& hidden_states,
     const AttentionMetadata& attn_metadata,
     KVCache& kv_cache,
-    const ModelInputParams& input_params) {
+    const ModelParamsView& input_params) {
   // Early-return on dummy shards. Under dp>1, an empty shard is padded with a
   // fake token by worker_impl but its GDN state tensors (linear_state_ids,
   // has_initial_states etc.) may be empty/undefined. Entering
@@ -1070,7 +1070,7 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::reshape_qkvz_unpad(
 }
 
 torch::Tensor Qwen3GatedDeltaNetBaseImpl::get_linear_state_indices(
-    const ModelInputParams& input_params,
+    const ModelParamsView& input_params,
     const torch::Device& device) const {
   CHECK(!input_params.embedding.linear_state_ids.empty())
       << "linear_state_ids must be populated for gated delta net";

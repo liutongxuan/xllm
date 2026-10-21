@@ -587,8 +587,7 @@ bool HierarchyKVCacheTransfer::load_from_host(const HostKVRequest& request,
   return host_kv_transfer_->load(request, handle);
 }
 
-void HierarchyKVCacheTransfer::set_layer_synchronizer(
-    ModelInputParams& params) {
+void HierarchyKVCacheTransfer::set_layer_synchronizer(ModelParamsView& params) {
   std::optional<HostKVLoadHandle> handle =
       take_load_handle(params.meta.batch_id);
   if (!handle.has_value()) {

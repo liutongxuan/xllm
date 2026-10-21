@@ -37,7 +37,7 @@ class LlamaDecoderLayerImpl : public torch::nn::Module {
                         torch::Tensor& sin_pos,
                         torch::Tensor& attn_mask,
                         KVCache& kv_cache,
-                        ModelInputParams& input_params,
+                        ModelParamsView& input_params,
                         int node_id) {
     return decoder_layer_(
         x, cos_pos, sin_pos, attn_mask, kv_cache, input_params, node_id);
@@ -148,12 +148,12 @@ class LlamaModelImpl : public torch::nn::Module {
   ModelOutput forward(torch::Tensor tokens,
                       torch::Tensor positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) {
+                      const ModelParamsView& input_params) {
     torch::Tensor h = npu_embed_tokens_(tokens, 0);
     auto cos_pos = cos_pos_.index_select(0, positions);
     auto sin_pos = sin_pos_.index_select(0, positions);
-    ModelInputParams& input_params_new =
-        const_cast<ModelInputParams&>(input_params);
+    ModelParamsView& input_params_new =
+        const_cast<ModelParamsView&>(input_params);
     // torch::Tensor max_of_seq =
     // torch::max(input_params.attention.device.kv_seq_lens); max_seq_len_ =
     // std::max(max_of_seq.item<int>(), max_seq_len_);

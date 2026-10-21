@@ -67,7 +67,7 @@ struct LlmTaskCapacity {
 
 using TaskKVPush =
     std::function<folly::SemiFuture<bool>(const std::vector<TransferKVInfo>&,
-                                          ModelInputParams&)>;
+                                          ModelParamsView&)>;
 
 // Borrowed resources outlive the pipeline. PUSH binds a fresh layer
 // synchronizer to the invocation and resolves KV resources at Launch time.

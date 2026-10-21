@@ -25,7 +25,7 @@ limitations under the License.
 #include "common/attention_metadata.h"
 #include "common/rms_norm.h"
 #include "core/kv_cache/storage/kv_cache.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "framework/model_context/model_context.h"
 #include "framework/state_dict/state_dict.h"
 #include "framework/state_dict/utils.h"
@@ -56,7 +56,7 @@ class DeepseekV4DecoderLayerImpl : public torch::nn::Module {
       torch::Tensor& positions,
       const AttentionMetadata& attn_metadata,
       KVCache& kv_cache,
-      const ModelInputParams& input_params,
+      const ModelParamsView& input_params,
       const std::optional<torch::Tensor>& input_ids = std::nullopt);
 
   void write_context_kv(const torch::Tensor& hidden_states,

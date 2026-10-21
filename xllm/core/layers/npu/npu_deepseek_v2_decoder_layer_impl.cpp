@@ -822,13 +822,13 @@ torch::Tensor NpuDeepseekV2DecoderLayerImpl::forward(
     torch::Tensor& sin_pos,
     torch::Tensor& attn_mask,
     KVCache& kv_cache,
-    const ModelInputParams& input_params,
+    const ModelParamsView& input_params,
     aclrtEvent* event,
     std::atomic<bool>* event_flag,
     int node_id) {
   atb::Status st;
-  ModelInputParams& input_params_new =
-      const_cast<ModelInputParams&>(input_params);
+  ModelParamsView& input_params_new =
+      const_cast<ModelParamsView&>(input_params);
   // all micro batches are in same prefill/decode stage,
   if (input_params_new.meta.batch_forward_type.is_chunked_prefill()) {
     build_node_variant_pack(prefill_node_prefixcache_,
@@ -907,7 +907,7 @@ void NpuDeepseekV2DecoderLayerImpl::build_node_variant_pack(
     torch::Tensor& sin_pos,
     torch::Tensor& attn_mask,
     KVCache& kv_cache,
-    ModelInputParams& input_params,
+    ModelParamsView& input_params,
     bool is_prefill) {
   internal_tensor_ = atb_speed::Utils::AtTensor2Tensor(x);
   // final_hidden_states_ = torch::zeros_like(x);

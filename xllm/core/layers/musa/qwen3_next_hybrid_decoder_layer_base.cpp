@@ -120,7 +120,7 @@ torch::Tensor Qwen3HybridDecoderLayerImplBase::forward(
     torch::Tensor& positions,
     const AttentionMetadata& attn_metadata,
     KVCache& kv_cache,
-    const ModelInputParams& input_params,
+    const ModelParamsView& input_params,
     const torch::Tensor& mrope_cos_sin) {
   // Pre-attention norm
   if (!residual.has_value()) {

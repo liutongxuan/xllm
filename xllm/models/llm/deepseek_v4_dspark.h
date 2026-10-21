@@ -177,7 +177,7 @@ class DeepseekV4DSparkModelImpl final : public DeepseekV4ModelImpl {
                                const torch::Tensor& positions,
                                const torch::Tensor& device_cache_slots,
                                std::vector<KVCache>& kv_caches,
-                               const ModelInputParams& input_params) {
+                               const ModelParamsView& input_params) {
     CHECK_EQ(kv_caches.size(), layers_.size())
         << "DeepSeek-V4 DSpark cache/layer count mismatch.";
     CHECK_EQ(device_cache_slots.numel(), target_hidden.size(0))
@@ -255,7 +255,7 @@ class DeepseekV4DSparkForCausalLMImpl final
                                const torch::Tensor& positions,
                                const torch::Tensor& device_cache_slots,
                                std::vector<KVCache>& kv_caches,
-                               const ModelInputParams& input_params) {
+                               const ModelParamsView& input_params) {
     return model_->write_context_kv(
         target_hidden, positions, device_cache_slots, kv_caches, input_params);
   }
@@ -271,7 +271,7 @@ class DeepseekV4DSparkForCausalLMImpl final
 
   void prepare_graph_forward_metadata(ModelGraphMetadataState* state,
                                       const torch::Tensor& positions,
-                                      ModelInputParams& input_params) {
+                                      ModelParamsView& input_params) {
     model_->prepare_graph_forward_metadata(state, positions, input_params);
   }
 

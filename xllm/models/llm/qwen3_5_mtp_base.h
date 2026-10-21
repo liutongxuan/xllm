@@ -104,7 +104,7 @@ class Qwen3_5MtpModelImplBase : public Qwen3HybridModelImplBase {
   ModelOutput forward(torch::Tensor tokens,
                       torch::Tensor positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) override {
+                      const ModelParamsView& input_params) override {
     torch::NoGradGuard no_grad;
 
     if (dp_size_ > 1 && tokens.sizes() == 0) {

@@ -48,18 +48,21 @@ TEST(DiTForwardInputFactoryTest, PreservesRequestOrderAndNamedInputs) {
   DiTForwardInputFactory factory;
   auto input = factory.create_input(batch);
 
-  EXPECT_EQ(input.batch_size, 2);
-  EXPECT_EQ(input.prompts, (std::vector<std::string>{"first", "second"}));
-  EXPECT_TRUE(input.generation_params == first->state().generation_params());
-  ASSERT_EQ(input.media_sources.size(), 1u);
-  EXPECT_EQ(input.media_sources.at(0).name, "image");
+  EXPECT_EQ(input.model_params.batch_size, 2);
+  EXPECT_EQ(input.model_params.prompts,
+            (std::vector<std::string>{"first", "second"}));
+  EXPECT_TRUE(input.model_params.generation_params ==
+              first->state().generation_params());
+  ASSERT_EQ(input.model_params.media_sources.size(), 1u);
+  EXPECT_EQ(input.model_params.media_sources.at(0).name, "image");
   EXPECT_TRUE(
-      torch::equal(input.media_sources.at(0).tensor[0],
+      torch::equal(input.model_params.media_sources.at(0).tensor[0],
                    first->state().input_params().media_sources.at(0).tensor));
   EXPECT_TRUE(
-      torch::equal(input.media_sources.at(0).tensor[1],
+      torch::equal(input.model_params.media_sources.at(0).tensor[1],
                    second->state().input_params().media_sources.at(0).tensor));
-  const auto prompt_embed = input.tensor_sources.get("prompt_embed");
+  const auto prompt_embed =
+      input.model_params.tensor_sources.get("prompt_embed");
   ASSERT_TRUE(prompt_embed.has_value());
   EXPECT_EQ(prompt_embed->sizes().vec(), (std::vector<int64_t>{2, 2, 4}));
   EXPECT_TRUE(torch::equal(
@@ -77,12 +80,13 @@ TEST(DiTForwardInputFactoryTest, ReusesSingleRequestTensorStorage) {
   DiTForwardInputFactory factory;
   auto input = factory.create_input(batch);
 
-  const torch::Tensor& image = input.media_sources.at(0).tensor;
+  const torch::Tensor& image = input.model_params.media_sources.at(0).tensor;
   EXPECT_EQ(image.sizes(), torch::IntArrayRef({1, 3, 2, 2}));
   EXPECT_EQ(
       image.data_ptr(),
       request->state().input_params().media_sources.at(0).tensor.data_ptr());
-  const auto prompt_embed = input.tensor_sources.get("prompt_embed");
+  const auto prompt_embed =
+      input.model_params.tensor_sources.get("prompt_embed");
   ASSERT_TRUE(prompt_embed.has_value());
   EXPECT_EQ(prompt_embed->data_ptr(),
             request->state()

@@ -170,7 +170,8 @@ std::optional<ForwardOutput> DiTWorkerImpl::step(
   torch::DeviceGuard device_guard(device_);
   Timer timer;
   DiTForwardInput input_on_device = inputs.to(device_);
-  DiTForwardOutput output = dit_model_executor_->forward(input_on_device);
+  DiTForwardOutput output =
+      dit_model_executor_->forward(input_on_device.model_params);
 
   const int32_t ret = device_.synchronize_default_stream();
   CHECK_EQ(ret, 0) << "synchronize_default_stream failed";

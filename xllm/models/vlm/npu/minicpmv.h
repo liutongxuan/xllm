@@ -22,8 +22,8 @@ limitations under the License.
 #include <regex>
 #include <unordered_map>
 
-#include "core/framework/model/model_input_params.h"
 #include "core/framework/model/model_output.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/framework/model_context/model_context.h"
 #include "core/kv_cache/storage/kv_cache.h"
 #include "core/layers/npu/multi_head_attention.h"
@@ -820,7 +820,7 @@ class MiniCPMV2_6Impl : public torch::nn::Module {
       mlp_ = register_module("mlp", VisionAdapterMLP(context));
   }
 
-  void prepare_encoder_input(const ModelInputParams& input_params,
+  void prepare_encoder_input(const ModelParamsView& input_params,
                              std::optional<MiniCPMVImageInputs>& image_inputs) {
     const auto& mm_data = input_params.multimodal().mm_data;
 
@@ -948,7 +948,7 @@ class MiniCPMV2_6Impl : public torch::nn::Module {
     return llm_embedding;
   }
 
-  MMDict get_multimodal_embeddings(const ModelInputParams& input_params) {
+  MMDict get_multimodal_embeddings(const ModelParamsView& input_params) {
     std::optional<MiniCPMVImageInputs> image_inputs;
     prepare_encoder_input(input_params, image_inputs);
     MMDict multimodal_embeds;
@@ -1012,7 +1012,7 @@ class MiniCPMV2_6Impl : public torch::nn::Module {
   }
 
   torch::Tensor get_input_embeddings(const torch::Tensor input_ids,
-                                     const ModelInputParams& input_params) {
+                                     const ModelParamsView& input_params) {
     const auto& mm_data = input_params.multimodal().mm_data;
     torch::Tensor multimodal_embeds;
     if (const auto& emb = mm_data.get<torch::Tensor>("image|embedding")) {
@@ -1034,7 +1034,7 @@ class MiniCPMV2_6Impl : public torch::nn::Module {
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) {
+                      const ModelParamsView& input_params) {
     return language_model_->forward(tokens, positions, kv_caches, input_params);
   }
 

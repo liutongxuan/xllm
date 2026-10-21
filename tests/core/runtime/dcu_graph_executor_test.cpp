@@ -31,7 +31,7 @@ limitations under the License.
 #include "core/framework/config/execution_config.h"
 #include "core/framework/model/causal_lm.h"
 #include "core/framework/model/model_args.h"
-#include "core/framework/model/model_input_params.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/framework/model/rec_model.h"
 #include "core/kv_cache/storage/kv_cache.h"
 #include "core/platform/device.h"
@@ -117,7 +117,7 @@ class FakeSimpleCausalLM final : public CausalLM {
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& params) override {
+                      const ModelParamsView& params) override {
     (void)kv_caches;
     (void)params;
 
@@ -224,7 +224,7 @@ runtime::Options MakeRuntimeOptions(int32_t max_seqs_per_batch = 8) {
   return options;
 }
 
-template <typename Params = ModelInputParams>
+template <typename Params = ModelParamsView>
 Params MakeDecodeParams(const torch::Device& device,
                         int32_t num_tokens,
                         int32_t kv_len = 4) {
@@ -232,7 +232,7 @@ Params MakeDecodeParams(const torch::Device& device,
   CHECK_GT(kv_len, 0);
 
   Params p = [] {
-    if constexpr (std::is_same_v<Params, ModelInputParams>) {
+    if constexpr (std::is_same_v<Params, ModelParamsView>) {
       return ModelInputSnapshot(LlmModelParams()).view();
     } else {
       return RecModelParams();
@@ -287,11 +287,11 @@ Params MakeDecodeParams(const torch::Device& device,
   return p;
 }
 
-ModelInputParams MakePrefillParams(const torch::Device& device,
-                                   int32_t num_tokens) {
+ModelParamsView MakePrefillParams(const torch::Device& device,
+                                  int32_t num_tokens) {
   CHECK_GT(num_tokens, 0);
 
-  ModelInputParams p = ModelInputSnapshot(LlmModelParams()).view();
+  ModelParamsView p = ModelInputSnapshot(LlmModelParams()).view();
 
   p.meta.batch_forward_type = BatchForwardType::PREFILL;
   p.meta.num_sequences = 1;

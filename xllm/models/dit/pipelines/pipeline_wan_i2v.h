@@ -23,6 +23,8 @@ limitations under the License.
 #include "core/framework/config/dit_config.h"
 #include "core/framework/config/load_config.h"
 #include "core/framework/config/parallel_config.h"
+#include "core/framework/model/dit_model_output.h"
+#include "core/framework/model/dit_model_params.h"
 #include "core/framework/model_context/model_context.h"
 #include "core/framework/model_loader/dit_model_loader.h"
 #include "core/framework/request/dit_request_state.h"
@@ -111,7 +113,7 @@ class WanImageToVideoPipelineImpl : public torch::nn::Module,
 
   ~WanImageToVideoPipelineImpl() = default;
 
-  DiTForwardOutput forward(const DiTForwardInput& input) {
+  DiTForwardOutput forward(const DiTModelParams& input) {
     const auto& generation_params = input.generation_params;
 
     int64_t seed = generation_params.seed > 0 ? generation_params.seed : 42;

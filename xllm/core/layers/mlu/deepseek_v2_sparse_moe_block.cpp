@@ -60,7 +60,7 @@ void DeepseekV2SparseMoEBlockImpl::verify_loaded_weights() const {
 }
 
 DeepseekV2SparseMoEBlockImpl::ExecCfg DeepseekV2SparseMoEBlockImpl::plan_exec(
-    const ModelInputParams& input_params) const {
+    const ModelParamsView& input_params) const {
   ExecCfg cfg;
   cfg.enable_all2all = enable_deep_ep_ && all_dp_ranks_are_decode(input_params);
   cfg.need_dp_gather = need_dp_moe_gather(parallel_args_, cfg.enable_all2all);
@@ -70,7 +70,7 @@ DeepseekV2SparseMoEBlockImpl::ExecCfg DeepseekV2SparseMoEBlockImpl::plan_exec(
 DeepseekV2SparseMoEBlockImpl::PrepOut DeepseekV2SparseMoEBlockImpl::prep_in(
     torch::Tensor x,
     const torch::Tensor& residual,
-    const ModelInputParams& input_params,
+    const ModelParamsView& input_params,
     const ExecCfg& exec,
     DeepseekV2AttentionImpl::PostAttnLayout attn_layout) const {
   PrepOut prep;
@@ -122,7 +122,7 @@ DeepseekV2SparseMoEBlockImpl::PrepOut DeepseekV2SparseMoEBlockImpl::prep_in(
 
 torch::Tensor DeepseekV2SparseMoEBlockImpl::gather_in(
     const PrepOut& prep,
-    const ModelInputParams& input_params) const {
+    const ModelParamsView& input_params) const {
   if (!prep.need_dp_gather) {
     return prep.ffn_in;
   }
@@ -134,7 +134,7 @@ torch::Tensor DeepseekV2SparseMoEBlockImpl::gather_in(
 torch::Tensor DeepseekV2SparseMoEBlockImpl::merge_out(
     torch::Tensor x,
     const PrepOut& prep,
-    const ModelInputParams& input_params) const {
+    const ModelParamsView& input_params) const {
   if (prep.need_dp_gather) {
     x = get_dp_local_slice(x, input_params, parallel_args_);
     return x + prep.skip_local;

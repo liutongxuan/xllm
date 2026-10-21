@@ -22,7 +22,7 @@ limitations under the License.
 #include <nlohmann/json.hpp>
 
 #include "framework/model/model_args.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "framework/model_context/model_context.h"
 #include "framework/parallel_state/npu_dp_ep_padding.h"
 #include "framework/quantization/quant_args.h"
@@ -50,7 +50,7 @@ class NpuGlm4MoeDecoderLiteImpl : public BaseLayer {
                         torch::Tensor& sin_pos,
                         torch::Tensor& attn_mask,
                         KVCache& kv_cache,
-                        const ModelInputParams& input_params,
+                        const ModelParamsView& input_params,
                         aclrtEvent* event = nullptr,
                         std::atomic<bool>* event_flag = nullptr,
                         int node_id = 0);
@@ -102,7 +102,7 @@ class NpuGlm4MoeDecoderLiteImpl : public BaseLayer {
                                torch::Tensor& sin_pos,
                                torch::Tensor& attn_mask,
                                KVCache& kv_cache,
-                               const ModelInputParams& input_params,
+                               const ModelParamsView& input_params,
                                bool is_prefill);
 
   std::string model_name_;

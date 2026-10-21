@@ -34,8 +34,8 @@ limitations under the License.
 #include "core/framework/config/parallel_config.h"
 #include "core/framework/config/speculative_config.h"
 #include "core/framework/model/causal_lm.h"
-#include "core/framework/model/model_input_params.h"
 #include "core/framework/model/model_output.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/framework/model_context/model_context.h"
 #include "core/framework/model_loader/model_loader.h"
 #include "core/framework/parallel_state/parallel_args.h"
@@ -168,7 +168,7 @@ class XliteCausalLMBase : public CausalLM, public XliteModelHolder {
   ModelOutput forward(const torch::Tensor&,
                       const torch::Tensor&,
                       std::vector<KVCache>&,
-                      const ModelInputParams&) override {
+                      const ModelParamsView&) override {
     LOG(FATAL) << "xlite forward() must not be called; use XliteExecutorImpl";
     return ModelOutput();
   }

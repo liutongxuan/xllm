@@ -20,7 +20,7 @@ limitations under the License.
 #include <cstdint>
 #include <vector>
 
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 
 namespace xllm {
 namespace {
@@ -66,10 +66,10 @@ TEST(LinearStateRestoreTest, RejectsNonDivisibleActiveRows) {
 }
 
 TEST(LinearStateRestoreTest, ModelInputConversionPreservesValidityMask) {
-  ModelInputParams input_params = ModelInputSnapshot(LlmModelParams()).view();
+  ModelParamsView input_params = ModelInputSnapshot(LlmModelParams()).view();
   input_params.linear_state_validity_mask = {0, 1, 1, 0};
 
-  ModelInputParams converted =
+  ModelParamsView converted =
       input_params.clone().to(torch::Device(torch::kCPU)).view();
 
   EXPECT_EQ(converted.linear_state_validity_mask,

@@ -23,7 +23,7 @@ limitations under the License.
 #include <type_traits>
 
 #include "core/framework/model/causal_lm.h"
-#include "core/framework/model/model_input_params.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/kv_cache/storage/kv_cache.h"
 #include "core/runtime/executor_impl.h"
 #include "core/runtime/executor_impl_factory.h"
@@ -59,12 +59,12 @@ class GraphPersistentParam final {
   // input tensors
   torch::Tensor tokens_;
   torch::Tensor positions_;
-  std::optional<ModelInputParams> params_;
+  std::optional<ModelParamsView> params_;
   std::optional<RecModelParams> rec_params_;
 
   template <typename Params>
   Params& capture_params() {
-    if constexpr (std::is_same_v<Params, ModelInputParams>) {
+    if constexpr (std::is_same_v<Params, ModelParamsView>) {
       return params_.value();
     } else {
       static_assert(std::is_same_v<Params, RecModelParams>);
@@ -138,9 +138,9 @@ class MluGraph final {
   }
 
   void prepare_model_graph_metadata(CausalLM* model,
-                                    const ModelInputParams& params);
+                                    const ModelParamsView& params);
 
-  bool matches_graph_input(const ModelInputParams&) const { return true; }
+  bool matches_graph_input(const ModelParamsView&) const { return true; }
   bool matches_graph_input(const RecModelParams& params) const;
 
  private:
@@ -179,7 +179,7 @@ class MluGraphExecutorImpl final : public ExecutorImpl,
   ModelOutput run(const torch::Tensor& tokens,
                   const torch::Tensor& positions,
                   std::vector<KVCache>& kv_caches,
-                  const ModelInputParams& params) override;
+                  const ModelParamsView& params) override;
 
   ModelOutput run(const torch::Tensor& tokens,
                   const torch::Tensor& positions,

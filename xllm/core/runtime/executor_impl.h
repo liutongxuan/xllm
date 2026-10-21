@@ -24,8 +24,8 @@ limitations under the License.
 #include "common/macros.h"
 #include "core/kv_cache/storage/kv_cache.h"
 #include "framework/model/causal_lm.h"
-#include "framework/model/model_input_params.h"
 #include "framework/model/model_output.h"
+#include "framework/model/model_params_view.h"
 #include "options.h"
 #include "platform/stream.h"
 #include "platform/stream_event.h"
@@ -47,7 +47,7 @@ class ExecutorImpl {
 
   virtual bool supports_prepared_attention_metadata() const { return false; }
   virtual void prepare_attention_metadata(std::vector<KVCache>& /*kv_caches*/,
-                                          ModelInputParams& /*params*/) {
+                                          ModelParamsView& /*params*/) {
     LOG(FATAL) << "Executor does not support prepared attention metadata.";
   }
 
@@ -55,19 +55,19 @@ class ExecutorImpl {
   virtual void warmup_prepared_graph(const torch::Tensor& /*tokens*/,
                                      const torch::Tensor& /*positions*/,
                                      std::vector<KVCache>& /*kv_caches*/,
-                                     const ModelInputParams& /*params*/) {
+                                     const ModelParamsView& /*params*/) {
     LOG(FATAL) << "Executor does not support prepared graph capture.";
   }
 
   virtual ModelOutput run(const torch::Tensor& tokens,
                           const torch::Tensor& positions,
                           std::vector<KVCache>& kv_caches,
-                          const ModelInputParams& params) = 0;
+                          const ModelParamsView& params) = 0;
 
   virtual void prepare_graph_input(const torch::Tensor& /*tokens*/,
                                    const torch::Tensor& /*positions*/,
                                    std::vector<KVCache>& /*kv_caches*/,
-                                   const ModelInputParams& /*params*/) {}
+                                   const ModelParamsView& /*params*/) {}
 
   virtual bool prepare_static_mtp_graph_tasks(
       const SpecVerifyGraphTaskSignal& /*signal*/,

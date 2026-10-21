@@ -22,15 +22,15 @@ limitations under the License.
 
 #include "core/framework/batch/batch_forward_type.h"
 #include "core/framework/config/rec_config.h"
-#include "core/framework/model/model_input_params.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/framework/model/rec_model_params.h"
 #include "core/layers/common/attention_metadata.h"
 
 namespace xllm::layer {
 namespace {
 
-ModelInputParams make_params() {
-  ModelInputParams params = ModelInputSnapshot(LlmModelParams()).view();
+ModelParamsView make_params() {
+  ModelParamsView params = ModelInputSnapshot(LlmModelParams()).view();
   params.meta.batch_forward_type = BatchForwardType::PREFILL;
   params.meta.num_sequences = 3;
   params.meta.q_max_seq_len = 1;
@@ -215,7 +215,7 @@ TEST(AttentionMetadataBuilderTest, LinearDecodeDoesNotRequirePrefillLengths) {
 }
 
 TEST(AttentionMetadataBuilderTest, MaterializesCanonicalInitialStateMask) {
-  ModelInputParams params = make_params();
+  ModelParamsView params = make_params();
 
   AttentionMetadata metadata =
       AttentionMetadataBuilder::build(params, /*enable_mla=*/false);
@@ -228,7 +228,7 @@ TEST(AttentionMetadataBuilderTest, MaterializesCanonicalInitialStateMask) {
 }
 
 TEST(AttentionMetadataBuilderTest, DoesNotDeriveValidityFromContextOrSlot) {
-  ModelInputParams params = make_params();
+  ModelParamsView params = make_params();
   params.embedding.linear_state_indices = torch::tensor({0, 0, 0}, torch::kInt);
   params.attention.device.kv_cache_tokens_nums =
       torch::tensor({9, 0, 11}, torch::kInt);
@@ -242,7 +242,7 @@ TEST(AttentionMetadataBuilderTest, DoesNotDeriveValidityFromContextOrSlot) {
 }
 
 TEST(AttentionMetadataBuilderTest, MaterializesChunkedPrefillMask) {
-  ModelInputParams params = make_params();
+  ModelParamsView params = make_params();
   params.meta.batch_forward_type = BatchForwardType::CHUNKED_PREFILL;
 
   AttentionMetadata metadata =
@@ -254,7 +254,7 @@ TEST(AttentionMetadataBuilderTest, MaterializesChunkedPrefillMask) {
 }
 
 TEST(AttentionMetadataBuilderTest, SkipsInitialStateMaterializationOnRequest) {
-  ModelInputParams params = make_params();
+  ModelParamsView params = make_params();
   AttentionMetadataBuildOptions build_options;
   build_options.materialize_linear_state_validity = false;
 
@@ -269,7 +269,7 @@ TEST(AttentionMetadataBuilderTest, SkipsInitialStateMaterializationOnRequest) {
 
 TEST(AttentionMetadataBuilderTest,
      SkippingInitialStateMaterializationKeepsValidation) {
-  ModelInputParams params = make_params();
+  ModelParamsView params = make_params();
   params.linear_state_validity_mask.pop_back();
   AttentionMetadataBuildOptions build_options;
   build_options.materialize_linear_state_validity = false;
@@ -281,7 +281,7 @@ TEST(AttentionMetadataBuilderTest,
 }
 
 TEST(AttentionMetadataBuilderTest, DecodeDoesNotMaterializeInitialStateMask) {
-  ModelInputParams params = make_params();
+  ModelParamsView params = make_params();
   params.meta.batch_forward_type = BatchForwardType::DECODE;
 
   AttentionMetadata metadata =
@@ -291,7 +291,7 @@ TEST(AttentionMetadataBuilderTest, DecodeDoesNotMaterializeInitialStateMask) {
 }
 
 TEST(AttentionMetadataBuilderTest, IgnoresTransportIdsWithoutLinearStateOps) {
-  ModelInputParams params = make_params();
+  ModelParamsView params = make_params();
   params.embedding.linear_state_ids = {-1, -1, -1};
   params.embedding.linear_state_indices =
       torch::tensor({-1, -1, -1}, torch::kInt);
@@ -304,7 +304,7 @@ TEST(AttentionMetadataBuilderTest, IgnoresTransportIdsWithoutLinearStateOps) {
 }
 
 TEST(AttentionMetadataBuilderTest, MaterializesColdMaskForDummyShard) {
-  ModelInputParams params = ModelInputSnapshot(LlmModelParams()).view();
+  ModelParamsView params = ModelInputSnapshot(LlmModelParams()).view();
   params.meta.batch_forward_type = BatchForwardType::CHUNKED_PREFILL;
   params.meta.num_sequences = 0;
   params.meta.q_max_seq_len = 0;
@@ -339,7 +339,7 @@ TEST(AttentionMetadataBuilderTest, MaterializesColdMaskForDummyShard) {
 
 #if defined(USE_MUSA)
 TEST(AttentionMetadataBuilderTest, BuildsMusaMetadataWithCommonBuilder) {
-  ModelInputParams params = ModelInputSnapshot(LlmModelParams()).view();
+  ModelParamsView params = ModelInputSnapshot(LlmModelParams()).view();
   params.meta.batch_forward_type = BatchForwardType::DECODE;
   params.meta.num_sequences = 2;
   params.meta.q_max_seq_len = 1;

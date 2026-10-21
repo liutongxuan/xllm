@@ -15,6 +15,8 @@ limitations under the License.
 
 #pragma once
 #include "core/framework/dit_cache/dit_cache.h"
+#include "core/framework/model/dit_model_output.h"
+#include "core/framework/model/dit_model_params.h"
 #include "models/dit/pipelines/pipeline_flux_base.h"
 #include "models/dit/transformers/transformer_flux.h"
 // pipeline_flux compatible with huggingface weights
@@ -63,7 +65,7 @@ class FluxPipelineImpl : public FluxPipelineBaseImpl {
     register_module("clip_text_model", clip_text_model_);
   }
 
-  DiTForwardOutput forward(const DiTForwardInput& input) {
+  DiTForwardOutput forward(const DiTModelParams& input) {
     const DiTGenerationParams& generation_params = input.generation_params;
     int64_t seed = generation_params.seed > 0 ? generation_params.seed : 42;
     std::optional<std::vector<std::string>> prompts =

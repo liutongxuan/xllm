@@ -77,9 +77,9 @@ class Glm4ModelImpl
   virtual ModelOutput forward(torch::Tensor tokens,
                               torch::Tensor positions,
                               std::vector<KVCache>& kv_caches,
-                              const ModelInputParams& input_params) {
-    ModelInputParams& input_params_new =
-        const_cast<ModelInputParams&>(input_params);
+                              const ModelParamsView& input_params) {
+    ModelParamsView& input_params_new =
+        const_cast<ModelParamsView&>(input_params);
 
     if (tokens.numel() == 0) {
       tokens = torch::tensor({1}).to(torch::kInt32).to(tokens.device());

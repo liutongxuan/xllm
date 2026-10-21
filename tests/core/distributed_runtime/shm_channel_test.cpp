@@ -347,7 +347,7 @@ TEST_F(ShmChannelTest, RecOverflowFallsBackForEveryRankAndStaysOnBrpc) {
 
 TEST_F(ShmChannelTest, DitOverflowFallsBackForEveryRankAndStaysOnBrpc) {
   DiTForwardInput oversized;
-  oversized.prompts = {std::string(kInputBytes * 2, 'x')};
+  oversized.model_params.prompts = {std::string(kInputBytes * 2, 'x')};
   expect_group_input_fallback(
       oversized, DiTForwardInput(), &ShmChannel::execute_dit_model_async);
 }
@@ -365,7 +365,7 @@ TEST_F(ShmChannelTest, InputPreflightMatchesExactPackedSize) {
   RecForwardInput rec_input;
   ASSERT_NO_FATAL_FAILURE(expect_input_capacity(rec_input));
   DiTForwardInput dit_input;
-  dit_input.prompts = {"capacity boundary"};
+  dit_input.model_params.prompts = {"capacity boundary"};
   ASSERT_NO_FATAL_FAILURE(expect_input_capacity(dit_input));
 }
 

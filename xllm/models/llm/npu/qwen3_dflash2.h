@@ -206,7 +206,7 @@ class DFlash2Qwen3ModelImpl final : public ::xllm::QWen3ModelImpl {
                                const torch::Tensor& positions,
                                const torch::Tensor& device_cache_slots,
                                std::vector<KVCache>& kv_caches,
-                               const ModelInputParams& input_params) {
+                               const ModelParamsView& input_params) {
     const int64_t num_layers = static_cast<int64_t>(layers_.size());
     CHECK_EQ(static_cast<int64_t>(kv_caches.size()), num_layers);
     CHECK_EQ(device_cache_slots.numel(), target_hidden.size(0));
@@ -262,7 +262,7 @@ class DFlash2Qwen3ModelImpl final : public ::xllm::QWen3ModelImpl {
 
  protected:
   layer::AttentionMetadata get_attention_metadata(
-      const ModelInputParams& params,
+      const ModelParamsView& params,
       const torch::Tensor& h) override {
     layer::AttentionMetadata metadata =
         QWen3ModelImpl::get_attention_metadata(params, h);
@@ -444,7 +444,7 @@ class DFlash2Qwen3ForCausalLMImpl final
                                const torch::Tensor& positions,
                                const torch::Tensor& device_cache_slots,
                                std::vector<KVCache>& kv_caches,
-                               const ModelInputParams& input_params) {
+                               const ModelParamsView& input_params) {
     return model_->write_context_kv(
         target_hidden, positions, device_cache_slots, kv_caches, input_params);
   }

@@ -819,7 +819,7 @@ torch::Tensor Qwen3_5FusedMoEImpl::forward_chunk(
 
 torch::Tensor Qwen3_5FusedMoEImpl::forward(
     const torch::Tensor& hidden_states,
-    const ModelInputParams& input_params) {
+    const ModelParamsView& input_params) {
   CHECK(hidden_states.dim() == 2)
       << "Qwen3.5 MUSA MoE expects [tokens, hidden] input.";
   CHECK(w13_is_loaded_ && w2_is_loaded_)

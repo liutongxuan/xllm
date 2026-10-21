@@ -29,7 +29,7 @@ struct ExpandedDecodeMetadata;
 
 namespace xllm {
 
-class ModelInputParams;
+class ModelParamsView;
 
 void register_attention_metadata_views(pybind11::module_& module);
 
@@ -71,7 +71,7 @@ class PyAttentionMetadataView final {
   explicit PyAttentionMetadataView(
       std::shared_ptr<layer::AttentionMetadata> metadata);
   PyAttentionMetadataView(std::shared_ptr<layer::AttentionMetadata> metadata,
-                          const ModelInputParams& params);
+                          const ModelParamsView& params);
 
   const torch::Tensor& slot_mapping() const;
   pybind11::object local_slot_mapping() const;

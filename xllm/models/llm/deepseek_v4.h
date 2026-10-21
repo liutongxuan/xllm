@@ -84,7 +84,7 @@ inline torch::Tensor maybe_to_device(const torch::Tensor& tensor,
 }
 
 inline bool deepseek_v4_uses_acl_graph(
-    const xllm::ModelInputParams& input_params) {
+    const xllm::ModelParamsView& input_params) {
 #if defined(USE_NPU)
   return ::xllm::ExecutionConfig::get_instance().enable_graph() &&
          input_params.enable_graph;
@@ -95,7 +95,7 @@ inline bool deepseek_v4_uses_acl_graph(
 }
 
 inline void deepseek_v4_clamp_multi_block_tables(
-    ModelInputParams& input_params,
+    ModelParamsView& input_params,
     size_t registered_group_count) {
   // multi_block_tables follows SWA/C4/C128 export order. The DSpark draft
   // registers only the SWA prefix, while its input is copied from the
@@ -687,7 +687,7 @@ class DeepseekV4ModelImpl
 
   void prepare_graph_forward_metadata(ModelGraphMetadataState* state,
                                       const torch::Tensor& positions,
-                                      ModelInputParams& input_params) {
+                                      ModelParamsView& input_params) {
     CHECK(state != nullptr)
         << "DeepSeek V4 graph metadata state must be initialized";
     auto* deepseek_v4_state =
@@ -740,7 +740,7 @@ class DeepseekV4ModelImpl
   ModelOutput forward(torch::Tensor tokens,
                       torch::Tensor positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) override {
+                      const ModelParamsView& input_params) override {
     torch::NoGradGuard no_grad;
     const bool acl_graph_forward = deepseek_v4_uses_acl_graph(input_params);
     const bool is_graph_empty_dp_rank =
@@ -1191,7 +1191,7 @@ class DeepseekV4ModelImpl
   }
 
  private:
-  void normalize_graph_metadata_input_params(ModelInputParams& params) const {
+  void normalize_graph_metadata_input_params(ModelParamsView& params) const {
     int64_t actual_metadata_rows =
         std::max<int64_t>(params.meta.actual_num_sequences, 0);
     int64_t padded_metadata_rows = actual_metadata_rows;
@@ -1228,7 +1228,7 @@ class DeepseekV4ModelImpl
 
   std::shared_ptr<layer::AttentionMetadata>
   build_attention_metadata_for_forward(const torch::Tensor& positions,
-                                       const ModelInputParams& input_params) {
+                                       const ModelParamsView& input_params) {
     auto modified_input_params = input_params.clone().view();
     deepseek_v4_clamp_multi_block_tables(modified_input_params,
                                          group_infos_.size());
@@ -1263,7 +1263,7 @@ class DeepseekV4ModelImpl
   }
 
   void fill_empty_dp_rank_input_params(
-      ModelInputParams& params,
+      ModelParamsView& params,
       const std::vector<KVCache>* kv_caches = nullptr) const {
     const bool is_chunked_prefill =
         params.meta.batch_forward_type.is_chunked_prefill();
@@ -1324,7 +1324,7 @@ class DeepseekV4ModelImpl
   }
 
   void fill_empty_dp_rank_graph_metadata_input_params(
-      ModelInputParams& params) const {
+      ModelParamsView& params) const {
     params.attn_metadata = nullptr;
     const int64_t metadata_batch_size =
         std::max<int64_t>(params.meta.num_sequences, 1);
@@ -1503,7 +1503,7 @@ class DeepseekV4ModelImpl
   // (global_q_cu_seq_lens) and from start_pos, which stays global below.
   void rebuild_cp_local_query_metadata(
       layer::DSAMetadata& dsa,
-      ModelInputParams& params,
+      ModelParamsView& params,
       const layer::v4_cp::DeepseekV4CpContext& cp_ctx,
       std::unordered_map<int32_t, layer::DeepseekV4RotaryEmbedding::CosSinPair>&
           input_rope_by_ratio) const {
@@ -1588,7 +1588,7 @@ class DeepseekV4ModelImpl
 
   void prepare_forward_dsa_runtime_metadata(
       layer::DSAMetadata& dsa,
-      const ModelInputParams& params,
+      const ModelParamsView& params,
       bool rebuild_precomputed_metadata,
       std::unordered_map<int32_t, layer::DeepseekV4RotaryEmbedding::CosSinPair>&
           input_rope_by_ratio) const {
@@ -1664,7 +1664,7 @@ class DeepseekV4ModelImpl
   // passes at call time.
   void build_precomputed_metadata(
       layer::DSAMetadata& dsa,
-      const ModelInputParams& params,
+      const ModelParamsView& params,
       const torch::Tensor& cu_seqlens_ori_kv_override = torch::Tensor()) const {
     dsa.c1_metadata = torch::Tensor();
     dsa.c4_metadata = torch::Tensor();
@@ -1957,7 +1957,7 @@ class DeepseekV4ForCausalLMImpl
 
   void prepare_graph_forward_metadata(ModelGraphMetadataState* state,
                                       const torch::Tensor& positions,
-                                      ModelInputParams& input_params) {
+                                      ModelParamsView& input_params) {
     this->model_->prepare_graph_forward_metadata(
         state, positions, input_params);
   }

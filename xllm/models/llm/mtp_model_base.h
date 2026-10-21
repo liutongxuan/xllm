@@ -108,7 +108,7 @@ class MtpDecoderLayerImplBase : public torch::nn::Module {
       torch::Tensor positions,
       const layer::AttentionMetadata& attn_metadata,
       KVCache& kv_cache,
-      ModelInputParams& input_params,
+      ModelParamsView& input_params,
       const std::optional<torch::Tensor>& input_ids = std::nullopt,
       torch::Tensor* aux_hidden_states = nullptr) {
     auto decoder_forward = [](DecoderLayerType& decoder,
@@ -117,7 +117,7 @@ class MtpDecoderLayerImplBase : public torch::nn::Module {
                               torch::Tensor& layer_positions,
                               const layer::AttentionMetadata& metadata,
                               KVCache& layer_kv_cache,
-                              ModelInputParams& params,
+                              ModelParamsView& params,
                               const std::optional<torch::Tensor>& ids) {
       if constexpr (std::is_invocable_v<DecoderLayerType,
                                         torch::Tensor&,
@@ -125,7 +125,7 @@ class MtpDecoderLayerImplBase : public torch::nn::Module {
                                         torch::Tensor&,
                                         const layer::AttentionMetadata&,
                                         KVCache&,
-                                        ModelInputParams&,
+                                        ModelParamsView&,
                                         const std::optional<torch::Tensor>&>) {
         return decoder(hidden_states,
                        layer_residual,
@@ -162,7 +162,7 @@ class MtpDecoderLayerImplBase : public torch::nn::Module {
       torch::Tensor positions,
       const layer::AttentionMetadata& attn_metadata,
       KVCache& kv_cache,
-      ModelInputParams& input_params,
+      ModelParamsView& input_params,
       const std::optional<torch::Tensor>& input_ids,
       DecoderForward&& decoder_forward,
       torch::Tensor* aux_hidden_states = nullptr) {
@@ -321,7 +321,7 @@ class DefaultMtpLayerForwardAdapter final {
                               torch::Tensor& positions,
                               const layer::AttentionMetadata& attn_metadata,
                               KVCache& kv_cache,
-                              ModelInputParams& input_params,
+                              ModelParamsView& input_params,
                               const std::optional<torch::Tensor>& input_ids) {
     return decoder_layer(hidden_states,
                          residual,
@@ -388,9 +388,9 @@ class MtpModelImplBase : public torch::nn::Module {
   ModelOutput forward(torch::Tensor tokens,
                       torch::Tensor positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) {
+                      const ModelParamsView& input_params) {
     // for dp, if tokens is empty, set tokens to 1 and positions to 0
-    ModelInputParams modified_input_params = input_params.clone().view();
+    ModelParamsView modified_input_params = input_params.clone().view();
     if (dp_size_ > 1) {
       if (tokens.sizes() == 0) {
         tokens = torch::tensor({1}).to(torch::kInt32).to(device_);

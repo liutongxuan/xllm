@@ -21,8 +21,8 @@ limitations under the License.
 #include <string>
 #include <vector>
 
-#include "core/framework/model/model_input_params.h"
 #include "core/framework/model/model_output.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/framework/model/rec_model_params.h"
 #include "core/framework/model_context/model_context.h"
 #include "core/kv_cache/storage/kv_cache.h"
@@ -84,7 +84,7 @@ class LlmModelImplBase : public torch::nn::Module {
   virtual ModelOutput forward(torch::Tensor tokens,
                               torch::Tensor positions,
                               std::vector<KVCache>& kv_caches,
-                              const ModelInputParams& input_params) {
+                              const ModelParamsView& input_params) {
     auto local_params = input_params.clone().view();
     return forward_impl(tokens, positions, kv_caches, local_params);
   }
@@ -224,7 +224,7 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
   virtual ModelOutput forward(const torch::Tensor& tokens,
                               const torch::Tensor& positions,
                               std::vector<KVCache>& kv_caches,
-                              const ModelInputParams& input_params) {
+                              const ModelParamsView& input_params) {
     return model_->forward(tokens, positions, kv_caches, input_params);
   }
 

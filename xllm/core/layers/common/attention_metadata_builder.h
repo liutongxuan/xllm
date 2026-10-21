@@ -25,7 +25,7 @@ limitations under the License.
 
 namespace xllm {
 struct ModelArgs;
-class ModelInputParams;
+class ModelParamsView;
 class RecModelParams;
 
 namespace layer {
@@ -57,18 +57,18 @@ class AttentionMetadataBuilder {
   static void build_linear_prefill(AttentionMetadata& attn_metadata,
                                    int64_t block_size);
 
-  // Build AttentionMetadata from ModelInputParams with default compute_dtype
+  // Build AttentionMetadata from ModelParamsView with default compute_dtype
   // ("float").
   static AttentionMetadata build(
-      const ModelInputParams& params,
+      const ModelParamsView& params,
       bool enable_mla,
       const std::optional<torch::Tensor>& attn_mask = {},
       const std::optional<torch::Device>& device = std::nullopt,
       const AttentionMetadataBuildOptions& build_options = {});
 
-  // Build AttentionMetadata from ModelInputParams with specified compute_dtype.
+  // Build AttentionMetadata from ModelParamsView with specified compute_dtype.
   static AttentionMetadata build(
-      const ModelInputParams& params,
+      const ModelParamsView& params,
       bool enable_mla,
       const std::string& compute_dtype,
       const std::optional<torch::Tensor>& attn_mask = {},

@@ -27,7 +27,7 @@ limitations under the License.
 
 #include "common/metrics.h"
 #include "core/kv_cache/storage/kv_cache.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "framework/state_dict/state_dict.h"
 #include "models/model_registry.h"
 #include "util/timer.h"
@@ -66,7 +66,7 @@ std::optional<ForwardOutput> EmbedWorkerImpl::step(
   auto sampling_params = input.sampling_params.to(device_, dtype_);
 
   // call model executor forward to get hidden states
-  ModelInputParams execution_params(params);
+  ModelParamsView execution_params(params);
   auto model_output = model_executor_->forward(
       flatten_tokens, flatten_positions, kv_caches_, execution_params);
 

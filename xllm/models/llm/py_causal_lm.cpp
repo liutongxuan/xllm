@@ -421,7 +421,7 @@ void PyCausalLM::load_model(std::unique_ptr<ModelLoader> loader) {
 ModelOutput PyCausalLM::forward(const torch::Tensor& tokens,
                                 const torch::Tensor& positions,
                                 std::vector<KVCache>& kv_caches,
-                                const ModelInputParams& parameters) {
+                                const ModelParamsView& parameters) {
   LOG(FATAL) << "PyCausalLM::forward() must not be called directly. "
              << "Python model forward goes through PyExecutorImpl.";
   return ModelOutput(torch::Tensor());
@@ -457,7 +457,7 @@ ModelOutput PyCausalLM::write_context_kv(
     const torch::Tensor& positions,
     const torch::Tensor& device_cache_slots,
     std::vector<KVCache>& kv_caches,
-    const ModelInputParams& input_params) {
+    const ModelParamsView& input_params) {
   torch::NoGradGuard no_grad;
   py::gil_scoped_acquire gil;
   py::object layer_synchronizer = py::none();

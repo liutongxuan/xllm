@@ -21,7 +21,7 @@ limitations under the License.
 #include <algorithm>
 #include <utility>
 
-#include "core/framework/model/model_input_params.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/layers/common/attention_metadata.h"
 #include "core/util/pybind_helper.h"
 #include "core/util/tensor_helper.h"
@@ -232,7 +232,7 @@ PyAttentionMetadataView::PyAttentionMetadataView(
 
 PyAttentionMetadataView::PyAttentionMetadataView(
     std::shared_ptr<layer::AttentionMetadata> metadata,
-    const ModelInputParams& params)
+    const ModelParamsView& params)
     : PyAttentionMetadataView(std::move(metadata)) {
   if (!params.multi_block_tables.empty()) {
     new_cache_slots_host_values_ = params.attention.host.new_cache_slots;

@@ -32,7 +32,7 @@ limitations under the License.
 #include "atb_speed/log.h"
 #include "atb_speed/utils/model_factory.h"
 #include "core/framework/model/model_args.h"
-#include "core/framework/model/model_input_params.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/framework/state_dict/state_dict.h"
 #include "loader/mistral3_vision_encoder_loader.h"
 #include "nlohmann/json.hpp"
@@ -58,7 +58,7 @@ class NpuMistral3VisionEncoderLayerImpl : public BaseLayer {
                         torch::Tensor& sin_pos,
                         torch::Tensor& cu_seqlen,
                         std::vector<int>& cu_seqlen_vec,
-                        ModelInputParams& input_params,
+                        ModelParamsView& input_params,
                         int node_id = 0);
 
  private:
@@ -68,7 +68,7 @@ class NpuMistral3VisionEncoderLayerImpl : public BaseLayer {
                                torch::Tensor& sin_pos,
                                torch::Tensor& cu_seqlen,
                                std::vector<int>& cu_seqlen_vec,
-                               ModelInputParams& input_params);
+                               ModelParamsView& input_params);
 
   void param_from_args(
       atb_speed::mistral::MistralVisionEncoderLayerParam& param,

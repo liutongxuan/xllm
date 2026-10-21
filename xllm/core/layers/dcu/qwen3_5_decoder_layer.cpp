@@ -193,7 +193,7 @@ torch::Tensor Qwen3_5DecoderLayerImpl::forward(
     torch::Tensor& positions,
     const AttentionMetadata& attn_metadata,
     KVCache& kv_cache,
-    const ModelInputParams& input_params) {
+    const ModelParamsView& input_params) {
   // Pre-attention norm (with residual)
   if (!residual.has_value()) {
     residual = x;

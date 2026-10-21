@@ -17,6 +17,9 @@ limitations under the License.
 
 #include <torch/torch.h>
 
+#include "core/framework/model/dit_model_output.h"
+#include "core/framework/model/dit_model_params.h"
+
 #if defined(USE_CUDA)
 #include <ATen/autocast_mode.h>
 #include <ATen/cuda/CUDAGeneratorImpl.h>
@@ -138,7 +141,7 @@ class ColaDLMPipelineImpl final : public torch::nn::Module {
     }
   }
 
-  DiTForwardOutput forward(const DiTForwardInput& input) {
+  DiTForwardOutput forward(const DiTModelParams& input) {
     torch::NoGradGuard no_grad;
 #if defined(USE_CUDA)
     CHECK(options_.device().is_cuda())

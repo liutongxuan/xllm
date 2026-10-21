@@ -35,7 +35,7 @@ limitations under the License.
 #include "buffer/atb_workspace.h"
 #include "core/framework/allocator/virtual_memory/mapped_virtual_memory_region.h"
 #include "core/kv_cache/storage/kv_cache.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "framework/model_context/model_context.h"
 #include "framework/state_dict/state_dict.h"
 #include "loader/base_loader.h"

@@ -21,7 +21,7 @@ limitations under the License.
 #include <limits>
 #include <utility>
 
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "framework/sampling/sampling_params.h"
 #include "layers/common/expanded_decode_metadata_builder.h"
 #include "runtime/vlm_forward_params.h"
@@ -607,7 +607,7 @@ template void set_token_position_tensors(VlmForwardInput&,
                                          const std::vector<int32_t>&,
                                          const torch::TensorOptions&,
                                          const torch::TensorOptions&);
-template void update_input_params(ModelInputParams&,
+template void update_input_params(ModelParamsView&,
                                   DecodeBuildBuffers&,
                                   int32_t,
                                   std::vector<int32_t>,

@@ -100,14 +100,14 @@ class AclGraphExecutorTestEnvironment : public ::testing::Environment {
 namespace xllm {
 
 TEST(DeepseekV4MetadataInputTest, KeepsOnlyDraftRegisteredBlockTables) {
-  ModelInputParams target_input_params =
+  ModelParamsView target_input_params =
       ModelInputSnapshot(LlmModelParams()).view();
   target_input_params.multi_block_tables = {
       torch::tensor({{10}}, torch::kInt32),
       torch::tensor({{20}}, torch::kInt32),
       torch::tensor({{30}}, torch::kInt32)};
 
-  ModelInputParams draft_input_params = target_input_params.clone().view();
+  ModelParamsView draft_input_params = target_input_params.clone().view();
   deepseek_v4_clamp_multi_block_tables(draft_input_params,
                                        /*registered_group_count=*/1);
 
@@ -118,7 +118,7 @@ TEST(DeepseekV4MetadataInputTest, KeepsOnlyDraftRegisteredBlockTables) {
 }
 
 TEST(DeepseekV4MetadataInputTest, PreservesMatchingTargetBlockTables) {
-  ModelInputParams input_params = ModelInputSnapshot(LlmModelParams()).view();
+  ModelParamsView input_params = ModelInputSnapshot(LlmModelParams()).view();
   input_params.multi_block_tables = {torch::tensor({{10}}, torch::kInt32),
                                      torch::tensor({{20}}, torch::kInt32),
                                      torch::tensor({{30}}, torch::kInt32)};
@@ -134,7 +134,7 @@ TEST(DeepseekV4MetadataInputTest, PreservesMatchingTargetBlockTables) {
 
 TEST(AclGraphStaticGraphTaskSignatureTest,
      BuildsSameSignatureFromCaptureAndSignal) {
-  ModelInputParams params = ModelInputSnapshot(LlmModelParams()).view();
+  ModelParamsView params = ModelInputSnapshot(LlmModelParams()).view();
   params.parallel.query_start_loc = {0, 5};
   params.embedding.linear_state_ids = {7};
   params.num_accepted_tokens_host = {4};
@@ -487,7 +487,7 @@ class SimpleCausalLM : public CausalLM {
   torch::Tensor forward_impl(const torch::Tensor& tokens,
                              const torch::Tensor& positions,
                              std::vector<KVCache>& kv_caches,
-                             const ModelInputParams& params) {
+                             const ModelParamsView& params) {
     // Simple computation: token embedding + position embedding + linear layer
     // This creates temporary tensors that NPUGraph mempool will manage
     LOG(INFO) << "SimpleCausalLM forward_impl, tokens: " << tokens.sizes()
@@ -565,7 +565,7 @@ class SimpleCausalLM : public CausalLM {
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& parameters) override {
+                      const ModelParamsView& parameters) override {
     last_forward_enabled_graph_ = parameters.enable_graph;
     last_forward_had_attn_metadata_ = parameters.attn_metadata != nullptr;
     auto hidden_states = forward_impl(tokens, positions, kv_caches, parameters);
@@ -803,7 +803,7 @@ TEST_F(AclGraphExecutorTest, GraphExecutorVsEagerExecution) {
       model_->forward({forward_input.token_ids},
                       {forward_input.positions},
                       kv_caches_,
-                      {ModelInputParams(forward_input.input_params)});
+                      {ModelParamsView(forward_input.input_params)});
   auto eager_output = eager_model_output.hidden_states;
   // Create ACL graph executor
   auto graph_executor = std::make_unique<::xllm::npu::AclGraphExecutorImpl>(
@@ -814,7 +814,7 @@ TEST_F(AclGraphExecutorTest, GraphExecutorVsEagerExecution) {
       graph_executor->run({forward_input.token_ids},
                           {forward_input.positions},
                           kv_caches_,
-                          {ModelInputParams(forward_input.input_params)});
+                          {ModelParamsView(forward_input.input_params)});
   auto graph_output = graph_model_output.hidden_states;
   // Compare outputs - should be identical
   EXPECT_TRUE(
@@ -844,14 +844,14 @@ TEST_F(AclGraphExecutorTest, GraphReplayConsistency) {
       graph_executor->run({forward_input.token_ids},
                           {forward_input.positions},
                           kv_caches_,
-                          {ModelInputParams(forward_input.input_params)});
+                          {ModelParamsView(forward_input.input_params)});
 
   // Second execution (should replay graph using mempool-managed tensors)
   auto output2 =
       graph_executor->run({forward_input.token_ids},
                           {forward_input.positions},
                           kv_caches_,
-                          {ModelInputParams(forward_input.input_params)});
+                          {ModelParamsView(forward_input.input_params)});
 
   // Compare outputs - should be identical
   EXPECT_TRUE(torch::allclose(output1.hidden_states,
@@ -882,7 +882,7 @@ TEST_F(AclGraphExecutorTest, PreservesAuxHiddenStatesAcrossGraphReplay) {
       model_->forward({forward_input.token_ids},
                       {forward_input.positions},
                       kv_caches_,
-                      {ModelInputParams(forward_input.input_params)});
+                      {ModelParamsView(forward_input.input_params)});
   auto graph_executor = std::make_unique<::xllm::npu::AclGraphExecutorImpl>(
       model_.get(), model_args_, *device_, options_);
   const double eager_fallbacks_before =
@@ -891,7 +891,7 @@ TEST_F(AclGraphExecutorTest, PreservesAuxHiddenStatesAcrossGraphReplay) {
     return graph_executor->run({forward_input.token_ids},
                                {forward_input.positions},
                                kv_caches_,
-                               {ModelInputParams(forward_input.input_params)});
+                               {ModelParamsView(forward_input.input_params)});
   };
   ModelOutput capture_output = run_graph();
   for (int32_t slot_idx = 1;
@@ -959,7 +959,7 @@ TEST(DeepseekV4ModelTest, ReturnsPreHcHiddenStatesForMtp) {
       torch::zeros({1}, torch::dtype(torch::kInt).device(device));
   const torch::Tensor positions =
       torch::zeros({1}, torch::dtype(torch::kInt).device(device));
-  ModelInputParams input_params = ModelInputSnapshot(LlmModelParams()).view();
+  ModelParamsView input_params = ModelInputSnapshot(LlmModelParams()).view();
   input_params.meta.num_sequences = 1;
   input_params.embedding.input_embedding = pre_hc_hidden;
   input_params.attn_metadata = std::make_shared<layer::AttentionMetadata>();
@@ -984,7 +984,7 @@ TEST_F(AclGraphExecutorTest, DifferentBatchSizes) {
       model_.get(), model_args_, *device_, options_);
   std::vector<torch::Tensor> captured_token_ids;
   std::vector<torch::Tensor> captured_positions;
-  std::vector<ModelInputParams> captured_input_params;
+  std::vector<ModelParamsView> captured_input_params;
   std::vector<torch::Tensor> captured_outputs;
 
   for (auto batch_size : batch_sizes) {
@@ -1029,14 +1029,14 @@ TEST_F(AclGraphExecutorTest, DifferentBatchSizes) {
         graph_executor->run({forward_input.token_ids},
                             {forward_input.positions},
                             kv_caches_,
-                            {ModelInputParams(forward_input.input_params)});
+                            {ModelParamsView(forward_input.input_params)});
     for (int32_t slot_idx = 1;
          slot_idx < graph_executor->graph_slot_count_for_test();
          ++slot_idx) {
       graph_executor->run({forward_input.token_ids},
                           {forward_input.positions},
                           kv_caches_,
-                          {ModelInputParams(forward_input.input_params)});
+                          {ModelParamsView(forward_input.input_params)});
     }
 
     // Verify output shape
@@ -1049,7 +1049,7 @@ TEST_F(AclGraphExecutorTest, DifferentBatchSizes) {
     captured_token_ids.emplace_back(forward_input.token_ids);
     captured_positions.emplace_back(forward_input.positions);
     captured_input_params.emplace_back(
-        ModelInputParams(forward_input.input_params).clone().view());
+        ModelParamsView(forward_input.input_params).clone().view());
     captured_outputs.emplace_back(output.hidden_states.clone());
   }
 
@@ -1116,12 +1116,12 @@ TEST_F(AclGraphExecutorTest, DecodeBatchSizeThresholdFallsBackToEager) {
       npu_executor->run({forward_input.token_ids},
                         {forward_input.positions},
                         kv_caches_,
-                        {ModelInputParams(forward_input.input_params)});
+                        {ModelParamsView(forward_input.input_params)});
   auto graph_out =
       graph_executor->run({forward_input.token_ids},
                           {forward_input.positions},
                           kv_caches_,
-                          {ModelInputParams(forward_input.input_params)});
+                          {ModelParamsView(forward_input.input_params)});
 
   EXPECT_EQ(graph_out.hidden_states.size(0),
             batch_size * options_.num_decoding_tokens());
@@ -1183,12 +1183,12 @@ TEST_F(AclGraphExecutorTest, NoPaddingBucketCapturesOnlyForWarmup) {
       npu_executor->run({forward_input.token_ids},
                         {forward_input.positions},
                         kv_caches_,
-                        {ModelInputParams(forward_input.input_params)});
+                        {ModelParamsView(forward_input.input_params)});
   auto graph_out =
       graph_executor->run({forward_input.token_ids},
                           {forward_input.positions},
                           kv_caches_,
-                          {ModelInputParams(forward_input.input_params)});
+                          {ModelParamsView(forward_input.input_params)});
   auto* simple_model = dynamic_cast<SimpleCausalLM*>(model_.get());
   ASSERT_NE(simple_model, nullptr);
   EXPECT_FALSE(simple_model->last_forward_enabled_graph());
@@ -1199,7 +1199,7 @@ TEST_F(AclGraphExecutorTest, NoPaddingBucketCapturesOnlyForWarmup) {
       graph_executor->run({forward_input.token_ids},
                           {forward_input.positions},
                           kv_caches_,
-                          {ModelInputParams(forward_input.input_params)});
+                          {ModelParamsView(forward_input.input_params)});
 
   execution_config.enable_graph_mode_decode_no_padding(old_decode_no_padding);
   execution_config.acl_graph_decode_batch_size_limit(
@@ -1240,7 +1240,7 @@ TEST_F(AclGraphExecutorTest, AclGraphExecutorVsBaseExecutorImpl) {
       npu_executor->run({forward_input.token_ids},
                         {forward_input.positions},
                         kv_caches_,
-                        {ModelInputParams(forward_input.input_params)});
+                        {ModelParamsView(forward_input.input_params)});
   auto npu_output = npu_model_output.hidden_states;
 
   // Test ACL Graph Executor with NPUGraph mempool optimization
@@ -1251,7 +1251,7 @@ TEST_F(AclGraphExecutorTest, AclGraphExecutorVsBaseExecutorImpl) {
       graph_executor->run({forward_input.token_ids},
                           {forward_input.positions},
                           kv_caches_,
-                          {ModelInputParams(forward_input.input_params)});
+                          {ModelParamsView(forward_input.input_params)});
   auto graph_output = graph_model_output.hidden_states;
 
   // Compare outputs - should be identical
@@ -1291,7 +1291,7 @@ TEST_F(AclGraphExecutorTest, AclGraphExecutorVsBaseExecutorImplMultipleRuns) {
         model_->forward({forward_input.token_ids},
                         {forward_input.positions},
                         kv_caches_,
-                        {ModelInputParams(forward_input.input_params)});
+                        {ModelParamsView(forward_input.input_params)});
     auto direct_output = direct_model_output.hidden_states;
 
     // NPU Executor run
@@ -1299,7 +1299,7 @@ TEST_F(AclGraphExecutorTest, AclGraphExecutorVsBaseExecutorImplMultipleRuns) {
         npu_executor->run({forward_input.token_ids},
                           {forward_input.positions},
                           kv_caches_,
-                          {ModelInputParams(forward_input.input_params)});
+                          {ModelParamsView(forward_input.input_params)});
     auto npu_output = npu_model_output.hidden_states;
 
     // ACL Graph Executor run with NPUGraph mempool
@@ -1307,7 +1307,7 @@ TEST_F(AclGraphExecutorTest, AclGraphExecutorVsBaseExecutorImplMultipleRuns) {
         graph_executor->run({forward_input.token_ids},
                             {forward_input.positions},
                             kv_caches_,
-                            {ModelInputParams(forward_input.input_params)});
+                            {ModelParamsView(forward_input.input_params)});
     auto graph_output = graph_model_output.hidden_states;
 
     // Compare direct model output with NPU Executor output
@@ -1370,12 +1370,12 @@ TEST_F(AclGraphExecutorTest, BatchInputCarriesLinearStateIds) {
   forward_input.input_params.linear_state_validity_mask = {1};
   forward_input = forward_input.to(*device_, torch::kFloat32);
   npu::GraphPersistentParam persistent_param(model_args_, *device_, options_);
-  std::optional<ModelInputParams> params_for_capture = persistent_param.update(
+  std::optional<ModelParamsView> params_for_capture = persistent_param.update(
       forward_input.token_ids,
       first_full_attention_cache(kv_caches_).get_k_cache(),
       first_full_attention_cache(kv_caches_).get_v_cache(),
       forward_input.positions,
-      ModelInputParams(forward_input.input_params),
+      ModelParamsView(forward_input.input_params),
       /*padded_num_tokens=*/2,
       /*return_capture_params=*/true);
   ASSERT_TRUE(params_for_capture.has_value());
@@ -1414,7 +1414,7 @@ TEST_F(AclGraphExecutorTest, DpDecodeGraphKeyIgnoresRawTokenDistribution) {
   ::xllm::npu::AclGraphExecutorImpl graph_executor(
       model_.get(), model_args_, *device_, options_);
 
-  ModelInputParams params = ModelInputSnapshot(LlmModelParams()).view();
+  ModelParamsView params = ModelInputSnapshot(LlmModelParams()).view();
   params.meta.batch_forward_type = BatchForwardType::DECODE;
   params.parallel.dp_ep_padding_data.attn_padding_idx(
       torch::zeros({32}, torch::kInt32));
@@ -1483,7 +1483,7 @@ TEST(AclGraphPersistentParamTest, SpecVerifyMetadataUsesTokenCapacity) {
       torch::dtype(torch::kInt).device(device);
   const torch::Tensor tokens = torch::arange(kValidateRows, int_options);
   const torch::Tensor positions = torch::arange(kValidateRows, int_options);
-  ModelInputParams params = ModelInputSnapshot(LlmModelParams()).view();
+  ModelParamsView params = ModelInputSnapshot(LlmModelParams()).view();
   params.is_spec_verify = true;
   params.meta.batch_forward_type = BatchForwardType::DECODE;
   params.meta.num_sequences = kValidateRows;
@@ -1498,7 +1498,7 @@ TEST(AclGraphPersistentParamTest, SpecVerifyMetadataUsesTokenCapacity) {
   params.attention.device.block_tables =
       torch::zeros({kValidateRows, 2}, int_options);
 
-  std::optional<ModelInputParams> capture_params;
+  std::optional<ModelParamsView> capture_params;
   EXPECT_NO_THROW(
       capture_params.emplace(persistent_param
                                  .update(tokens,
@@ -1572,7 +1572,7 @@ TEST(AclGraphPersistentParamTest, HybridSpecVerifyMetadataCoversBucketPadding) {
   // inside update() via padded_num_tokens.
   const torch::Tensor tokens = torch::arange(kActualNumTokens, int_options);
   const torch::Tensor positions = torch::arange(kActualNumTokens, int_options);
-  ModelInputParams params = ModelInputSnapshot(LlmModelParams()).view();
+  ModelParamsView params = ModelInputSnapshot(LlmModelParams()).view();
   params.is_spec_verify = true;
   params.meta.batch_forward_type = BatchForwardType::CHUNKED_PREFILL;
   params.meta.num_sequences = kNumSequences;
@@ -1609,7 +1609,7 @@ TEST(AclGraphPersistentParamTest, HybridSpecVerifyMetadataCoversBucketPadding) {
   params.graph.expanded_block_tables =
       torch::zeros({kActualNumTokens, 2}, int_options);
 
-  std::optional<ModelInputParams> capture_params;
+  std::optional<ModelParamsView> capture_params;
   EXPECT_NO_THROW(
       capture_params.emplace(persistent_param
                                  .update(tokens,
@@ -1658,7 +1658,7 @@ TEST(AclGraphPersistentParamTest,
       /*need_update_attn_mask=*/false,
       /*is_hybrid_linear_attention=*/true);
 
-  ModelInputParams params = ModelInputSnapshot(LlmModelParams()).view();
+  ModelParamsView params = ModelInputSnapshot(LlmModelParams()).view();
   params.is_spec_verify = true;
   params.meta.batch_forward_type = BatchForwardType::CHUNKED_PREFILL;
   params.meta.num_sequences = 1;
@@ -1893,7 +1893,7 @@ TEST(AclGraphPersistentParamTest, SpecVerifyGraphUpdateSupportsRuntimeBatch) {
       /*need_update_attn_mask=*/false,
       /*is_hybrid_linear_attention=*/true);
 
-  ModelInputParams params = ModelInputSnapshot(LlmModelParams()).view();
+  ModelParamsView params = ModelInputSnapshot(LlmModelParams()).view();
   params.is_spec_verify = true;
   params.meta.batch_forward_type = BatchForwardType::CHUNKED_PREFILL;
   params.meta.num_sequences = kBatchSize;
@@ -1960,7 +1960,7 @@ TEST(AclGraphPersistentParamTest, SpecVerifyGraphUpdateSupportsRuntimeBatch) {
   params.graph.expanded_block_tables =
       expanded_block_tables_flat.view({kNumTokens, 2});
 
-  ModelInputParams detached_params = params.clone().view();
+  ModelParamsView detached_params = params.clone().view();
   AttentionInputView detached_attention = detached_params.attention;
   ASSERT_TRUE(detached_attention.rebuild_device_buffer(device));
   EXPECT_NE(params.attention.attention_device_buffer.data_ptr(),
@@ -2051,7 +2051,7 @@ TEST(AclGraphPersistentParamTest, DecodeUpdatesEplbMaskWithoutSpecAttention) {
   npu::GraphPersistentParam persistent_params(
       args, torch::Device(torch::kCPU), options);
 
-  ModelInputParams params = ModelInputSnapshot(LlmModelParams()).view();
+  ModelParamsView params = ModelInputSnapshot(LlmModelParams()).view();
   params.meta.batch_forward_type = BatchForwardType::DECODE;
   params.meta.num_sequences = 2;
   params.attention.host.q_seq_lens = {1, 1};
@@ -2061,7 +2061,7 @@ TEST(AclGraphPersistentParamTest, DecodeUpdatesEplbMaskWithoutSpecAttention) {
   torch::Tensor tokens = torch::tensor({1, 2}, torch::kInt);
   torch::Tensor positions = torch::tensor({0, 1}, torch::kInt);
 
-  std::optional<ModelInputParams> capture_params =
+  std::optional<ModelParamsView> capture_params =
       persistent_params.update(tokens,
                                torch::Tensor(),
                                torch::Tensor(),
@@ -2111,7 +2111,7 @@ TEST(AclGraphPersistentParamTest, DecodePadsEachDpRankEplbMaskIndependently) {
   npu::GraphPersistentParam persistent_params(
       args, torch::Device(torch::kCPU), options);
 
-  ModelInputParams params = ModelInputSnapshot(LlmModelParams()).view();
+  ModelParamsView params = ModelInputSnapshot(LlmModelParams()).view();
   params.meta.batch_forward_type = BatchForwardType::DECODE;
   params.meta.num_sequences = 3;
   params.attention.host.q_seq_lens = {1, 1, 1};
@@ -2122,7 +2122,7 @@ TEST(AclGraphPersistentParamTest, DecodePadsEachDpRankEplbMaskIndependently) {
   torch::Tensor tokens = torch::tensor({1, 2, 3}, torch::kInt);
   torch::Tensor positions = torch::tensor({0, 1, 2}, torch::kInt);
 
-  std::optional<ModelInputParams> capture_params =
+  std::optional<ModelParamsView> capture_params =
       persistent_params.update(tokens,
                                torch::Tensor(),
                                torch::Tensor(),
@@ -2163,14 +2163,14 @@ TEST_F(AclGraphExecutorTest, GraphExecutorUsesFirstFullAttentionKvCache) {
       model_->forward({forward_input.token_ids},
                       {forward_input.positions},
                       hybrid_kv_caches,
-                      {ModelInputParams(forward_input.input_params)});
+                      {ModelParamsView(forward_input.input_params)});
   auto graph_executor = std::make_unique<::xllm::npu::AclGraphExecutorImpl>(
       model_.get(), model_args_, *device_, options_);
   auto graph_model_output =
       graph_executor->run({forward_input.token_ids},
                           {forward_input.positions},
                           hybrid_kv_caches,
-                          {ModelInputParams(forward_input.input_params)});
+                          {ModelParamsView(forward_input.input_params)});
 
   EXPECT_TRUE(torch::allclose(eager_model_output.hidden_states,
                               graph_model_output.hidden_states,

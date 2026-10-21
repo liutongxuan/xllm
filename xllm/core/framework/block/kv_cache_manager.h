@@ -22,7 +22,7 @@ limitations under the License.
 #include "common/macros.h"
 #include "framework/batch/batch_group.h"
 #include "framework/batch/rec_batch_group.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "framework/request/request.h"
 #include "framework/request/sequence.h"
 

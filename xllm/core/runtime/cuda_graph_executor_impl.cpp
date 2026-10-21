@@ -923,7 +923,7 @@ bool CudaGraph::capture(CausalLM* model,
                         const runtime::Options& options,
                         const torch::Tensor& tokens,
                         const torch::Tensor& positions,
-                        const ModelInputParams& params,
+                        const ModelParamsView& params,
                         std::vector<KVCache>& kv_cache,
                         uint32_t bucket_num_tokens,
                         const at::cuda::MempoolId_t& pool,
@@ -989,7 +989,7 @@ bool CudaGraph::capture_typed(Model* model,
             device_index_);
     capture_lock_guard.emplace(capture_lock);
   }
-  // Use the returned ModelInputParams for graph capture
+  // Use the returned ModelParamsView for graph capture
   // Always use capture stream for plan/update + capture + forward.
   at::cuda::CUDAStream original_stream =
       at::cuda::getCurrentCUDAStream(device_index_);
@@ -1020,9 +1020,9 @@ bool CudaGraph::capture_typed(Model* model,
                                padded_num_tokens_,
                                /*return_capture_params=*/true);
 
-  // Use the returned ModelInputParams for graph capture
+  // Use the returned ModelParamsView for graph capture
   CHECK(graph_params_opt.has_value())
-      << "update() should return ModelInputParams when "
+      << "update() should return ModelParamsView when "
          "return_capture_params=true";
 
   capture_params_.emplace<Params>(std::move(graph_params_opt.value()));
@@ -1527,7 +1527,7 @@ ModelOutput CudaGraphExecutorImpl::attach_aux_hidden_states_if_needed(
 ModelOutput CudaGraphExecutorImpl::run(const torch::Tensor& tokens,
                                        const torch::Tensor& positions,
                                        std::vector<KVCache>& kv_caches,
-                                       const ModelInputParams& params) {
+                                       const ModelParamsView& params) {
   return run_typed(model_, tokens, positions, kv_caches, params);
 }
 
@@ -1750,12 +1750,12 @@ uint32_t CudaGraphExecutorImpl::get_bucket_num_tokens(uint32_t num_tokens,
       get_graph_bucket_num_tokens(num_tokens, is_prefill));
 }
 
-template std::optional<ModelInputParams> CudaGraphPersistentParam::update(
+template std::optional<ModelParamsView> CudaGraphPersistentParam::update(
     const torch::Tensor&,
     const torch::Tensor&,
     const torch::Tensor&,
     const torch::Tensor&,
-    const ModelInputParams&,
+    const ModelParamsView&,
     uint32_t,
     bool);
 template std::optional<RecModelParams> CudaGraphPersistentParam::update(
@@ -1770,7 +1770,7 @@ template std::optional<RecModelParams> CudaGraphPersistentParam::update(
 template ModelOutput CudaGraph::replay(const torch::Tensor&,
                                        const torch::Tensor&,
                                        std::vector<KVCache>&,
-                                       const ModelInputParams&);
+                                       const ModelParamsView&);
 template ModelOutput CudaGraph::replay(const torch::Tensor&,
                                        const torch::Tensor&,
                                        std::vector<KVCache>&,

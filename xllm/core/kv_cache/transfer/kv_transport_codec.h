@@ -18,7 +18,7 @@ limitations under the License.
 #include <cstdint>
 #include <vector>
 
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 
 namespace xllm {
 namespace proto {

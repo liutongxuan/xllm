@@ -52,7 +52,7 @@ torch::Tensor MiniMaxM2DecoderLayerImpl::forward(
     torch::Tensor& positions,
     const layer::AttentionMetadata& attn_metadata,
     KVCache& kv_cache,
-    const ModelInputParams& input_params) {
+    const ModelParamsView& input_params) {
   if (x.numel() == 0) {
     return moe_->forward(x, input_params);
   }

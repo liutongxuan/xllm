@@ -46,14 +46,14 @@ VlmExecutorImpl::VlmExecutorImpl(CausalLM* model,
   }
 }
 
-MMDict VlmExecutorImpl::encode(const ModelInputParams& params) {
+MMDict VlmExecutorImpl::encode(const ModelParamsView& params) {
   return model_->encode(params);
 }
 
 ModelOutput VlmExecutorImpl::run(const torch::Tensor& tokens,
                                  const torch::Tensor& positions,
                                  std::vector<KVCache>& kv_caches,
-                                 const ModelInputParams& params) {
+                                 const ModelParamsView& params) {
   torch::NoGradGuard no_grad;
   auto& mm_data = params.multimodal().mm_data;
 
@@ -107,7 +107,7 @@ ModelOutput VlmExecutorImpl::run(const torch::Tensor& tokens,
 void VlmExecutorImpl::prepare_graph_input(const torch::Tensor& tokens,
                                           const torch::Tensor& positions,
                                           std::vector<KVCache>& kv_caches,
-                                          const ModelInputParams& params) {
+                                          const ModelParamsView& params) {
   // Decode-only double-buffer graph prewarm. Delegate to the inner graph
   // executor built in enable_graph mode; multimodal prefill steps never reach
   // here because the worker gates this on decode-phase input params.

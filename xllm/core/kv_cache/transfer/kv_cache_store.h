@@ -24,7 +24,7 @@ limitations under the License.
 
 #include "core/kv_cache/storage/kv_cache.h"
 #include "core/kv_cache/transfer/mooncake_store_backend.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "util/slice.h"
 
 namespace xllm {

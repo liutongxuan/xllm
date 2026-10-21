@@ -26,7 +26,7 @@ limitations under the License.
 #include <vector>
 
 #include "framework/model/model_args.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "framework/parallel_state/parallel_args.h"
 #include "framework/quantization/quant_args.h"
 #include "framework/state_dict/state_dict.h"
@@ -60,7 +60,7 @@ class DeepseekV4SparseMoEBlockTestPeer {
   static std::vector<int32_t> row_dp_tokens(
       DeepseekV4SparseMoEBlockImpl& block,
       int64_t hidden_rows,
-      const ModelInputParams& input_params) {
+      const ModelParamsView& input_params) {
     return block.get_row_dp_tokens(hidden_rows, input_params);
   }
 };
@@ -281,7 +281,7 @@ TEST_F(DeepseekV4SparseMoEBlockTest, NeedGatherOnlyForDpEp) {
 TEST_F(DeepseekV4SparseMoEBlockTest, ConvertsModelTokensToRowTokens) {
   set_dp_ep_ctx(/*dp_size=*/2, /*with_dp_group=*/true);
   DeepseekV4SparseMoEBlock block = create_block();
-  ModelInputParams input_params = ModelInputSnapshot(LlmModelParams()).view();
+  ModelParamsView input_params = ModelInputSnapshot(LlmModelParams()).view();
   input_params.parallel.dp_global_token_nums = {3, 1};
 
   std::vector<int32_t> row_tokens =

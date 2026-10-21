@@ -28,7 +28,7 @@ limitations under the License.
 
 #include "atb/atb_infer.h"
 #include "core/kv_cache/storage/kv_cache.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "framework/model_context/model_context.h"
 #include "framework/state_dict/state_dict.h"
 #include "loader/eagle3_decoder_loader.h"
@@ -64,7 +64,7 @@ class NpuEagle3DecoderLayerImpl : public BaseLayer {
                         torch::Tensor& sin_pos,
                         torch::Tensor& attn_mask,
                         KVCache& kv_cache,
-                        ModelInputParams& input_params,
+                        ModelParamsView& input_params,
                         aclrtEvent* event = nullptr,
                         std::atomic<bool>* event_flag = nullptr,
                         int node_id = 0);
@@ -83,7 +83,7 @@ class NpuEagle3DecoderLayerImpl : public BaseLayer {
                                torch::Tensor& sin_pos,
                                torch::Tensor& attn_mask,
                                KVCache& kv_cache,
-                               ModelInputParams& input_params,
+                               ModelParamsView& input_params,
                                bool is_prefill);
 
   void param_from_args(atb_speed::eagle3::DecoderLayerParam& param,

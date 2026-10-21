@@ -22,11 +22,11 @@ limitations under the License.
 
 namespace xllm {
 
-class ModelInputParams;
+class ModelParamsView;
 
 namespace layer {
 
-void fill_dsv4_empty_dp_params(ModelInputParams& params,
+void fill_dsv4_empty_dp_params(ModelParamsView& params,
                                const std::vector<DSAGroupInfo>& group_infos,
                                int64_t window_size);
 

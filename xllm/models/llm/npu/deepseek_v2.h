@@ -46,7 +46,7 @@ class DeepseekV2DecoderLayerImpl : public torch::nn::Module {
                         torch::Tensor& sin_pos,
                         torch::Tensor& attn_mask,
                         KVCache& kv_cache,
-                        const ModelInputParams& input_params,
+                        const ModelParamsView& input_params,
                         aclrtEvent* event,
                         std::atomic<bool>* event_flag) {
     return decoder_layer_(x,
@@ -159,7 +159,7 @@ class DeepseekV2ModelImpl : public torch::nn::Module {
   ModelOutput forward(torch::Tensor tokens,
                       torch::Tensor positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) {
+                      const ModelParamsView& input_params) {
     if (dp_size_ > 1 && (!tokens.defined() || tokens.numel() == 0)) {
       tokens = torch::tensor({1}).to(torch::kInt32).to(device_);
       positions = torch::tensor({0}).to(torch::kInt32).to(device_);

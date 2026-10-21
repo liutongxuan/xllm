@@ -55,9 +55,9 @@ using ::xllm::LlmForCausalLMImplBase;
 using ::xllm::ModelArgs;
 using ::xllm::ModelContext;
 using ::xllm::ModelGraphMetadataState;
-using ::xllm::ModelInputParams;
 using ::xllm::ModelLoader;
 using ::xllm::ModelOutput;
+using ::xllm::ModelParamsView;
 using ::xllm::MtpDecoderLayerImplBase;
 using ::xllm::ParallelArgs;
 using ::xllm::StateDict;
@@ -81,10 +81,10 @@ class DeepseekV4MultiTokenPredictorLayerImpl
                         torch::Tensor positions,
                         layer::AttentionMetadata& attn_metadata,
                         KVCache& kv_cache,
-                        const ModelInputParams& input_params,
+                        const ModelParamsView& input_params,
                         torch::Tensor tokens,
                         torch::Tensor* aux_hidden_states) {
-    ModelInputParams modified_input_params = input_params.clone().view();
+    ModelParamsView modified_input_params = input_params.clone().view();
     modified_input_params.embedding.input_embedding = previous_hidden_states;
     std::optional<torch::Tensor> residual;
     return MtpDecoderLayerImplBase<layer::DeepseekV4DecoderLayer>::forward(
@@ -185,7 +185,7 @@ class DeepseekV4MtpModelImpl final : public torch::nn::Module,
   ModelOutput forward(torch::Tensor tokens,
                       torch::Tensor positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) {
+                      const ModelParamsView& input_params) {
     torch::NoGradGuard no_grad;
 
     const bool is_empty_dp_rank = !tokens.defined() || tokens.numel() == 0;
@@ -339,7 +339,7 @@ class DeepseekV4MtpForCausalLMImpl final
 
   void prepare_graph_forward_metadata(ModelGraphMetadataState* state,
                                       const torch::Tensor& positions,
-                                      ModelInputParams& input_params) {
+                                      ModelParamsView& input_params) {
     this->model_->prepare_graph_forward_metadata(
         state, positions, input_params);
   }

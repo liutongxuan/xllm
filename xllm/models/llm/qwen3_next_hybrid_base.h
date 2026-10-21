@@ -27,8 +27,8 @@ limitations under the License.
 #include "core/common/flash_comm1_context.h"
 #include "core/framework/config/scheduler_config.h"
 #include "core/framework/model/aux_hidden_capture.h"
-#include "core/framework/model/model_input_params.h"
 #include "core/framework/model/model_output.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/framework/model_context/model_context.h"
 #include "core/framework/model_loader/model_loader.h"
 #include "core/framework/parallel_state/parallel_args.h"
@@ -53,7 +53,7 @@ class Qwen3HybridModelModule : public torch::nn::Module {
   virtual ModelOutput forward(torch::Tensor tokens,
                               torch::Tensor positions,
                               std::vector<KVCache>& kv_caches,
-                              const ModelInputParams& input_params) = 0;
+                              const ModelParamsView& input_params) = 0;
   virtual void load_state_dict(const StateDict& state_dict) = 0;
   virtual void verify_loaded_weights(const std::string& prefix) const = 0;
   virtual layer::WordEmbedding get_word_embedding() = 0;
@@ -104,7 +104,7 @@ class Qwen3HybridModelImplBase : public Qwen3HybridModelModule {
   ModelOutput forward(torch::Tensor tokens,
                       torch::Tensor positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) override {
+                      const ModelParamsView& input_params) override {
     // Disable gradient computation to reduce memory usage during inference
     torch::NoGradGuard no_grad;
     if (dp_size_ > 1) {
@@ -261,7 +261,7 @@ class Qwen3HybridModelImplBase : public Qwen3HybridModelModule {
   }
 
  protected:
-  torch::Tensor build_attention_mask(const ModelInputParams& input_params) {
+  torch::Tensor build_attention_mask(const ModelParamsView& input_params) {
 #if defined(USE_NPU)
     // On NPU the hybrid path never consumes attn_metadata.attn_mask: full
     // attention runs through the fused-infer / paged-attention kernels (which
@@ -335,7 +335,7 @@ class Qwen3HybridForCausalLMImplBase : public torch::nn::Module {
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) {
+                      const ModelParamsView& input_params) {
     return model_->forward(tokens, positions, kv_caches, input_params);
   }
 

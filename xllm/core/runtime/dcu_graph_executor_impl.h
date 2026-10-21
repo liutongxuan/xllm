@@ -33,7 +33,7 @@ limitations under the License.
 
 #include "core/framework/model/causal_lm.h"
 #include "core/framework/model/model_args.h"
-#include "core/framework/model/model_input_params.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/kv_cache/storage/kv_cache.h"
 #include "core/runtime/executor_impl.h"
 #include "core/runtime/executor_impl_factory.h"
@@ -219,7 +219,7 @@ class DcuGraph final {
     return persistent_param_.hidden_states(n_tokens);
   }
 
-  bool matches_graph_input(const ModelInputParams&) const { return true; }
+  bool matches_graph_input(const ModelParamsView&) const { return true; }
   bool matches_graph_input(const RecModelParams& params) const;
 
  private:
@@ -254,7 +254,7 @@ class DcuGraphExecutorImpl final : public ExecutorImpl,
   ModelOutput run(const torch::Tensor& tokens,
                   const torch::Tensor& positions,
                   std::vector<KVCache>& kv_caches,
-                  const ModelInputParams& params) override;
+                  const ModelParamsView& params) override;
 
   ModelOutput run(const torch::Tensor& tokens,
                   const torch::Tensor& positions,

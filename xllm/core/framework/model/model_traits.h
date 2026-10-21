@@ -23,7 +23,7 @@ limitations under the License.
 #include <vector>
 
 namespace xllm {
-class ModelInputParams;
+class ModelParamsView;
 struct ModelGraphMetadataState;
 class KVCache;
 
@@ -184,7 +184,7 @@ struct has_prepare_graph_forward_metadata<
     std::void_t<decltype(std::declval<T>()->prepare_graph_forward_metadata(
         std::declval<ModelGraphMetadataState*>(),
         std::declval<const torch::Tensor&>(),
-        std::declval<ModelInputParams&>()))>> : std::true_type {};
+        std::declval<ModelParamsView&>()))>> : std::true_type {};
 
 template <typename T, typename = void>
 struct has_pooler : std::false_type {};
@@ -286,7 +286,7 @@ struct has_write_context_kv<
         std::declval<const torch::Tensor&>(),
         std::declval<const torch::Tensor&>(),
         std::declval<std::vector<KVCache>&>(),
-        std::declval<const ModelInputParams&>()))>> : std::true_type {};
+        std::declval<const ModelParamsView&>()))>> : std::true_type {};
 
 template <typename T, typename = void>
 struct has_dflash2_candidates : std::false_type {};

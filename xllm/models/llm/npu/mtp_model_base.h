@@ -28,7 +28,7 @@ limitations under the License.
 #include "core/common/global_flags.h"
 #include "core/framework/config/kv_cache_config.h"
 #include "core/framework/config/scheduler_config.h"
-#include "core/framework/model/model_input_params.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/framework/model_context/model_context.h"
 #include "core/framework/parallel_state/npu_dp_ep_padding.h"
 #include "core/kv_cache/storage/kv_cache.h"
@@ -94,7 +94,7 @@ class MtpModelImplBase : public torch::nn::Module {
   virtual ModelOutput forward(torch::Tensor tokens,
                               torch::Tensor positions,
                               std::vector<KVCache>& kv_caches,
-                              const ModelInputParams& input_params) {
+                              const ModelParamsView& input_params) {
     if (dp_size_ > 1 && (!tokens.defined() || tokens.numel() == 0)) {
       auto options =
           torch::TensorOptions().dtype(torch::kInt32).device(device_);
@@ -286,7 +286,7 @@ class MtpModelImplBase : public torch::nn::Module {
   // ExpertInput::expert_array path.
   virtual void prepare_legacy_expert_array(
       const torch::Tensor& /*hidden_states*/,
-      const ModelInputParams& /*input_params*/) {}
+      const ModelParamsView& /*input_params*/) {}
 
   virtual void forward_layer(DecoderLayerType& layer,
                              torch::Tensor& h,
@@ -294,7 +294,7 @@ class MtpModelImplBase : public torch::nn::Module {
                              torch::Tensor& sin_pos,
                              torch::Tensor& attn_mask,
                              KVCache& kv_cache,
-                             const ModelInputParams& input_params,
+                             const ModelParamsView& input_params,
                              torch::Tensor&,
                              int32_t,
                              aclrtEvent* event,
@@ -355,7 +355,7 @@ class MtpForCausalLMImplBase : public torch::nn::Module {
   virtual ModelOutput forward(const torch::Tensor& tokens,
                               const torch::Tensor& positions,
                               std::vector<KVCache>& kv_caches,
-                              const ModelInputParams& input_params) {
+                              const ModelParamsView& input_params) {
     return model_(tokens, positions, kv_caches, input_params);
   }
 

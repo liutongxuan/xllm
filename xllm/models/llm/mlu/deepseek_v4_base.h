@@ -55,7 +55,7 @@ inline torch::Tensor maybe_to_device(const torch::Tensor& tensor,
   return tensor.to(device);
 }
 
-inline bool deepseek_v4_uses_mlu_graph(const ModelInputParams& input_params) {
+inline bool deepseek_v4_uses_mlu_graph(const ModelParamsView& input_params) {
   return ExecutionConfig::get_instance().enable_graph() &&
          input_params.enable_graph;
 }
@@ -203,7 +203,7 @@ class DeepseekV4Base {
 
   void prepare_graph_forward_metadata(ModelGraphMetadataState* state,
                                       const torch::Tensor& positions,
-                                      ModelInputParams& input_params);
+                                      ModelParamsView& input_params);
 
  protected:
   // ==========================================================================
@@ -513,7 +513,7 @@ class DeepseekV4Base {
 
   template <typename Persistent>
   void init_persistent_cache_buffers(Persistent& persistent,
-                                     const ModelInputParams& input_params,
+                                     const ModelParamsView& input_params,
                                      int64_t num_tokens,
                                      const torch::Device& runtime_device) {
     if (!persistent.block_tables_by_group.empty()) {

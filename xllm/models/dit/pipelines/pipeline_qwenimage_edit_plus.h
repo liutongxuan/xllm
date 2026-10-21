@@ -28,7 +28,9 @@ limitations under the License.
 #include "core/framework/config/dit_config.h"
 #include "core/framework/config/parallel_config.h"
 #include "core/framework/dit_cache/dit_cache.h"
-#include "core/framework/model/model_input_params.h"
+#include "core/framework/model/dit_model_output.h"
+#include "core/framework/model/dit_model_params.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/framework/model_context/model_context.h"
 #include "core/framework/model_loader/dit_model_loader.h"
 #include "core/framework/parallel_state/process_group.h"
@@ -361,14 +363,14 @@ class QwenImageEditPlusPipelineImpl : public torch::nn::Module {
         tokens.eq(context_.get_model_args("text_encoder").image_token_id());
     if (image_mask.sum().item<int64_t>() == 0) {
       params.embedding.input_embedding =
-          text_encoder_->get_input_embeddings(tokens, ModelInputParams(params));
+          text_encoder_->get_input_embeddings(tokens, ModelParamsView(params));
       return params;
     }
 
     VlmModelParams mm_params;
     mm_params.multimodal.mm_data = MMBatchData::to(mm_batch, tokens.device());
     MMDict multimodal_embeds =
-        text_encoder_->get_multimodal_embeddings(ModelInputParams(mm_params));
+        text_encoder_->get_multimodal_embeddings(ModelParamsView(mm_params));
 
     auto image_embedding_value = multimodal_embeds.find("image|embedding");
     CHECK(image_embedding_value != multimodal_embeds.end())
@@ -391,7 +393,7 @@ class QwenImageEditPlusPipelineImpl : public torch::nn::Module {
     params.multimodal.mm_data = MMBatchData(MMType::IMAGE, embedding_data);
 
     params.embedding.input_embedding =
-        text_encoder_->get_input_embeddings(tokens, ModelInputParams(params));
+        text_encoder_->get_input_embeddings(tokens, ModelParamsView(params));
     return params;
   }
 #endif
@@ -637,7 +639,7 @@ class QwenImageEditPlusPipelineImpl : public torch::nn::Module {
     auto model_output = text_encoder_->forward(tokens_flat,
                                                positions_packed,
                                                kv_caches,
-                                               ModelInputParams(input_params));
+                                               ModelParamsView(input_params));
     torch::Tensor hidden_states_flat = model_output.hidden_states;
     int64_t hidden_size = hidden_states_flat.size(-1);
     torch::Tensor padded_hidden_states_flat =
@@ -836,7 +838,7 @@ class QwenImageEditPlusPipelineImpl : public torch::nn::Module {
     return std::make_pair(latents, image_latents);
   }
 
-  DiTForwardOutput forward(const DiTForwardInput& input) {
+  DiTForwardOutput forward(const DiTModelParams& input) {
     torch::NoGradGuard no_grad;
     const auto& generation_params = input.generation_params;
     auto height = generation_params.height;

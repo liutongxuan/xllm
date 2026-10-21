@@ -1160,7 +1160,7 @@ torch::Tensor NpuDeepseekV32DecoderLayerImpl::forward(
     torch::Tensor& sin_pos,
     torch::Tensor& attn_mask,
     KVCache& kv_cache,
-    const ModelInputParams& input_params,
+    const ModelParamsView& input_params,
     aclrtEvent* event,
     std::atomic<bool>* event_flag,
     int node_id) {
@@ -1185,15 +1185,15 @@ torch::Tensor NpuDeepseekV32DecoderLayerImpl::forward_with_topk(
     torch::Tensor& sin_pos,
     torch::Tensor& attn_mask,
     KVCache& kv_cache,
-    const ModelInputParams& input_params,
+    const ModelParamsView& input_params,
     const torch::Tensor& shared_topk_indices,
     torch::Tensor* output_topk_indices,
     aclrtEvent* event,
     std::atomic<bool>* event_flag,
     int node_id) {
   atb::Status st;
-  ModelInputParams& input_params_new =
-      const_cast<ModelInputParams&>(input_params);
+  ModelParamsView& input_params_new =
+      const_cast<ModelParamsView&>(input_params);
   if (input_params_new.meta.batch_forward_type.is_decode()) {
     build_node_variant_pack(decode_node_,
                             x,
@@ -1238,7 +1238,7 @@ torch::Tensor NpuDeepseekV32DecoderLayerImpl::forward_with_mtp_topk_fallback(
     torch::Tensor& sin_pos,
     torch::Tensor& attn_mask,
     KVCache& kv_cache,
-    const ModelInputParams& input_params,
+    const ModelParamsView& input_params,
     torch::Tensor* output_topk_indices,
     aclrtEvent* event,
     std::atomic<bool>* event_flag,
@@ -1249,8 +1249,8 @@ torch::Tensor NpuDeepseekV32DecoderLayerImpl::forward_with_mtp_topk_fallback(
       << "MTP top-k fallback requires an output top-k tensor.";
 
   atb::Status st;
-  ModelInputParams& input_params_new =
-      const_cast<ModelInputParams&>(input_params);
+  ModelParamsView& input_params_new =
+      const_cast<ModelParamsView&>(input_params);
   if (input_params_new.meta.batch_forward_type.is_decode()) {
     build_node_variant_pack(mtp_decode_fallback_node_,
                             x,
@@ -1295,7 +1295,7 @@ void NpuDeepseekV32DecoderLayerImpl::build_node_variant_pack(
     torch::Tensor& sin_pos,
     torch::Tensor& attn_mask,
     KVCache& kv_cache,
-    ModelInputParams& input_params,
+    ModelParamsView& input_params,
     bool is_prefill,
     const torch::Tensor& shared_topk_indices,
     torch::Tensor* output_topk_indices,

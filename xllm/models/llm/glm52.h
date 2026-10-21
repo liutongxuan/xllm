@@ -62,7 +62,7 @@ class Glm52ModelImpl : public Glm5ModelImpl {
 
   void prepare_graph_forward_metadata(ModelGraphMetadataState* state,
                                       const torch::Tensor& /*positions*/,
-                                      ModelInputParams& input_params) const {
+                                      ModelParamsView& input_params) const {
     CHECK(state != nullptr)
         << "GLM-5.2 DCP graph metadata state must be initialized";
     auto* graph_state = dynamic_cast<Glm52GraphMetadataState*>(state);
@@ -126,7 +126,7 @@ class Glm52ModelImpl : public Glm5ModelImpl {
       torch::Tensor& positions,
       layer::AttentionMetadata& attn_metadata,
       KVCache& kv_cache,
-      const ModelInputParams& input_params) override {
+      const ModelParamsView& input_params) override {
     if (layer_id == 0) {
       topk_relay_.reset();
     }
@@ -141,7 +141,7 @@ class Glm52ModelImpl : public Glm5ModelImpl {
   }
 
  private:
-  static void prepare_dcp_graph_padding(ModelInputParams& input_params) {
+  static void prepare_dcp_graph_padding(ModelParamsView& input_params) {
     const int64_t actual_rows = input_params.meta.num_sequences;
     const torch::Tensor& slots = input_params.attention.device.new_cache_slots;
     CHECK(slots.defined())
@@ -211,7 +211,7 @@ class Glm52ForCausalLMImpl : public LlmForCausalLMImplBase<Glm52Model> {
 
   void prepare_graph_forward_metadata(ModelGraphMetadataState* state,
                                       const torch::Tensor& positions,
-                                      ModelInputParams& input_params) const {
+                                      ModelParamsView& input_params) const {
     model_->prepare_graph_forward_metadata(state, positions, input_params);
   }
 

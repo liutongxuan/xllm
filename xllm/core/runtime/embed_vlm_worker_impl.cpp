@@ -25,7 +25,7 @@ limitations under the License.
 #include "common/metrics.h"
 #include "core/framework/config/model_config.h"
 #include "core/kv_cache/storage/kv_cache.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "models/model_registry.h"
 #include "options.h"
 #include "util/timer.h"
@@ -63,7 +63,7 @@ std::optional<ForwardOutput> EmbedVLMWorkerImpl::step(
   auto params = input.input_params.to(device_);
   auto sampling_params = input.sampling_params.to(device_, dtype_);
 
-  ModelInputParams execution_params(params);
+  ModelParamsView execution_params(params);
   auto model_output = model_executor_->forward(
       flatten_tokens, flatten_positions, kv_caches_, execution_params);
   ret = device_.synchronize_default_stream();

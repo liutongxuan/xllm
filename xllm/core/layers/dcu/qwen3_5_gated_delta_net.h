@@ -39,7 +39,7 @@ class Qwen3_5GatedDeltaNetImpl : public Qwen3GatedDeltaNetBaseImpl {
   torch::Tensor forward(const torch::Tensor& hidden_states,
                         const AttentionMetadata& attn_metadata,
                         KVCache& kv_cache,
-                        const ModelInputParams& input_params);
+                        const ModelParamsView& input_params);
 
  protected:
   // Stubs: not used by DCU forward (uses raw projections)

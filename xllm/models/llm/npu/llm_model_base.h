@@ -27,8 +27,8 @@ limitations under the License.
 
 #include "core/common/global_flags.h"
 #include "core/framework/config/scheduler_config.h"
-#include "core/framework/model/model_input_params.h"
 #include "core/framework/model/model_output.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/framework/model/model_traits.h"
 #include "core/framework/model/rec_model_params.h"
 #include "core/framework/model_context/model_context.h"
@@ -65,7 +65,7 @@ class LlmDecoderLayerImplBase : public torch::nn::Module {
                                 torch::Tensor& sin_pos,
                                 torch::Tensor& attn_mask,
                                 KVCache& kv_cache,
-                                ModelInputParams& input_params,
+                                ModelParamsView& input_params,
                                 aclrtEvent* event,
                                 std::atomic<bool>* event_flag) {
     if (input_params.block_copy.src_block_indices.numel() > 0) {
@@ -178,7 +178,7 @@ class LlmModelImplBase : public torch::nn::Module {
   virtual ModelOutput forward(torch::Tensor tokens,
                               torch::Tensor positions,
                               std::vector<KVCache>& kv_caches,
-                              const ModelInputParams& input_params) {
+                              const ModelParamsView& input_params) {
     auto local_params = input_params;
     return forward_impl(tokens, positions, kv_caches, local_params);
   }
@@ -461,7 +461,7 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
   virtual ModelOutput forward(const torch::Tensor& tokens,
                               const torch::Tensor& positions,
                               std::vector<KVCache>& kv_caches,
-                              const ModelInputParams& input_params) {
+                              const ModelParamsView& input_params) {
     return model_->forward(tokens, positions, kv_caches, input_params);
   }
 

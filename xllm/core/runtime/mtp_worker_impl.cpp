@@ -223,7 +223,7 @@ void populate_expanded_layout(Params& input_params,
                               torch::Tensor expanded_block_tables,
                               std::vector<int32_t> expanded_host_kv_seq_lens,
                               int32_t block_size) {
-  ModelInputParams execution_params(input_params);
+  ModelParamsView execution_params(input_params);
   layer::ExpandedDecodeMetadataBuilder::populate_expanded_layout(
       execution_params,
       expanded_kv_seq_lens,

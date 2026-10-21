@@ -27,7 +27,7 @@ limitations under the License.
 #include "core/kv_cache/block/linear_state_block_manager.h"
 #include "core/kv_cache/prefix/block_hasher.h"
 #include "framework/block/block_manager_pool_test_peer.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "framework/request/incremental_decoder.h"
 
 namespace xllm {

@@ -93,9 +93,9 @@ class DeepseekV2ModelImpl : public torch::nn::Module {
   ModelOutput forward_native(torch::Tensor tokens,
                              torch::Tensor positions,
                              std::vector<KVCache>& kv_caches,
-                             const ModelInputParams& input_params) {
+                             const ModelParamsView& input_params) {
     // for dp, if tokens is empty, set tokens to 1 and positions to 0
-    ModelInputParams modified_input_params = input_params.clone().view();
+    ModelParamsView modified_input_params = input_params.clone().view();
     if (dp_size_ > 1) {
       if (tokens.sizes() == 0) {
         tokens = torch::tensor({1}).to(torch::kInt32).to(device_);
@@ -133,7 +133,7 @@ class DeepseekV2ModelImpl : public torch::nn::Module {
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) {
+                      const ModelParamsView& input_params) {
     return forward_native(tokens, positions, kv_caches, input_params);
   }
 
@@ -185,7 +185,7 @@ class DeepseekV2ModelImpl : public torch::nn::Module {
       torch::Tensor& positions,
       layer::AttentionMetadata& attn_metadata,
       KVCache& kv_cache,
-      const ModelInputParams& input_params) {
+      const ModelParamsView& input_params) {
     return layer(hidden_states,
                  residual,
                  positions,
@@ -199,7 +199,7 @@ class DeepseekV2ModelImpl : public torch::nn::Module {
                           torch::Tensor& positions,
                           layer::AttentionMetadata& attn_metadata,
                           std::vector<KVCache>& kv_caches,
-                          const ModelInputParams& input_params) {
+                          const ModelParamsView& input_params) {
     for (size_t i = 0; i < layers_.size(); ++i) {
       if (!input_params.synchronize_layer(static_cast<uint32_t>(i))) {
         return false;

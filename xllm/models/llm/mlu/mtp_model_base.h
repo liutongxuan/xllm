@@ -46,7 +46,7 @@ class MluMtpDecoderLayerImplBase
       torch::Tensor positions,
       const layer::AttentionMetadata& attn_metadata,
       KVCache& kv_cache,
-      ModelInputParams& input_params,
+      ModelParamsView& input_params,
       const std::optional<torch::Tensor>& input_ids,
       const std::optional<layer::DsaTopkState>& topk_input,
       std::optional<layer::DsaTopkState>& topk_output) {
@@ -57,7 +57,7 @@ class MluMtpDecoderLayerImplBase
                                torch::Tensor& layer_positions,
                                const layer::AttentionMetadata& metadata,
                                KVCache& layer_kv_cache,
-                               ModelInputParams& params,
+                               ModelParamsView& params,
                                const std::optional<torch::Tensor>& ids) {
       return decoder->forward_mtp(hidden_states,
                                   layer_residual,
@@ -107,7 +107,7 @@ class MluMtpLayerForwardAdapter final {
                               torch::Tensor& positions,
                               const layer::AttentionMetadata& attn_metadata,
                               KVCache& kv_cache,
-                              ModelInputParams& input_params,
+                              ModelParamsView& input_params,
                               const std::optional<torch::Tensor>& input_ids) {
     const std::optional<layer::DsaTopkState>& topk_input =
         input_state_ == nullptr ? empty_topk_state_

@@ -41,7 +41,7 @@ class DeepseekV32DecoderLayerImpl : public torch::nn::Module {
                         torch::Tensor& sin_pos,
                         torch::Tensor& attn_mask,
                         KVCache& kv_cache,
-                        const ModelInputParams& input_params,
+                        const ModelParamsView& input_params,
                         aclrtEvent* event,
                         std::atomic<bool>* event_flag) {
     return decoder_layer_(x,
@@ -59,7 +59,7 @@ class DeepseekV32DecoderLayerImpl : public torch::nn::Module {
                                   torch::Tensor& sin_pos,
                                   torch::Tensor& attn_mask,
                                   KVCache& kv_cache,
-                                  const ModelInputParams& input_params,
+                                  const ModelParamsView& input_params,
                                   const torch::Tensor& shared_topk_indices,
                                   torch::Tensor* output_topk_indices,
                                   aclrtEvent* event,
@@ -81,7 +81,7 @@ class DeepseekV32DecoderLayerImpl : public torch::nn::Module {
                              torch::Tensor& sin_pos,
                              torch::Tensor& attn_mask,
                              KVCache& kv_cache,
-                             const ModelInputParams& input_params,
+                             const ModelParamsView& input_params,
                              torch::Tensor& topk_indices,
                              int32_t index_topk,
                              const torch::Device& device,
@@ -268,7 +268,7 @@ class DeepseekV32ModelImpl : public torch::nn::Module {
   ModelOutput forward(torch::Tensor tokens,
                       torch::Tensor positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& input_params) {
+                      const ModelParamsView& input_params) {
     if (dp_size_ > 1) {
       if (tokens.sizes() == 0) {
         tokens = torch::tensor({1}).to(torch::kInt32).to(device_);

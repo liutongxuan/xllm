@@ -100,9 +100,9 @@ class Qwen3_5ModelImpl final
   virtual ModelOutput forward(torch::Tensor tokens,
                               torch::Tensor positions,
                               std::vector<KVCache>& kv_caches,
-                              const ModelInputParams& input_params) {
-    ModelInputParams& input_params_new =
-        const_cast<ModelInputParams&>(input_params);
+                              const ModelParamsView& input_params) {
+    ModelParamsView& input_params_new =
+        const_cast<ModelParamsView&>(input_params);
     std::vector<torch::Tensor> deep_stacks;
 
     if (dp_size_ > 1) {
@@ -152,9 +152,8 @@ class Qwen3_5ModelImpl final
  private:
   int32_t dp_size_ = 1;
   layer::Qwen3NextRMSNorm rms_norm_{nullptr};
-  layer::AttentionMetadata get_attention_metadata(
-      const ModelInputParams& params,
-      const torch::Tensor& h) {
+  layer::AttentionMetadata get_attention_metadata(const ModelParamsView& params,
+                                                  const torch::Tensor& h) {
 #if defined(USE_MLU)
     constexpr int64_t prefill_block_size =
         kernel::mlu::kCausalConv1dPrefillBlockSize;

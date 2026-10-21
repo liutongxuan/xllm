@@ -18,6 +18,8 @@ limitations under the License.
 #include <cstdint>
 
 #include "core/framework/dit_cache/dit_cache.h"
+#include "core/framework/model/dit_model_output.h"
+#include "core/framework/model/dit_model_params.h"
 #include "models/dit/autoencoders/autoencoder_kl_flux2.h"
 #include "models/dit/pipelines/pipeline_flux2_base.h"
 #include "models/dit/processors/flux2_image_processor.h"
@@ -59,7 +61,7 @@ class Flux2PipelineImpl final : public Flux2PipelineBaseImpl {
     register_module("scheduler", scheduler_);
   }
 
-  DiTForwardOutput forward(const DiTForwardInput& input) {
+  DiTForwardOutput forward(const DiTModelParams& input) {
     const auto& generation_params = input.generation_params;
 
     int64_t seed = generation_params.seed > 0 ? generation_params.seed : 42;

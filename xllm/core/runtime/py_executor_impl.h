@@ -25,7 +25,7 @@ limitations under the License.
 #include "core/kv_cache/storage/kv_cache.h"
 #include "executor_impl_factory.h"
 #include "framework/model/causal_lm.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "runtime/executor_impl.h"
 #include "runtime/options.h"
 
@@ -50,17 +50,17 @@ class __attribute__((visibility("hidden"))) PyExecutorImpl final
     return supports_prepared_metadata_;
   }
   void prepare_attention_metadata(std::vector<KVCache>& kv_caches,
-                                  ModelInputParams& params) override;
+                                  ModelParamsView& params) override;
 
   void warmup_prepared_graph(const torch::Tensor& tokens,
                              const torch::Tensor& positions,
                              std::vector<KVCache>& kv_caches,
-                             const ModelInputParams& params) override;
+                             const ModelParamsView& params) override;
 
   ModelOutput run(const torch::Tensor& tokens,
                   const torch::Tensor& positions,
                   std::vector<KVCache>& kv_caches,
-                  const ModelInputParams& params) override;
+                  const ModelParamsView& params) override;
 
   // GLM sparse MTP consumes one decode row per token and no Host KV/CSR data.
   pybind11::object mtp_sparse_attention_metadata_view(

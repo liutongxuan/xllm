@@ -27,7 +27,7 @@ limitations under the License.
 
 namespace xllm {
 
-class ModelInputParams;
+class ModelParamsView;
 class LlmForwardInput;
 struct SamplingParameters;
 
@@ -176,7 +176,7 @@ void update_kv_seq_lens_and_max(std::vector<int32_t>& kv_seq_lens_vec,
                                 int32_t kv_len,
                                 int32_t& kv_max_seq_len);
 
-// Updates common decode-side ModelInputParams fields from built buffers.
+// Updates common decode-side ModelParamsView fields from built buffers.
 template <typename Params>
 void update_input_params(Params& input_params,
                          DecodeBuildBuffers& buf,

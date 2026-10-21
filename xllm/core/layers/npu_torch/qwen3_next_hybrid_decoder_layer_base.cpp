@@ -114,7 +114,7 @@ torch::Tensor Qwen3HybridDecoderLayerImplBase::forward(
     torch::Tensor& positions,
     const AttentionMetadata& attn_metadata,
     KVCache& kv_cache,
-    const ModelInputParams& input_params,
+    const ModelParamsView& input_params,
     const torch::Tensor& mrope_cos_sin) {
   const FlashComm1Context* fc1_ctx = get_current_flash_comm1_context();
   // Pre-attention norm

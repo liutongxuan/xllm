@@ -30,7 +30,7 @@ limitations under the License.
 
 #include "core/common/macros.h"
 #include "core/framework/model/causal_lm.h"
-#include "core/framework/model/model_input_params.h"
+#include "core/framework/model/model_params_view.h"
 #include "core/framework/model/rec_model.h"
 #include "core/kv_cache/storage/kv_cache.h"
 #include "core/runtime/acl_graph_persistent_param.h"
@@ -67,7 +67,7 @@ struct StaticGraphTaskSignature {
 };
 
 inline std::optional<StaticGraphTaskSignature> make_static_graph_task_signature(
-    const ModelInputParams& params) {
+    const ModelParamsView& params) {
   if (params.parallel.query_start_loc.size() != 2 ||
       params.embedding.linear_state_ids.size() != 1 ||
       params.num_accepted_tokens_host.size() != 1) {
@@ -109,7 +109,7 @@ class AclGraph {
                const runtime::Options& options,
                const torch::Tensor& tokens,
                const torch::Tensor& positions,
-               const ModelInputParams& params,
+               const ModelParamsView& params,
                std::vector<KVCache>& kv_cache,
                uint32_t bucket_num_tokens,
                c10_npu::MempoolId_t graph_pool);
@@ -128,7 +128,7 @@ class AclGraph {
                      const torch::Tensor& tokens,
                      const torch::Tensor& positions,
                      std::vector<KVCache>& kv_cache,
-                     const ModelInputParams& params);
+                     const ModelParamsView& params);
 
   ModelOutput replay(RecModel* model,
                      const torch::Tensor& tokens,
@@ -139,7 +139,7 @@ class AclGraph {
   void prepare_replay_inputs(const torch::Tensor& tokens,
                              const torch::Tensor& positions,
                              std::vector<KVCache>& kv_cache,
-                             const ModelInputParams& params);
+                             const ModelParamsView& params);
 
   bool prepare_static_mtp_graph_tasks(const SpecVerifyGraphTaskSignal& signal,
                                       const c10_npu::NPUStream& signal_stream);
@@ -167,17 +167,16 @@ class AclGraph {
   void make_current_stream_wait_for_graph(aclrtStream current_stream);
   void prepare_model_graph_metadata(CausalLM* model,
                                     const torch::Tensor& positions,
-                                    ModelInputParams& params);
-  void update_spec_verify_attention_tiling(const ModelInputParams& params);
+                                    ModelParamsView& params);
+  void update_spec_verify_attention_tiling(const ModelParamsView& params);
   bool has_fused_infer_attention_graph_tasks() const;
 
-  bool update_graph_tasks(const ModelInputParams& params,
+  bool update_graph_tasks(const ModelParamsView& params,
                           bool update_causal_conv1d_tasks);
   void signal_static_causal_conv1d_tasks(
       const c10_npu::NPUStream& signal_stream);
-  bool static_graph_task_signature_matches(
-      const ModelInputParams& params) const;
-  void capture_static_graph_task_signature(const ModelInputParams& params);
+  bool static_graph_task_signature_matches(const ModelParamsView& params) const;
+  void capture_static_graph_task_signature(const ModelParamsView& params);
 
   // Keep native Rec owners alive until captured work has been destroyed.
   std::optional<RecModelParams> rec_capture_params_;
@@ -232,7 +231,7 @@ class AclGraphExecutorImpl final : public ExecutorImpl,
   ModelOutput run(const torch::Tensor& tokens,
                   const torch::Tensor& positions,
                   std::vector<KVCache>& kv_caches,
-                  const ModelInputParams& params) override;
+                  const ModelParamsView& params) override;
 
   ModelOutput run(const torch::Tensor& tokens,
                   const torch::Tensor& positions,
@@ -242,7 +241,7 @@ class AclGraphExecutorImpl final : public ExecutorImpl,
   void prepare_graph_input(const torch::Tensor& tokens,
                            const torch::Tensor& positions,
                            std::vector<KVCache>& kv_caches,
-                           const ModelInputParams& params) override;
+                           const ModelParamsView& params) override;
 
   bool prepare_static_mtp_graph_tasks(const SpecVerifyGraphTaskSignal& signal,
                                       const Stream& signal_stream) override;
@@ -259,7 +258,7 @@ class AclGraphExecutorImpl final : public ExecutorImpl,
 
   [[nodiscard]] uint64_t graph_key_for_test(
       uint32_t bucket_num_tokens,
-      const ModelInputParams& params) const {
+      const ModelParamsView& params) const {
     return get_graph_key(bucket_num_tokens, params);
   }
 
@@ -305,7 +304,7 @@ class AclGraphExecutorImpl final : public ExecutorImpl,
   uint32_t get_bucket_num_tokens(uint32_t num_tokens) const;
 
   uint64_t get_graph_key(uint32_t bucket_num_tokens,
-                         const ModelInputParams& params,
+                         const ModelParamsView& params,
                          uint64_t attention_plan_class = 0) const;
   uint64_t get_graph_key(uint32_t bucket_num_tokens,
                          const RecModelParams& params,

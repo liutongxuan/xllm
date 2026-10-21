@@ -98,7 +98,7 @@ class MockCausalLM : public CausalLM {
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
-                      const ModelInputParams& params) override {
+                      const ModelParamsView& params) override {
     (void)tokens;
     (void)positions;
     (void)kv_caches;
@@ -280,21 +280,21 @@ TEST_F(MluGraphExecutorTest, DifferentBatchSizes) {
         base_impl_->run({forward_input.token_ids},
                         {forward_input.positions},
                         kv_caches_,
-                        {ModelInputParams(forward_input.input_params)});
+                        {ModelParamsView(forward_input.input_params)});
     auto eager_output = eager_model_output.hidden_states;
 
     auto graph_model_output =
         impl_->run({forward_input.token_ids},
                    {forward_input.positions},
                    kv_caches_,
-                   {ModelInputParams(forward_input.input_params)});
+                   {ModelParamsView(forward_input.input_params)});
     auto graph_output = graph_model_output.hidden_states;
 
     auto replay_model_output =
         impl_->run({forward_input.token_ids},
                    {forward_input.positions},
                    kv_caches_,
-                   {ModelInputParams(forward_input.input_params)});
+                   {ModelParamsView(forward_input.input_params)});
     auto replay_output = replay_model_output.hidden_states;
 
     CHECK_EQ(eager_output.sizes(), graph_output.sizes());
@@ -315,14 +315,14 @@ TEST_F(MluGraphExecutorTest, MluGraphExecutorVsBaseExecutorImplMultipleRuns) {
       base_impl_->run({forward_input.token_ids},
                       {forward_input.positions},
                       kv_caches_,
-                      {ModelInputParams(forward_input.input_params)});
+                      {ModelParamsView(forward_input.input_params)});
   auto eager_output = eager_model_output.hidden_states;
 
   auto graph_model_output =
       impl_->run({forward_input.token_ids},
                  {forward_input.positions},
                  kv_caches_,
-                 {ModelInputParams(forward_input.input_params)});
+                 {ModelParamsView(forward_input.input_params)});
   auto graph_output = graph_model_output.hidden_states;
 
   CHECK_EQ(eager_output.sizes(), graph_output.sizes());
@@ -345,14 +345,14 @@ TEST_F(MluGraphExecutorTest, MluGraphExecutorVsBaseExecutorImplMultipleRuns) {
         base_impl_->run({base_forward_input.token_ids},
                         {base_forward_input.positions},
                         kv_caches_,
-                        {ModelInputParams(base_forward_input.input_params)});
+                        {ModelParamsView(base_forward_input.input_params)});
     auto base_output = base_model_output.hidden_states;
 
     auto replay_model_output =
         impl_->run({replay_forward_input.token_ids},
                    {replay_forward_input.positions},
                    kv_caches_,
-                   {ModelInputParams(replay_forward_input.input_params)});
+                   {ModelParamsView(replay_forward_input.input_params)});
     auto replay_output = replay_model_output.hidden_states;
     base_forward_input.input_params.embedding.input_embedding = base_output;
     replay_forward_input.input_params.embedding.input_embedding = replay_output;
@@ -379,7 +379,7 @@ TEST_F(MluGraphExecutorTest, DraftDecodeFallsBackToEager) {
       base_impl_->run({forward_input.token_ids},
                       {forward_input.positions},
                       kv_caches_,
-                      {ModelInputParams(forward_input.input_params)});
+                      {ModelParamsView(forward_input.input_params)});
   auto eager_output = eager_model_output.hidden_states;
 
   auto first_impl_output =
@@ -387,14 +387,14 @@ TEST_F(MluGraphExecutorTest, DraftDecodeFallsBackToEager) {
           ->run({forward_input.token_ids},
                 {forward_input.positions},
                 kv_caches_,
-                {ModelInputParams(forward_input.input_params)})
+                {ModelParamsView(forward_input.input_params)})
           .hidden_states;
   auto second_impl_output =
       impl_
           ->run({forward_input.token_ids},
                 {forward_input.positions},
                 kv_caches_,
-                {ModelInputParams(forward_input.input_params)})
+                {ModelParamsView(forward_input.input_params)})
           .hidden_states;
 
   torch_mlu::synchronize();
@@ -418,7 +418,7 @@ TEST_F(MluGraphExecutorTest, DraftEagerDoesNotExposeAuxWhenDisabled) {
       impl_->run({forward_input.token_ids},
                  {forward_input.positions},
                  kv_caches_,
-                 {ModelInputParams(forward_input.input_params)});
+                 {ModelParamsView(forward_input.input_params)});
 
   EXPECT_FALSE(output.aux_hidden_states.defined());
   EXPECT_EQ(model_->forward_cnt(), 1);
@@ -445,7 +445,7 @@ TEST_F(MluGraphExecutorTest, DraftEagerPreservesTypedTopkWhenAuxIsDisabled) {
       impl_->run({forward_input.token_ids},
                  {forward_input.positions},
                  kv_caches_,
-                 {ModelInputParams(forward_input.input_params)});
+                 {ModelParamsView(forward_input.input_params)});
 
   EXPECT_EQ(output.mtp_topk_state.get(), expected_state.get());
   EXPECT_FALSE(output.aux_hidden_states.defined());
@@ -513,14 +513,14 @@ TEST_F(MluGraphExecutorTest, TargetDecodeCapturesThenReplays) {
           ->run({forward_input.token_ids},
                 {forward_input.positions},
                 kv_caches_,
-                {ModelInputParams(forward_input.input_params)})
+                {ModelParamsView(forward_input.input_params)})
           .hidden_states;
   auto second_impl_output =
       impl_
           ->run({forward_input.token_ids},
                 {forward_input.positions},
                 kv_caches_,
-                {ModelInputParams(forward_input.input_params)})
+                {ModelParamsView(forward_input.input_params)})
           .hidden_states;
 
   torch_mlu::synchronize();
@@ -538,19 +538,18 @@ TEST_F(MluGraphExecutorTest, SpecVerifyFallsBackAndNonSpecStillCaptures) {
   spec_input.input_params.is_spec_verify = true;
 
   const int32_t start_cnt = model_->forward_cnt();
-  auto first_spec_output =
-      impl_
-          ->run({spec_input.token_ids},
-                {spec_input.positions},
-                kv_caches_,
-                {ModelInputParams(spec_input.input_params)})
-          .hidden_states;
+  auto first_spec_output = impl_
+                               ->run({spec_input.token_ids},
+                                     {spec_input.positions},
+                                     kv_caches_,
+                                     {ModelParamsView(spec_input.input_params)})
+                               .hidden_states;
   auto second_spec_output =
       impl_
           ->run({spec_input.token_ids},
                 {spec_input.positions},
                 kv_caches_,
-                {ModelInputParams(spec_input.input_params)})
+                {ModelParamsView(spec_input.input_params)})
           .hidden_states;
 
   torch_mlu::synchronize();
@@ -564,14 +563,14 @@ TEST_F(MluGraphExecutorTest, SpecVerifyFallsBackAndNonSpecStillCaptures) {
           ->run({decode_input.token_ids},
                 {decode_input.positions},
                 kv_caches_,
-                {ModelInputParams(decode_input.input_params)})
+                {ModelParamsView(decode_input.input_params)})
           .hidden_states;
   auto second_decode_output =
       impl_
           ->run({decode_input.token_ids},
                 {decode_input.positions},
                 kv_caches_,
-                {ModelInputParams(decode_input.input_params)})
+                {ModelParamsView(decode_input.input_params)})
           .hidden_states;
 
   torch_mlu::synchronize();
@@ -596,13 +595,13 @@ TEST_F(MluGraphExecutorTest, LargeDecodeBucketCapturesThenReplays) {
                           ->run({forward_input.token_ids},
                                 {forward_input.positions},
                                 kv_caches_,
-                                {ModelInputParams(forward_input.input_params)})
+                                {ModelParamsView(forward_input.input_params)})
                           .hidden_states;
   auto second_output = impl_
                            ->run({forward_input.token_ids},
                                  {forward_input.positions},
                                  kv_caches_,
-                                 {ModelInputParams(forward_input.input_params)})
+                                 {ModelParamsView(forward_input.input_params)})
                            .hidden_states;
 
   torch_mlu::synchronize();
@@ -627,13 +626,13 @@ TEST_F(MluGraphExecutorTest, OverConfiguredTokenLimitFallsBackToEager) {
                           ->run({forward_input.token_ids},
                                 {forward_input.positions},
                                 kv_caches_,
-                                {ModelInputParams(forward_input.input_params)})
+                                {ModelParamsView(forward_input.input_params)})
                           .hidden_states;
   auto second_output = impl_
                            ->run({forward_input.token_ids},
                                  {forward_input.positions},
                                  kv_caches_,
-                                 {ModelInputParams(forward_input.input_params)})
+                                 {ModelParamsView(forward_input.input_params)})
                            .hidden_states;
 
   torch_mlu::synchronize();
@@ -666,12 +665,12 @@ TEST_F(MluGraphExecutorTest, LinearStatePaddingTailUsesPaddingId) {
       torch::tensor(first_input.input_params.embedding.linear_state_ids,
                     tensor_options_.dtype(torch::kInt32));
 
-  param.init_params(ModelInputParams(first_input.input_params),
+  param.init_params(ModelParamsView(first_input.input_params),
                     /*padding_num_tokens=*/4,
                     /*padding_needed=*/0);
   param.update_input_buffer(first_input.token_ids,
                             first_input.positions,
-                            ModelInputParams(first_input.input_params),
+                            ModelParamsView(first_input.input_params),
                             /*padding_needed=*/0);
 
   LlmForwardInput second_input = prepare_inputs(/*batch_size=*/3, /*seed=*/89);
@@ -682,7 +681,7 @@ TEST_F(MluGraphExecutorTest, LinearStatePaddingTailUsesPaddingId) {
 
   param.update_input_buffer(second_input.token_ids,
                             second_input.positions,
-                            ModelInputParams(second_input.input_params),
+                            ModelParamsView(second_input.input_params),
                             /*padding_needed=*/1);
 
   torch_mlu::synchronize();
@@ -707,7 +706,7 @@ TEST_F(MluGraphExecutorTest, PrefillThenDecodeCapturesAndReplays) {
       impl_->run({prefill_input.token_ids},
                  {prefill_input.positions},
                  kv_caches_,
-                 {ModelInputParams(prefill_input.input_params)});
+                 {ModelParamsView(prefill_input.input_params)});
 
   const uint64_t decode_seed = 29;
   auto decode_input = prepare_inputs(batch_size, decode_seed);
@@ -716,14 +715,14 @@ TEST_F(MluGraphExecutorTest, PrefillThenDecodeCapturesAndReplays) {
           ->run({decode_input.token_ids},
                 {decode_input.positions},
                 kv_caches_,
-                {ModelInputParams(decode_input.input_params)})
+                {ModelParamsView(decode_input.input_params)})
           .hidden_states;
   auto second_decode_output =
       impl_
           ->run({decode_input.token_ids},
                 {decode_input.positions},
                 kv_caches_,
-                {ModelInputParams(decode_input.input_params)})
+                {ModelParamsView(decode_input.input_params)})
           .hidden_states;
 
   torch_mlu::synchronize();
@@ -747,13 +746,13 @@ TEST_F(MluGraphExecutorTest, EqualDpDecodePadsToTpGraphSize) {
                           ->run({forward_input.token_ids},
                                 {forward_input.positions},
                                 kv_caches_,
-                                {ModelInputParams(forward_input.input_params)})
+                                {ModelParamsView(forward_input.input_params)})
                           .hidden_states;
   auto second_output = impl_
                            ->run({forward_input.token_ids},
                                  {forward_input.positions},
                                  kv_caches_,
-                                 {ModelInputParams(forward_input.input_params)})
+                                 {ModelParamsView(forward_input.input_params)})
                            .hidden_states;
 
   torch_mlu::synchronize();
@@ -777,13 +776,13 @@ TEST_F(MluGraphExecutorTest, UnevenDpDecodePadsToTpGraphSize) {
                           ->run({forward_input.token_ids},
                                 {forward_input.positions},
                                 kv_caches_,
-                                {ModelInputParams(forward_input.input_params)})
+                                {ModelParamsView(forward_input.input_params)})
                           .hidden_states;
   auto second_output = impl_
                            ->run({forward_input.token_ids},
                                  {forward_input.positions},
                                  kv_caches_,
-                                 {ModelInputParams(forward_input.input_params)})
+                                 {ModelParamsView(forward_input.input_params)})
                            .hidden_states;
 
   torch_mlu::synchronize();
@@ -809,13 +808,13 @@ TEST_F(MluGraphExecutorTest, MtpSeqLensCapacityUsesSpecFactor) {
                           ->run({forward_input.token_ids},
                                 {forward_input.positions},
                                 kv_caches_,
-                                {ModelInputParams(forward_input.input_params)})
+                                {ModelParamsView(forward_input.input_params)})
                           .hidden_states;
   auto second_output = impl_
                            ->run({forward_input.token_ids},
                                  {forward_input.positions},
                                  kv_caches_,
-                                 {ModelInputParams(forward_input.input_params)})
+                                 {ModelParamsView(forward_input.input_params)})
                            .hidden_states;
 
   torch_mlu::synchronize();
@@ -840,12 +839,12 @@ TEST_F(MluGraphExecutorTest, MtpSeqLensCapacityIncludesGraphPadding) {
         impl_->run({forward_input.token_ids},
                    {forward_input.positions},
                    kv_caches_,
-                   {ModelInputParams(forward_input.input_params)});
+                   {ModelParamsView(forward_input.input_params)});
     ModelOutput second_output =
         impl_->run({forward_input.token_ids},
                    {forward_input.positions},
                    kv_caches_,
-                   {ModelInputParams(forward_input.input_params)});
+                   {ModelParamsView(forward_input.input_params)});
 
     torch_mlu::synchronize();
     EXPECT_TRUE(torch::allclose(
@@ -868,13 +867,13 @@ TEST_F(MluGraphExecutorTest, DpDummyFallsBackToEager) {
                           ->run({forward_input.token_ids},
                                 {forward_input.positions},
                                 kv_caches_,
-                                {ModelInputParams(forward_input.input_params)})
+                                {ModelParamsView(forward_input.input_params)})
                           .hidden_states;
   auto second_output = impl_
                            ->run({forward_input.token_ids},
                                  {forward_input.positions},
                                  kv_caches_,
-                                 {ModelInputParams(forward_input.input_params)})
+                                 {ModelParamsView(forward_input.input_params)})
                            .hidden_states;
 
   torch_mlu::synchronize();
@@ -898,13 +897,13 @@ TEST_F(MluGraphExecutorTest, DpUnevenDecodeFallsBackToEager) {
                           ->run({forward_input.token_ids},
                                 {forward_input.positions},
                                 kv_caches_,
-                                {ModelInputParams(forward_input.input_params)})
+                                {ModelParamsView(forward_input.input_params)})
                           .hidden_states;
   auto second_output = impl_
                            ->run({forward_input.token_ids},
                                  {forward_input.positions},
                                  kv_caches_,
-                                 {ModelInputParams(forward_input.input_params)})
+                                 {ModelParamsView(forward_input.input_params)})
                            .hidden_states;
 
   torch_mlu::synchronize();
@@ -925,7 +924,7 @@ TEST_F(MluGraphExecutorTest, DpDummyDoesNotPoisonGraphCache) {
   impl_->run({dummy_input.token_ids},
              {dummy_input.positions},
              kv_caches_,
-             {ModelInputParams(dummy_input.input_params)});
+             {ModelParamsView(dummy_input.input_params)});
 
   auto decode_input = prepare_inputs(batch_size, 41);
   decode_input.input_params.parallel.dp_global_token_nums = {batch_size,
@@ -936,13 +935,13 @@ TEST_F(MluGraphExecutorTest, DpDummyDoesNotPoisonGraphCache) {
                           ->run({decode_input.token_ids},
                                 {decode_input.positions},
                                 kv_caches_,
-                                {ModelInputParams(decode_input.input_params)})
+                                {ModelParamsView(decode_input.input_params)})
                           .hidden_states;
   auto second_decode = impl_
                            ->run({decode_input.token_ids},
                                  {decode_input.positions},
                                  kv_caches_,
-                                 {ModelInputParams(decode_input.input_params)})
+                                 {ModelParamsView(decode_input.input_params)})
                            .hidden_states;
 
   torch_mlu::synchronize();
@@ -965,7 +964,7 @@ TEST_F(MluGraphExecutorTest, DpUnevenDecodeDoesNotPoisonGraphCache) {
   impl_->run({uneven_input.token_ids},
              {uneven_input.positions},
              kv_caches_,
-             {ModelInputParams(uneven_input.input_params)});
+             {ModelParamsView(uneven_input.input_params)});
 
   auto decode_input = prepare_inputs(batch_size, 53);
   decode_input.input_params.parallel.dp_global_token_nums = {batch_size,
@@ -976,13 +975,13 @@ TEST_F(MluGraphExecutorTest, DpUnevenDecodeDoesNotPoisonGraphCache) {
                           ->run({decode_input.token_ids},
                                 {decode_input.positions},
                                 kv_caches_,
-                                {ModelInputParams(decode_input.input_params)})
+                                {ModelParamsView(decode_input.input_params)})
                           .hidden_states;
   auto second_decode = impl_
                            ->run({decode_input.token_ids},
                                  {decode_input.positions},
                                  kv_caches_,
-                                 {ModelInputParams(decode_input.input_params)})
+                                 {ModelParamsView(decode_input.input_params)})
                            .hidden_states;
 
   torch_mlu::synchronize();

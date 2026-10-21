@@ -23,7 +23,7 @@ limitations under the License.
 
 #include "core/kv_cache/storage/kv_cache.h"
 #include "framework/model/model_args.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "framework/model_context/model_context.h"
 #include "framework/parallel_state/parallel_args.h"
 #include "framework/quantization/quant_args.h"
@@ -50,7 +50,7 @@ class Qwen3_5DecoderLayerImpl final : public torch::nn::Module {
                         torch::Tensor& positions,
                         const AttentionMetadata& attn_metadata,
                         KVCache& kv_cache,
-                        const ModelInputParams& input_params);
+                        const ModelParamsView& input_params);
 
  private:
   // Full attention members (only initialized for full_attention layers)

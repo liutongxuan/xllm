@@ -33,7 +33,7 @@ limitations under the License.
 #include "core/framework/speculative/verify_layout.h"
 #include "framework/config/execution_config.h"
 #include "framework/model/llm_model_params.h"
-#include "framework/model/model_input_params.h"
+#include "framework/model/model_params_view.h"
 #include "framework/sampling/beam_searcher.h"
 #include "framework/sampling/json_object_grammar.h"
 #include "framework/sampling/sampling_params.h"
@@ -559,7 +559,7 @@ class LlmForwardInput final {
   void print() const {
     LOG(INFO) << "  token_ids: " << token_ids << std::endl;
     LOG(INFO) << "  positions: " << positions << std::endl;
-    ModelInputParams(input_params).print();
+    ModelParamsView(input_params).print();
     LOG(INFO) << " params.selected_token_idxes "
               << sampling_params.selected_token_idxes;
     LOG(INFO) << " params.do_sample " << sampling_params.do_sample;

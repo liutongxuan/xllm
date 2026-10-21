@@ -13,18 +13,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "dit_executor.h"
-
-#include <glog/logging.h>
-
-#include "common/metrics.h"
+#include "core/runtime/dit_executor.h"
 
 namespace xllm {
 
 DiTExecutor::DiTExecutor(DiTModel* model) : model_(model) {}
 
-DiTForwardOutput DiTExecutor::forward(const DiTForwardInput& input) {
-  return model_->forward(input);
+DiTForwardOutput DiTExecutor::forward(const DiTModelParams& params) {
+  return model_->forward(params);
 }
 
 }  // namespace xllm

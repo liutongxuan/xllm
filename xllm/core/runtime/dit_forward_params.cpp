@@ -68,16 +68,20 @@ bool DiTForwardInput::to_proto(proto::DiTForwardInput* proto_input) const {
   }
 
   proto::DiTForwardInput encoded_input;
-  encoded_input.set_batch_size(batch_size);
-  encoded_input.mutable_prompts()->Add(prompts.begin(), prompts.end());
-  encoded_input.mutable_prompts_2()->Add(prompts_2.begin(), prompts_2.end());
-  encoded_input.mutable_negative_prompts()->Add(negative_prompts.begin(),
-                                                negative_prompts.end());
-  encoded_input.mutable_negative_prompts_2()->Add(negative_prompts_2.begin(),
-                                                  negative_prompts_2.end());
+  encoded_input.set_batch_size(model_params.batch_size);
+  encoded_input.mutable_prompts()->Add(model_params.prompts.begin(),
+                                       model_params.prompts.end());
+  encoded_input.mutable_prompts_2()->Add(model_params.prompts_2.begin(),
+                                         model_params.prompts_2.end());
+  encoded_input.mutable_negative_prompts()->Add(
+      model_params.negative_prompts.begin(),
+      model_params.negative_prompts.end());
+  encoded_input.mutable_negative_prompts_2()->Add(
+      model_params.negative_prompts_2.begin(),
+      model_params.negative_prompts_2.end());
   encoded_input.mutable_media_sources()->Reserve(
-      static_cast<int32_t>(media_sources.size()));
-  for (const MediaNamedTensor& source : media_sources.entries()) {
+      static_cast<int32_t>(model_params.media_sources.size()));
+  for (const MediaNamedTensor& source : model_params.media_sources.entries()) {
     proto::MediaNamedTensor* proto_source =
         encoded_input.mutable_media_sources()->Add();
     proto_source->set_modality(source.modality);
@@ -86,16 +90,17 @@ bool DiTForwardInput::to_proto(proto::DiTForwardInput* proto_input) const {
     }
   }
   encoded_input.mutable_tensor_sources()->Reserve(
-      static_cast<int32_t>(tensor_sources.size()));
-  for (const NamedTensor& source : tensor_sources.entries()) {
+      static_cast<int32_t>(model_params.tensor_sources.size()));
+  for (const NamedTensor& source : model_params.tensor_sources.entries()) {
     if (!serialize_named_tensor(source, encoded_input.add_tensor_sources())) {
       return false;
     }
   }
-  if (!audio_prompt_text.empty()) {
-    encoded_input.set_audio_prompt_text(audio_prompt_text);
+  if (!model_params.audio_prompt_text.empty()) {
+    encoded_input.set_audio_prompt_text(model_params.audio_prompt_text);
   }
-  if (!generation_params.to_proto(encoded_input.mutable_generation_params())) {
+  if (!model_params.generation_params.to_proto(
+          encoded_input.mutable_generation_params())) {
     LOG(ERROR) << "Failed to serialize generation params";
     return false;
   }
@@ -105,14 +110,15 @@ bool DiTForwardInput::to_proto(proto::DiTForwardInput* proto_input) const {
 
 bool DiTForwardInput::from_proto(const proto::DiTForwardInput& proto_input) {
   DiTForwardInput decoded_input;
-  decoded_input.batch_size = proto_input.batch_size();
-  decoded_input.prompts.assign(proto_input.prompts().begin(),
-                               proto_input.prompts().end());
-  decoded_input.prompts_2.assign(proto_input.prompts_2().begin(),
-                                 proto_input.prompts_2().end());
-  decoded_input.negative_prompts.assign(proto_input.negative_prompts().begin(),
-                                        proto_input.negative_prompts().end());
-  decoded_input.negative_prompts_2.assign(
+  decoded_input.model_params.batch_size = proto_input.batch_size();
+  decoded_input.model_params.prompts.assign(proto_input.prompts().begin(),
+                                            proto_input.prompts().end());
+  decoded_input.model_params.prompts_2.assign(proto_input.prompts_2().begin(),
+                                              proto_input.prompts_2().end());
+  decoded_input.model_params.negative_prompts.assign(
+      proto_input.negative_prompts().begin(),
+      proto_input.negative_prompts().end());
+  decoded_input.model_params.negative_prompts_2.assign(
       proto_input.negative_prompts_2().begin(),
       proto_input.negative_prompts_2().end());
   const auto append_media_source = [&decoded_input](const auto& proto_source,
@@ -122,10 +128,10 @@ bool DiTForwardInput::from_proto(const proto::DiTForwardInput& proto_input) {
     if (!source.has_value()) {
       return false;
     }
-    decoded_input.media_sources.add(proto_source.name(),
-                                    std::move(modality),
-                                    std::move(source->first),
-                                    std::move(source->second));
+    decoded_input.model_params.media_sources.add(proto_source.name(),
+                                                 std::move(modality),
+                                                 std::move(source->first),
+                                                 std::move(source->second));
     return true;
   };
   for (const proto::MediaNamedTensor& proto_source :
@@ -134,7 +140,7 @@ bool DiTForwardInput::from_proto(const proto::DiTForwardInput& proto_input) {
       return false;
     }
   }
-  decoded_input.tensor_sources.entries().reserve(
+  decoded_input.model_params.tensor_sources.entries().reserve(
       proto_input.tensor_sources_size());
   for (const proto::NamedTensor& proto_source : proto_input.tensor_sources()) {
     std::optional<std::pair<torch::Tensor, TensorParameters>> source =
@@ -142,17 +148,18 @@ bool DiTForwardInput::from_proto(const proto::DiTForwardInput& proto_input) {
     if (!source.has_value()) {
       return false;
     }
-    decoded_input.tensor_sources.add(proto_source.name(),
-                                     std::move(source->first),
-                                     std::move(source->second));
+    decoded_input.model_params.tensor_sources.add(proto_source.name(),
+                                                  std::move(source->first),
+                                                  std::move(source->second));
   }
-  if (!decoded_input.generation_params.from_proto(
+  if (!decoded_input.model_params.generation_params.from_proto(
           proto_input.generation_params())) {
     LOG(ERROR) << "Failed to deserialize generation params";
     return false;
   }
   if (proto_input.has_audio_prompt_text()) {
-    decoded_input.audio_prompt_text = proto_input.audio_prompt_text();
+    decoded_input.model_params.audio_prompt_text =
+        proto_input.audio_prompt_text();
   }
   *this = std::move(decoded_input);
   return true;

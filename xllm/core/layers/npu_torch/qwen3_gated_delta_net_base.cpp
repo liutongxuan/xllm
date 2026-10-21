@@ -535,7 +535,7 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
     const torch::Tensor& hidden_states,
     const AttentionMetadata& attn_metadata,
     KVCache& kv_cache,
-    const ModelInputParams& input_params) {
+    const ModelParamsView& input_params) {
   // Early-return on dummy shards. Under dp>1, an empty shard is padded with a
   // fake token by worker_impl but its GDN state tensors (kv_cache_tokens_nums,
   // linear_state_ids etc.) are left undefined. This mirrors the is_dummy
@@ -1080,7 +1080,7 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::reshape_qkvz_unpad(
 }
 
 torch::Tensor Qwen3GatedDeltaNetBaseImpl::get_linear_state_indices(
-    const ModelInputParams& input_params,
+    const ModelParamsView& input_params,
     const torch::Device& device) const {
   CHECK(!input_params.embedding.linear_state_ids.empty())
       << "linear_state_ids must be populated for gated delta net";
