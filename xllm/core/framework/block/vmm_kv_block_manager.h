@@ -144,8 +144,8 @@ class VmmKVBlockManager final : public BlockManager {
   // Get number of allocated blocks
   size_t get_num_allocated_blocks() const;
 
-  // Internal available_size (caller must hold mtx_)
-  size_t available_size_internal() const;
+  // Advisory allocator capacity; call without mtx_ held.
+  size_t unallocated_block_capacity() const;
 
  private:
   // Non-owning; the runtime keeps the allocator alive until all blocks and

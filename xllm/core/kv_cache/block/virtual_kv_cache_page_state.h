@@ -84,6 +84,7 @@ class VirtualKVCachePageState final {
 
  private:
   void require_init() const;
+  void require_allocated(int64_t block_id) const;
 
   int64_t page_id_;
   size_t page_size_;
@@ -92,6 +93,7 @@ class VirtualKVCachePageState final {
   std::optional<int64_t> end_block_;
   std::optional<size_t> num_kv_blocks_;
   std::vector<int64_t> free_list_;
+  std::vector<uint8_t> allocated_blocks_;
 };
 
 }  // namespace xllm

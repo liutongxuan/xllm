@@ -57,17 +57,19 @@ void VmmKVBlockManager::reserve_virtual_memory_padding_blocks() {
 }
 
 VmmKVBlockManager::~VmmKVBlockManager() {
-  // Release all pages
-  std::lock_guard<std::mutex> lock(mtx_);
   std::vector<int64_t> page_ids;
-  for (const auto& [page_id, page] : avail_pages_) {
-    page_ids.push_back(page_id);
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+    page_ids.reserve(avail_pages_.size() + full_pages_.size());
+    for (const auto& [page_id, page] : avail_pages_) {
+      page_ids.emplace_back(page_id);
+    }
+    for (const auto& [page_id, page] : full_pages_) {
+      page_ids.emplace_back(page_id);
+    }
+    avail_pages_.clear();
+    full_pages_.clear();
   }
-  for (const auto& [page_id, page] : full_pages_) {
-    page_ids.push_back(page_id);
-  }
-  avail_pages_.clear();
-  full_pages_.clear();
 
   if (!page_ids.empty() && page_allocator_.is_initialized()) {
     page_allocator_.free_kv_cache_pages(model_id_, dp_rank_, page_ids);
@@ -75,7 +77,7 @@ VmmKVBlockManager::~VmmKVBlockManager() {
 }
 
 std::vector<int32_t> VmmKVBlockManager::alloc_internal(size_t need_size) {
-  std::lock_guard<std::mutex> lock(mtx_);
+  std::unique_lock<std::mutex> lock(mtx_);
 
   std::vector<int32_t> ret_index;
   ret_index.reserve(need_size);
@@ -99,7 +101,9 @@ std::vector<int32_t> VmmKVBlockManager::alloc_internal(size_t need_size) {
     VirtualKVCachePageState* page = nullptr;
 
     if (avail_pages_.empty()) {
-      // Allocate a new page for this DP group
+      // Mapping can wait for device RPCs or a lifecycle transition. Keep local
+      // block queries and frees available while the allocator owns that work.
+      lock.unlock();
       auto new_page = page_allocator_.alloc_kv_cache_page(model_id_, dp_rank_);
       if (new_page == nullptr) {
         LOG(ERROR) << "Failed to allocate new page for dp_rank=" << dp_rank_;
@@ -108,6 +112,7 @@ std::vector<int32_t> VmmKVBlockManager::alloc_internal(size_t need_size) {
         return ret_index;
       }
       new_page->init(block_mem_size_);
+      lock.lock();
       num_avail_blocks_ += new_page->num_free_blocks();
       int64_t page_id = new_page->page_id();
       avail_pages_[page_id] = std::move(new_page);
@@ -195,8 +200,6 @@ Block VmmKVBlockManager::allocate() {
 }
 
 void VmmKVBlockManager::free_blocks(const std::vector<int32_t>& indices) {
-  std::lock_guard<std::mutex> lock(mtx_);
-
   if (indices.empty()) {
     return;
   }
@@ -210,6 +213,8 @@ void VmmKVBlockManager::free_blocks(const std::vector<int32_t>& indices) {
     idx_dict[page_id].push_back(static_cast<int64_t>(idx));
   }
   std::vector<int64_t> pages_to_free;
+  pages_to_free.reserve(idx_dict.size());
+  std::unique_lock<std::mutex> lock(mtx_);
 
   for (auto& [page_id, idxs] : idx_dict) {
     // Find the page - it must be in either full_pages or avail_pages
@@ -227,19 +232,18 @@ void VmmKVBlockManager::free_blocks(const std::vector<int32_t>& indices) {
       }
     }
 
-    if (page == nullptr) {
-      LOG(ERROR)
-          << "Page " << page_id << " not found in avail_pages or full_pages. "
-          << "Skipping to avoid crash, but this indicates a serious bug. "
-          << "avail_pages size: " << avail_pages_.size() << ", "
-          << "full_pages size: " << full_pages_.size() << ", "
-          << "block_mem_size: " << block_mem_size_ << ", "
-          << "page_size: " << page_allocator.page_size();
-      continue;
-    }
+    CHECK(page != nullptr) << "Page " << page_id
+                           << " not found in avail_pages or full_pages. "
+                           << "model_id: " << model_id_
+                           << ", dp_rank: " << dp_rank_ << ", "
+                           << "avail_pages size: " << avail_pages_.size()
+                           << ", "
+                           << "full_pages size: " << full_pages_.size() << ", "
+                           << "block_mem_size: " << block_mem_size_ << ", "
+                           << "page_size: " << page_size_;
 
-    num_avail_blocks_ += idxs.size();
     page->free_batch(idxs);
+    num_avail_blocks_ += idxs.size();
 
     if (page->empty()) {
       pages_to_free.push_back(page_id);
@@ -256,6 +260,7 @@ void VmmKVBlockManager::free_blocks(const std::vector<int32_t>& indices) {
     }
   }
 
+  lock.unlock();
   if (!pages_to_free.empty()) {
     page_allocator.free_kv_cache_pages(model_id_, dp_rank_, pages_to_free);
   }
@@ -304,7 +309,9 @@ size_t VmmKVBlockManager::num_used_blocks() const {
 double VmmKVBlockManager::kv_cache_utilization() const {
   std::lock_guard<std::mutex> lock(mtx_);
   size_t total = num_total_blocks();
-  if (total == 0) return 0.0;
+  if (total == 0) {
+    return 0.0;
+  }
   return static_cast<double>(get_num_allocated_blocks()) / total;
 }
 
@@ -313,15 +320,17 @@ size_t VmmKVBlockManager::num_total_blocks() const {
 }
 
 size_t VmmKVBlockManager::admission_capacity() const {
-  std::lock_guard<std::mutex> lock(mtx_);
+  size_t resident_blocks = 0;
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+    resident_blocks = get_num_allocated_blocks() + num_avail_blocks_.load() +
+                      reserved_blocks_.size();
+  }
   return std::min(static_cast<size_t>(options_.num_blocks()),
-                  get_num_allocated_blocks() + available_size_internal());
+                  resident_blocks + unallocated_block_capacity());
 }
 
-size_t VmmKVBlockManager::available_size_internal() const {
-  // Note: Caller must hold mtx_
-  size_t avail_blocks = num_avail_blocks_.load() + reserved_blocks_.size();
-
+size_t VmmKVBlockManager::unallocated_block_capacity() const {
   // An empty elastic pool can grow within its live execution budget. The
   // snapshot is advisory: alloc_internal commits mappings and rolls back the
   // complete block batch if the actual reservation fails.
@@ -332,12 +341,16 @@ size_t VmmKVBlockManager::available_size_internal() const {
       reserved_pages *
       VirtualKVCachePageState::get_num_blocks(page_size_, block_mem_size_);
 
-  return avail_blocks + blocks_from_reserved_pages;
+  return blocks_from_reserved_pages;
 }
 
 size_t VmmKVBlockManager::available_size() const {
-  std::lock_guard<std::mutex> lock(mtx_);
-  return available_size_internal();
+  size_t resident_free_blocks = 0;
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+    resident_free_blocks = num_avail_blocks_.load() + reserved_blocks_.size();
+  }
+  return resident_free_blocks + unallocated_block_capacity();
 }
 
 bool VmmKVBlockManager::try_to_reserve(size_t need_size) {
@@ -377,7 +390,6 @@ void VmmKVBlockManager::free_reserved() {
 }
 
 void VmmKVBlockManager::trim() {
-  std::lock_guard<std::mutex> lock(mtx_);
   page_allocator_.trim_kv_cache(model_id_, dp_rank_);
 }
 

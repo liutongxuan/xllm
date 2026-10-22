@@ -17,7 +17,11 @@ limitations under the License.
 
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <functional>
+#include <future>
 #include <set>
+#include <thread>
 #include <utility>
 
 #include "core/framework/block/block_manager_pool.h"
@@ -168,6 +172,9 @@ class TestVmmKVPageAllocator final : public VmmKVPageAllocator {
   std::unique_ptr<VirtualKVCachePageState> alloc_kv_cache_page(
       const std::string& model_id,
       int32_t dp_rank) override {
+    if (before_allocate) {
+      before_allocate();
+    }
     allocation_requests.emplace_back(model_id, dp_rank);
     if (allocated_pages_.at(dp_rank).size() >= max_pages_per_dp_) {
       return nullptr;
@@ -181,6 +188,9 @@ class TestVmmKVPageAllocator final : public VmmKVPageAllocator {
       const std::string& model_id,
       int32_t dp_rank,
       const std::vector<int64_t>& virtual_page_ids) override {
+    if (before_free) {
+      before_free();
+    }
     for (const int64_t page_id : virtual_page_ids) {
       EXPECT_EQ(allocated_pages_.at(dp_rank).erase(page_id), 1u);
       released_pages.emplace_back(model_id, dp_rank);
@@ -188,10 +198,17 @@ class TestVmmKVPageAllocator final : public VmmKVPageAllocator {
   }
 
   void trim_kv_cache(const std::string& /*model_id*/,
-                     int32_t /*dp_rank*/) override {}
+                     int32_t /*dp_rank*/) override {
+    if (before_trim) {
+      before_trim();
+    }
+  }
 
   size_t get_num_available_virt_pages(const std::string& /*model_id*/,
                                       int32_t dp_rank) const override {
+    if (before_available) {
+      before_available();
+    }
     const size_t inuse_pages = allocated_pages_.at(dp_rank).size();
     const size_t page_limit = admission_page_limits_.at(dp_rank);
     return page_limit > inuse_pages ? page_limit - inuse_pages : 0;
@@ -219,6 +236,10 @@ class TestVmmKVPageAllocator final : public VmmKVPageAllocator {
   int32_t prealloc_starts = 0;
   std::vector<std::pair<std::string, int32_t>> allocation_requests;
   std::vector<std::pair<std::string, int32_t>> released_pages;
+  std::function<void()> before_allocate;
+  std::function<void()> before_free;
+  std::function<void()> before_trim;
+  std::function<void()> before_available;
 
  private:
   std::vector<std::set<int64_t>> allocated_pages_;
@@ -1428,6 +1449,108 @@ TEST(CompositeBlockManagerTest,
   EXPECT_EQ(allocator.get_num_inuse_virt_pages("injected-cache", /*dp_rank=*/0),
             0u);
   EXPECT_EQ(allocator.released_pages.size(), 1u);
+}
+
+TEST(CompositeBlockManagerTest, VirtualMemoryRejectsDoubleFreeAfterPageDetach) {
+  TestVmmKVPageAllocator allocator(/*dp_size=*/1);
+  BlockManager::Options options;
+  options.num_blocks(16).block_size(4);
+  VmmKVBlockManager leaf(options,
+                         allocator,
+                         /*num_layers=*/2,
+                         /*block_mem_size=*/16,
+                         /*page_size=*/64,
+                         /*dp_rank=*/0,
+                         "injected-cache");
+  std::vector<Block> blocks = leaf.allocate(/*num_blocks=*/1);
+  ASSERT_EQ(blocks.size(), 1u);
+  const int32_t block_id = blocks.front().id();
+  blocks.clear();
+  EXPECT_EQ(leaf.num_used_blocks(), 0u);
+  EXPECT_EQ(allocator.get_num_inuse_virt_pages("injected-cache", /*dp_rank=*/0),
+            0u);
+  ASSERT_EQ(allocator.released_pages.size(), 1u);
+
+  // The page-state object is already gone, so the manager must reject a
+  // second release before it can reach page-state ownership checks.
+  EXPECT_DEATH(leaf.free(block_id),
+               "Page 0 not found in avail_pages or full_pages");
+}
+
+TEST(CompositeBlockManagerTest, VirtualMemoryRejectsUnknownPageRelease) {
+  TestVmmKVPageAllocator allocator(/*dp_size=*/1);
+  BlockManager::Options options;
+  options.num_blocks(16).block_size(4);
+  VmmKVBlockManager leaf(options,
+                         allocator,
+                         /*num_layers=*/2,
+                         /*block_mem_size=*/16,
+                         /*page_size=*/64,
+                         /*dp_rank=*/0,
+                         "injected-cache");
+  std::vector<Block> blocks = leaf.allocate(/*num_blocks=*/1);
+  ASSERT_EQ(blocks.size(), 1u);
+
+  // Block 4 belongs to page 1, while this manager only owns page 0.
+  EXPECT_DEATH(leaf.free(/*block_id=*/4),
+               "Page 1 not found in avail_pages or full_pages");
+  EXPECT_EQ(leaf.num_used_blocks(), 1u);
+  EXPECT_TRUE(allocator.released_pages.empty());
+  blocks.clear();
+  EXPECT_EQ(leaf.num_used_blocks(), 0u);
+  EXPECT_EQ(allocator.released_pages.size(), 1u);
+}
+
+TEST(CompositeBlockManagerTest,
+     VirtualMemoryAllocatorWaitsAllowLocalBlockQueries) {
+  TestVmmKVPageAllocator allocator(/*dp_size=*/1);
+  BlockManager::Options options;
+  options.num_blocks(16).block_size(4);
+  VmmKVBlockManager leaf(options,
+                         allocator,
+                         /*num_layers=*/2,
+                         /*block_mem_size=*/16,
+                         /*page_size=*/64,
+                         /*dp_rank=*/0,
+                         "injected-cache");
+
+  std::thread observer;
+  const auto check_local_query = [&] {
+    std::promise<void> completed;
+    auto result = completed.get_future();
+    observer = std::thread([&leaf, completed = std::move(completed)]() mutable {
+      leaf.num_used_blocks();
+      completed.set_value();
+    });
+    // Return even on failure so the operation can release an incorrectly held
+    // lock, allowing the observer to join without hanging the test process.
+    EXPECT_EQ(result.wait_for(std::chrono::seconds(2)),
+              std::future_status::ready);
+  };
+
+  allocator.before_allocate = check_local_query;
+  std::vector<Block> blocks = leaf.allocate(/*num_blocks=*/4);
+  observer.join();
+  ASSERT_EQ(blocks.size(), 4u);
+  allocator.before_allocate = {};
+
+  allocator.before_free = check_local_query;
+  blocks.clear();
+  observer.join();
+  allocator.before_free = {};
+
+  allocator.before_trim = check_local_query;
+  leaf.trim();
+  observer.join();
+  allocator.before_trim = {};
+
+  allocator.before_available = check_local_query;
+  leaf.available_size();
+  observer.join();
+  leaf.admission_capacity();
+  observer.join();
+  allocator.before_available = {};
+  EXPECT_EQ(leaf.num_used_blocks(), 0u);
 }
 
 }  // namespace xllm
