@@ -63,6 +63,13 @@ class VmmKVPageAllocatorImpl final : public VmmKVPageAllocator {
                       int64_t num_layers,
                       size_t physical_pages_per_virtual_page = 0,
                       size_t max_virtual_pages = 0);
+  // The caller must stop model operations and destroy every page-state user
+  // first. Refuses live allocations or an unfinished residency transition.
+  // Drains preallocation, releases resident reserves, then forgets the model.
+  bool unregister_model(const std::string& model_id);
+  // Stops and joins background allocation before backend resources disappear.
+  // No caller may start further allocator operations after shutdown begins.
+  void shutdown();
   void start_prealloc_thread(const std::string& model_id) override;
 
   std::unique_ptr<VirtualKVCachePageState> alloc_kv_cache_page(
@@ -107,11 +114,21 @@ class VmmKVPageAllocatorImpl final : public VmmKVPageAllocator {
   static constexpr size_t kMinReservedPages = 8;
   static constexpr size_t kMaxReservedPages = 32;
 
-  struct DpGroupPages {
+  class DpGroupPages final {
+   public:
     size_t num_free_virt_pages = 0;
-    std::deque<int64_t> free_virt_page_list;
+    // Rollback IDs precede unissued IDs; ordinary recycling follows them.
+    // Represent the unissued range with a cursor instead of one entry per ID.
+    size_t next_fresh_virt_page_id = 0;
+    std::deque<int64_t> retry_virt_page_list;
+    std::deque<int64_t> recycled_virt_page_list;
     std::deque<int64_t> reserved_virt_page_list;
     std::unordered_set<int64_t> allocated_virt_page_list;
+
+    size_t num_unmapped_virt_pages(size_t num_total_virt_pages) const;
+    int64_t take_free_virt_page(size_t num_total_virt_pages);
+    void restore_free_virt_pages(const std::vector<int64_t>& virtual_page_ids);
+    void recycle_free_virt_pages(const std::vector<int64_t>& virtual_page_ids);
   };
 
   enum class ModelTransition : uint8_t { IDLE, SUSPENDING, RESUMING };
@@ -123,9 +140,11 @@ class VmmKVPageAllocatorImpl final : public VmmKVPageAllocator {
     size_t min_reserved_pages = kMinReservedPages;
     size_t max_reserved_pages = kMaxReservedPages;
     bool ready_for_preallocation = false;
+    bool unregistering = false;
     bool suspended = false;
     bool kv_cache_mapped = true;
     ModelTransition transition = ModelTransition::IDLE;
+    size_t transition_waiters = 0;
     size_t pending_map_ops = 0;
     std::vector<DpGroupPages> dp_group_pages;
   };
@@ -153,12 +172,14 @@ class VmmKVPageAllocatorImpl final : public VmmKVPageAllocator {
 
   KVCachePageBackend& backend_;
   bool initialized_ = false;
+  bool shutting_down_ = false;
   size_t total_pages_ = 0;
   size_t page_size_ = 0;
   int32_t dp_size_ = 1;
   bool enable_prealloc_ = true;
   size_t max_reserved_pages_ = kMaxReservedPages;
   std::unordered_map<std::string, ModelState> model_states_;
+  std::mutex shutdown_mutex_;
   mutable std::mutex mtx_;
   std::condition_variable cond_;
   bool prealloc_running_ = false;

@@ -60,7 +60,12 @@ DistributedVirtualMemoryCoordinator::~DistributedVirtualMemoryCoordinator() {
 
 void DistributedVirtualMemoryCoordinator::destroy() {
   stop_worker_capacity_refresh();
-  // Drain background KV mappings while their backend and RPCs are still alive.
+  // Join executing maps and cancel queued preallocation while the backend and
+  // its RPCs are still alive. Cache users must already have stopped; this is
+  // whole-process teardown, not an online model unload operation.
+  if (kv_cache_pages_) {
+    kv_cache_pages_->shutdown();
+  }
   kv_cache_pages_.reset();
   // Server destruction stops RPC handling and joins each serving thread before
   // worker-local resources or clients are released.
@@ -72,9 +77,11 @@ void DistributedVirtualMemoryCoordinator::destroy() {
     ServerRegistry::get_instance().unregister_server(collective_server_name_);
   }
   std::lock_guard<std::mutex> lock(mutex_);
+  weight_page_counts_.clear();
   model_parallel_strategies_.clear();
   clients_.clear();
   worker_allocatable_pages_.clear();
+  budget_initialized_ = false;
   world_size_ = 0;
   node_rank_ = 0;
   dp_size_ = 1;

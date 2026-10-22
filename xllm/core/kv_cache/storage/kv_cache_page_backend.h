@@ -41,6 +41,9 @@ class KVCachePageBackend {
   virtual bool map_pages(const std::string& model_id,
                          int32_t dp_rank,
                          const std::vector<int64_t>& byte_offsets) = 0;
+  // Success confirms every target is unmapped. Failure may leave only some
+  // targets unmapped; callers must terminate before recycling virtual pages or
+  // releasing their capacity reservation. There is no unmap rollback.
   virtual bool unmap_pages(const std::string& model_id,
                            int32_t dp_rank,
                            const std::vector<int64_t>& byte_offsets) = 0;
