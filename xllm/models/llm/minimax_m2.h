@@ -18,6 +18,7 @@ limitations under the License.
 #include <unordered_set>
 #include <vector>
 
+#include "core/framework/model/model_family_args.h"
 #include "core/layers/minimax_m2_decoder_layer.h"
 #include "llm_model_base.h"
 
@@ -29,8 +30,10 @@ class MiniMaxM2ModelImpl
   explicit MiniMaxM2ModelImpl(const ModelContext& context)
       : LlmModelImplBase<layer::MiniMaxM2DecoderLayer>(
             "minimax_m2",
-            context.get_model_args()) {
-    const auto& model_args = context.get_model_args();
+            context.get_transformer_model_args(),
+            context.get_transformer_model_args().enable_mla()) {
+    const TransformerModelArgs& model_args =
+        context.get_transformer_model_args();
 
     layers_.reserve(model_args.n_layers());
     embed_tokens_ =
