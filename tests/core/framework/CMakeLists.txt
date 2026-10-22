@@ -39,3 +39,23 @@ cc_test(
     :xllm_server
     GTest::gtest_main
 )
+
+cc_test(
+  NAME
+    model_args_view_test
+  SRCS
+    model_args_view_test.cpp
+  DEPS
+    :model
+    GTest::gtest_main
+)
+
+cc_test(
+  NAME
+    model_context_test
+  SRCS
+    model_context_test.cpp
+  DEPS
+    :model_context
+    GTest::gtest_main
+)
