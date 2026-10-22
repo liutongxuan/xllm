@@ -380,12 +380,13 @@ void CommChannel::transfer_kv_blocks(
       << batch_id;
 }
 
-bool CommChannel::sleep(MasterStatus master_status) {
+bool CommChannel::sleep(MasterStatus master_status, uint64_t transition_id) {
   proto::SleepRequest req;
   proto::Status s;
   brpc::Controller cntl;
 
   req.set_master_status(master_status.to_proto());
+  req.set_transition_id(transition_id);
   stub_->Sleep(&cntl, &req, &s, nullptr);
   if (cntl.Failed() || !s.ok()) {
     LOG(ERROR) << "Sleep failed: " << cntl.ErrorText();
@@ -400,6 +401,7 @@ bool CommChannel::wakeup(const WakeupOptions& options) {
   proto::WakeupRequest req;
 
   req.set_master_status(options.master_status.to_proto());
+  req.set_transition_id(options.transition_id);
   if (!options.remote_addrs.empty()) {
     req.mutable_remote_addrs()->Assign(options.remote_addrs.begin(),
                                        options.remote_addrs.end());

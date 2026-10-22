@@ -28,6 +28,30 @@ namespace {
 
 class ModelRoutingService final : public proto::DistributeWorker {
  public:
+  void Sleep(google::protobuf::RpcController* /*controller*/,
+             const proto::SleepRequest* request,
+             proto::Status* response,
+             google::protobuf::Closure* done) override {
+    brpc::ClosureGuard guard(done);
+    response->set_ok(request->master_status() == proto::DEEP_SLEEP &&
+                     request->transition_id() == 41);
+  }
+
+  void Wakeup(google::protobuf::RpcController* /*controller*/,
+              const proto::WakeupRequest* request,
+              proto::Status* response,
+              google::protobuf::Closure* done) override {
+    brpc::ClosureGuard guard(done);
+    response->set_ok(
+        request->master_status() == proto::DEEP_SLEEP &&
+        request->transition_id() == 41 && request->remote_addrs_size() == 1 &&
+        request->remote_addrs(0) == "source:1234" &&
+        request->src_weight_segments_size() == 1 &&
+        request->src_weight_segments(0).segments_size() == 1 &&
+        request->src_weight_segments(0).segments(0).offset() == 128 &&
+        request->src_weight_segments(0).segments(0).size() == 256);
+  }
+
   void ExecuteLLMModel(google::protobuf::RpcController* controller,
                        const proto::LLMForwardRequest* request,
                        proto::LLMForwardResponse* response,
@@ -131,6 +155,18 @@ TEST_F(CommChannelTest, RoutesLLMInputToItsOwnRpc) {
   ASSERT_EQ(output->outputs.size(), 1);
   ASSERT_EQ(output->outputs[0].tokens.size(), 1);
   EXPECT_EQ(output->outputs[0].tokens[0].id, 1);
+}
+
+TEST_F(CommChannelTest, PreservesResidencyGenerationAcrossLifecycleRpcs) {
+  ASSERT_TRUE(channel_.sleep(MasterStatus::DEEP_SLEEP, /*transition_id=*/41));
+  WakeupOptions options;
+  options.master_status = MasterStatus::DEEP_SLEEP;
+  options.transition_id = 41;
+  options.remote_addrs = {"source:1234"};
+  options.src_weight_segments = {{{128, 256}}};
+  EXPECT_TRUE(channel_.wakeup(options));
+  options.transition_id = 40;
+  EXPECT_FALSE(channel_.wakeup(options));
 }
 
 TEST_F(CommChannelTest, RoutesVLMInputToItsOwnRpc) {

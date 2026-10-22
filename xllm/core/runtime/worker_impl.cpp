@@ -2010,8 +2010,11 @@ bool WorkerImpl::virtual_memory_sleep(MasterStatus master_status) {
   return true;
 }
 
-bool WorkerImpl::sleep(MasterStatus master_status) {
-  return virtual_memory_sleep(master_status);
+bool WorkerImpl::sleep(MasterStatus master_status, uint64_t transition_id) {
+  return residency_state_.sleep(
+      master_status, transition_id, [this, master_status]() {
+        return virtual_memory_sleep(master_status);
+      });
 }
 
 bool WorkerImpl::start_profile() {
@@ -2115,15 +2118,18 @@ bool WorkerImpl::stop_profile() {
 }
 
 bool WorkerImpl::wakeup(const WakeupOptions& options) {
-  if (!options.remote_addrs.empty()) {
+  return residency_state_.wakeup(options, [this, &options]() {
+    if (!options.remote_addrs.empty()) {
 #if defined(USE_NPU)
-    return wakeup_from_remote_weights(options);
+      return wakeup_from_remote_weights(options);
+#else
+      LOG(ERROR) << "Remote weight wakeup only supports npu device.";
+      return false;
 #endif
-    LOG(ERROR) << "Remote weight wakeup only supports npu device.";
-    return false;
-  }
+    }
 
-  return wakeup_local(options);
+    return wakeup_local(options);
+  });
 }
 
 bool WorkerImpl::wakeup_local(const WakeupOptions& options) {
@@ -2386,6 +2392,15 @@ TaskModel WorkerImpl::task_model() {
 bool WorkerImpl::init_model(const std::string& model_weights_path,
                             int32_t random_seed,
                             MasterStatus master_status) {
+  return residency_state_.initialize(
+      master_status, [this, &model_weights_path, random_seed, master_status]() {
+        return init_model_impl(model_weights_path, random_seed, master_status);
+      });
+}
+
+bool WorkerImpl::init_model_impl(const std::string& model_weights_path,
+                                 int32_t random_seed,
+                                 MasterStatus master_status) {
   // set same random seed for all worker
   ::xllm::ExecutionConfig::get_instance().random_seed(random_seed);
   device_.set_seed(random_seed);

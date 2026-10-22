@@ -114,6 +114,9 @@ class LLMMaster : public Master {
 
   bool sleep();
 
+  // Includes pending worker acknowledgements after memory restoration.
+  bool requires_wakeup() const;
+
   bool wakeup();
 
   bool wakeup(const WakeupOptions& options);

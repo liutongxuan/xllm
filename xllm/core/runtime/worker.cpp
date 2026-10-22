@@ -454,12 +454,12 @@ folly::SemiFuture<int64_t> Worker::get_active_activation_memory_async() {
   return future;
 }
 
-bool Worker::sleep(MasterStatus master_status) {
+bool Worker::sleep(MasterStatus master_status, uint64_t transition_id) {
   if (enable_task_pipeline_) {
     LOG(ERROR) << "Task pipeline resource rebuild is not supported yet.";
     return false;
   }
-  return impl_->sleep(master_status);
+  return impl_->sleep(master_status, transition_id);
 }
 
 bool Worker::wakeup(const WakeupOptions& options) {

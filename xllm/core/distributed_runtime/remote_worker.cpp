@@ -388,18 +388,21 @@ folly::SemiFuture<int64_t> RemoteWorker::get_active_activation_memory_async() {
 
 bool RemoteWorker::check_health() { return channel_->check_health(); }
 
-folly::SemiFuture<bool> RemoteWorker::sleep_async(MasterStatus master_status) {
+folly::SemiFuture<bool> RemoteWorker::sleep_async(MasterStatus master_status,
+                                                  uint64_t transition_id) {
   folly::Promise<bool> promise;
   auto future = promise.getSemiFuture();
-  threadpool_.schedule(
-      [this, promise = std::move(promise), master_status]() mutable {
-        if (!channel_->sleep(master_status)) {
-          LOG(ERROR) << "Sleep failed";
-          promise.setValue(false);
-        } else {
-          promise.setValue(true);
-        }
-      });
+  threadpool_.schedule([this,
+                        promise = std::move(promise),
+                        master_status,
+                        transition_id]() mutable {
+    if (!channel_->sleep(master_status, transition_id)) {
+      LOG(ERROR) << "Sleep failed";
+      promise.setValue(false);
+    } else {
+      promise.setValue(true);
+    }
+  });
   return future;
 }
 

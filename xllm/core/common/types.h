@@ -438,6 +438,8 @@ struct WakeupOptions {
   // Each remote_addr has a list of weight segments to pull
   // Segments are ordered and should be concatenated at destination
   std::vector<std::vector<WeightSegment>> src_weight_segments;
+  // Model-local sleep generation, assigned by the residency coordinator.
+  uint64_t transition_id = 0;
 };
 
 inline constexpr int32_t REC_TOKEN_SIZE = 3;

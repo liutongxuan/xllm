@@ -21,6 +21,7 @@ limitations under the License.
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -53,6 +54,12 @@ class DistributedVirtualMemoryCoordinatorTestPeer final {
 };
 
 namespace {
+
+WakeupOptions make_wakeup_options(MasterStatus status) {
+  WakeupOptions options;
+  options.master_status = status;
+  return options;
+}
 
 class ResumePageBackend final : public KVCachePageBackend {
  public:
@@ -129,13 +136,19 @@ class RecordingWorkerClient final : public WorkerClient {
   explicit RecordingWorkerClient(std::string model_id)
       : model_id_(std::move(model_id)) {}
 
-  folly::SemiFuture<bool> sleep_async(MasterStatus master_status) override {
+  folly::SemiFuture<bool> sleep_async(MasterStatus master_status,
+                                      uint64_t transition_id) override {
     ++sleep_calls_;
     sleep_status_ = master_status;
+    sleep_transition_id_ = transition_id;
     pages_sleeping_at_sleep_ =
         DistributedVirtualMemoryCoordinator::get_instance()
             .vmm_kv_page_allocator()
             .is_suspended(model_id_);
+    if (sleep_exception_) {
+      return folly::makeSemiFuture<bool>(folly::exception_wrapper(
+          std::runtime_error("injected sleep failure")));
+    }
     return folly::makeSemiFuture(sleep_result_);
   }
 
@@ -146,14 +159,21 @@ class RecordingWorkerClient final : public WorkerClient {
         !DistributedVirtualMemoryCoordinator::get_instance()
              .vmm_kv_page_allocator()
              .is_suspended(model_id_);
+    if (wakeup_exception_) {
+      return folly::makeSemiFuture<bool>(folly::exception_wrapper(
+          std::runtime_error("injected wakeup failure")));
+    }
     return folly::makeSemiFuture(wakeup_result_);
   }
 
   bool sleep_result_ = true;
   bool wakeup_result_ = true;
+  bool sleep_exception_ = false;
+  bool wakeup_exception_ = false;
   int32_t sleep_calls_ = 0;
   int32_t wakeup_calls_ = 0;
   MasterStatus sleep_status_ = MasterStatus::WAKEUP;
+  uint64_t sleep_transition_id_ = 0;
   WakeupOptions wakeup_options_;
   bool pages_sleeping_at_sleep_ = false;
   bool pages_awake_at_wakeup_ = false;
@@ -313,7 +333,8 @@ class ModelResidencyCoordinatorTest : public ::testing::Test {
     backend.map_result_ = !map_failure;
 
     for (int32_t attempt = 0; attempt < 2; ++attempt) {
-      EXPECT_FALSE(coordinator.wakeup(WakeupOptions{}));
+      EXPECT_FALSE(
+          coordinator.wakeup(make_wakeup_options(MasterStatus::DEEP_SLEEP)));
       EXPECT_TRUE(pages.is_suspended(model_id_));
       EXPECT_FALSE(backend.mapped_);
       EXPECT_EQ(memory.get_worker_free_page_counts(),
@@ -364,6 +385,7 @@ TEST_F(ModelResidencyCoordinatorTest,
   const int32_t map_calls = backend.map_calls_;
   const int32_t unmap_calls = backend.unmap_calls_;
   WakeupOptions options;
+  options.master_status = MasterStatus::DEEP_SLEEP;
   options.remote_addrs = {"remote-weight-source"};
 
   EXPECT_FALSE(coordinator.wakeup(options));
@@ -390,7 +412,8 @@ TEST_F(ModelResidencyCoordinatorTest,
                                            MasterStatus::DEEP_SLEEP));
   EXPECT_TRUE(coordinator.finish_initialization(MasterStatus::DEEP_SLEEP));
   EXPECT_FALSE(coordinator.sleep(MasterStatus::DEEP_SLEEP));
-  EXPECT_FALSE(coordinator.wakeup(WakeupOptions{}));
+  EXPECT_FALSE(
+      coordinator.wakeup(make_wakeup_options(MasterStatus::DEEP_SLEEP)));
   EXPECT_FALSE(DistributedVirtualMemoryCoordinator::get_instance()
                    .vmm_kv_page_allocator()
                    .is_suspended(model_id_));
@@ -554,7 +577,8 @@ TEST_F(ModelResidencyCoordinatorTest, MissingWorkerManagerPreservesModelState) {
                    .is_suspended(model_id_));
 
   suspend_model_pages();
-  EXPECT_FALSE(coordinator.wakeup(WakeupOptions{}));
+  EXPECT_FALSE(
+      coordinator.wakeup(make_wakeup_options(MasterStatus::DEEP_SLEEP)));
   EXPECT_TRUE(DistributedVirtualMemoryCoordinator::get_instance()
                   .vmm_kv_page_allocator()
                   .is_suspended(model_id_));
@@ -578,7 +602,8 @@ TEST_F(ModelResidencyCoordinatorTest, EmptyWorkerManagerPreservesModelState) {
                    .is_suspended(model_id_));
 
   suspend_model_pages();
-  EXPECT_FALSE(coordinator.wakeup(WakeupOptions{}));
+  EXPECT_FALSE(
+      coordinator.wakeup(make_wakeup_options(MasterStatus::DEEP_SLEEP)));
   EXPECT_TRUE(DistributedVirtualMemoryCoordinator::get_instance()
                   .vmm_kv_page_allocator()
                   .is_suspended(model_id_));
@@ -603,7 +628,8 @@ TEST_F(ModelResidencyCoordinatorTest, BroadcastsLifecycleAfterPageTransitions) {
       make_coordinator(/*enabled=*/true, make_manager({first, second}));
 
   // An awake model cannot wake up again and must not dispatch to workers.
-  EXPECT_FALSE(coordinator.wakeup(WakeupOptions{}));
+  EXPECT_FALSE(
+      coordinator.wakeup(make_wakeup_options(MasterStatus::DEEP_SLEEP)));
   EXPECT_TRUE(coordinator.sleep(MasterStatus::DEEP_SLEEP));
   EXPECT_FALSE(coordinator.sleep(MasterStatus::DEEP_SLEEP));
   WakeupOptions options;
@@ -613,10 +639,12 @@ TEST_F(ModelResidencyCoordinatorTest, BroadcastsLifecycleAfterPageTransitions) {
   for (const auto& worker : {first, second}) {
     EXPECT_EQ(worker->sleep_calls_, 1);
     EXPECT_EQ(worker->sleep_status_, MasterStatus::DEEP_SLEEP);
+    EXPECT_EQ(worker->sleep_transition_id_, 1);
     EXPECT_TRUE(worker->pages_sleeping_at_sleep_);
     EXPECT_EQ(worker->wakeup_calls_, 1);
-    EXPECT_TRUE(worker->pages_awake_at_wakeup_);
+    EXPECT_FALSE(worker->pages_awake_at_wakeup_);
     expect_wakeup_options(worker->wakeup_options_, options);
+    EXPECT_EQ(worker->wakeup_options_.transition_id, 1);
   }
 }
 
@@ -634,6 +662,154 @@ TEST_F(ModelResidencyCoordinatorTest,
                   .is_suspended(model_id_));
   EXPECT_EQ(first->sleep_calls_, 1);
   EXPECT_EQ(second->sleep_calls_, 1);
+  EXPECT_TRUE(coordinator.is_suspended());
+
+  // Successful workers keep their host state; only the missing ack retries.
+  EXPECT_EQ(first->sleep_transition_id_, 1);
+  EXPECT_EQ(second->sleep_transition_id_, 1);
+  first->sleep_result_ = true;
+  EXPECT_TRUE(coordinator.sleep(MasterStatus::LIGHT_SLEEP));
+  EXPECT_EQ(first->sleep_calls_, 2);
+  EXPECT_EQ(second->sleep_calls_, 1);
+  EXPECT_TRUE(coordinator.is_suspended());
+  EXPECT_EQ(first->sleep_transition_id_, 1);
+  EXPECT_EQ(second->sleep_transition_id_, 1);
+}
+
+TEST_F(ModelResidencyCoordinatorTest, SleepExceptionPreservesPendingState) {
+  auto first = std::make_shared<RecordingWorkerClient>(model_id_);
+  auto second = std::make_shared<RecordingWorkerClient>(model_id_);
+  first->sleep_exception_ = true;
+  auto coordinator =
+      make_coordinator(/*enabled=*/true, make_manager({first, second}));
+
+  EXPECT_FALSE(coordinator.sleep(MasterStatus::LIGHT_SLEEP));
+  EXPECT_TRUE(coordinator.is_suspended());
+  EXPECT_EQ(first->sleep_calls_, 1);
+  EXPECT_EQ(second->sleep_calls_, 1);
+  EXPECT_FALSE(coordinator.sleep(MasterStatus::DEEP_SLEEP));
+  EXPECT_EQ(first->sleep_calls_, 1);
+  EXPECT_EQ(second->sleep_calls_, 1);
+
+  first->sleep_exception_ = false;
+  EXPECT_TRUE(coordinator.sleep(MasterStatus::LIGHT_SLEEP));
+  EXPECT_EQ(first->sleep_calls_, 2);
+  EXPECT_EQ(second->sleep_calls_, 1);
+}
+
+TEST_F(ModelResidencyCoordinatorTest, InvalidSleepModeLeavesModelAwake) {
+  auto worker = std::make_shared<RecordingWorkerClient>(model_id_);
+  auto coordinator = make_coordinator(/*enabled=*/true, make_manager({worker}));
+  EXPECT_FALSE(coordinator.sleep(MasterStatus::WAKEUP));
+  EXPECT_FALSE(coordinator.is_suspended());
+  EXPECT_EQ(worker->sleep_calls_, 0);
+}
+
+TEST_F(ModelResidencyCoordinatorTest, WrongWakeupModePreservesSuspendedPages) {
+  ResumePageBackend backend;
+  ScopedResumePageAllocator injected_pages(backend);
+  auto& memory = DistributedVirtualMemoryCoordinator::get_instance();
+  auto& pages = memory.vmm_kv_page_allocator();
+  ASSERT_TRUE(pages.register_model(model_id_, /*num_layers=*/2));
+  const auto page = pages.alloc_kv_cache_page(model_id_, /*dp_rank=*/0);
+  ASSERT_NE(page, nullptr);
+  auto first = std::make_shared<RecordingWorkerClient>(model_id_);
+  auto second = std::make_shared<RecordingWorkerClient>(model_id_);
+  first->sleep_result_ = false;
+  auto coordinator =
+      make_coordinator(/*enabled=*/true, make_manager({first, second}));
+  ASSERT_FALSE(coordinator.sleep(MasterStatus::LIGHT_SLEEP));
+  const int32_t map_calls = backend.map_calls_;
+  const int32_t unmap_calls = backend.unmap_calls_;
+
+  for (const MasterStatus status :
+       {MasterStatus::WAKEUP, MasterStatus::DEEP_SLEEP}) {
+    EXPECT_FALSE(coordinator.wakeup(make_wakeup_options(status)));
+    EXPECT_TRUE(coordinator.is_suspended());
+    EXPECT_FALSE(backend.mapped_);
+    EXPECT_EQ(backend.map_calls_, map_calls);
+    EXPECT_EQ(backend.unmap_calls_, unmap_calls);
+    EXPECT_EQ(memory.get_worker_free_page_counts(),
+              std::vector<size_t>({8, 8}));
+    EXPECT_EQ(first->sleep_calls_, 1);
+    EXPECT_EQ(second->sleep_calls_, 1);
+    EXPECT_EQ(first->wakeup_calls_, 0);
+    EXPECT_EQ(second->wakeup_calls_, 0);
+  }
+
+  first->sleep_result_ = true;
+  EXPECT_TRUE(
+      coordinator.wakeup(make_wakeup_options(MasterStatus::LIGHT_SLEEP)));
+  EXPECT_FALSE(coordinator.is_suspended());
+  EXPECT_TRUE(backend.mapped_);
+  ASSERT_TRUE(coordinator.sleep(MasterStatus::DEEP_SLEEP));
+  EXPECT_EQ(memory.get_worker_free_page_counts(), std::vector<size_t>({8, 8}));
+}
+
+TEST_F(ModelResidencyCoordinatorTest, NewSleepAdvancesTransitionGeneration) {
+  auto first = std::make_shared<RecordingWorkerClient>(model_id_);
+  auto second = std::make_shared<RecordingWorkerClient>(model_id_);
+  auto coordinator =
+      make_coordinator(/*enabled=*/true, make_manager({first, second}));
+
+  for (uint64_t generation = 1; generation <= 2; ++generation) {
+    ASSERT_TRUE(coordinator.sleep(MasterStatus::LIGHT_SLEEP));
+    WakeupOptions options;
+    options.master_status = MasterStatus::LIGHT_SLEEP;
+    options.transition_id = 99;
+    ASSERT_TRUE(coordinator.wakeup(options));
+    for (const auto& worker : {first, second}) {
+      EXPECT_EQ(worker->sleep_transition_id_, generation);
+      EXPECT_EQ(worker->wakeup_options_.transition_id, generation);
+    }
+  }
+}
+
+TEST_F(ModelResidencyCoordinatorTest, WakeupCompletesPendingSleepBeforeMap) {
+  ResumePageBackend backend;
+  ScopedResumePageAllocator injected_pages(backend);
+  auto& memory = DistributedVirtualMemoryCoordinator::get_instance();
+  auto& pages = memory.vmm_kv_page_allocator();
+  ASSERT_TRUE(pages.register_model(model_id_, /*num_layers=*/2));
+  const auto page = pages.alloc_kv_cache_page(model_id_, /*dp_rank=*/0);
+  ASSERT_NE(page, nullptr);
+  auto first = std::make_shared<RecordingWorkerClient>(model_id_);
+  auto second = std::make_shared<RecordingWorkerClient>(model_id_);
+  first->sleep_result_ = false;
+  auto coordinator =
+      make_coordinator(/*enabled=*/true, make_manager({first, second}));
+  EXPECT_FALSE(coordinator.sleep(MasterStatus::LIGHT_SLEEP));
+  const int32_t map_calls = backend.map_calls_;
+  const int32_t unmap_calls = backend.unmap_calls_;
+
+  EXPECT_FALSE(
+      coordinator.wakeup(make_wakeup_options(MasterStatus::LIGHT_SLEEP)));
+  EXPECT_TRUE(coordinator.is_suspended());
+  EXPECT_FALSE(backend.mapped_);
+  EXPECT_EQ(backend.map_calls_, map_calls);
+  EXPECT_EQ(backend.unmap_calls_, unmap_calls);
+  EXPECT_EQ(memory.get_worker_free_page_counts(), std::vector<size_t>({8, 8}));
+  EXPECT_EQ(first->sleep_calls_, 2);
+  EXPECT_EQ(second->sleep_calls_, 1);
+  EXPECT_EQ(first->wakeup_calls_, 0);
+  EXPECT_EQ(second->wakeup_calls_, 0);
+
+  first->sleep_result_ = true;
+  EXPECT_TRUE(
+      coordinator.wakeup(make_wakeup_options(MasterStatus::LIGHT_SLEEP)));
+  EXPECT_FALSE(coordinator.is_suspended());
+  EXPECT_TRUE(backend.mapped_);
+  EXPECT_EQ(first->sleep_calls_, 3);
+  EXPECT_EQ(second->sleep_calls_, 1);
+  EXPECT_EQ(first->wakeup_calls_, 1);
+  EXPECT_EQ(second->wakeup_calls_, 1);
+  EXPECT_EQ(backend.map_calls_, map_calls + 1);
+  EXPECT_EQ(first->sleep_transition_id_, 1);
+  EXPECT_EQ(second->sleep_transition_id_, 1);
+  EXPECT_EQ(first->wakeup_options_.transition_id, 1);
+  EXPECT_EQ(second->wakeup_options_.transition_id, 1);
+  ASSERT_TRUE(coordinator.sleep(MasterStatus::DEEP_SLEEP));
+  EXPECT_EQ(memory.get_worker_free_page_counts(), std::vector<size_t>({8, 8}));
 }
 
 TEST_F(ModelResidencyCoordinatorTest,
@@ -714,9 +890,125 @@ TEST_F(ModelResidencyCoordinatorTest,
       make_coordinator(/*enabled=*/true, make_manager({first, second}));
   suspend_model_pages();
 
-  EXPECT_FALSE(coordinator.wakeup(WakeupOptions{}));
+  EXPECT_FALSE(
+      coordinator.wakeup(make_wakeup_options(MasterStatus::DEEP_SLEEP)));
   EXPECT_EQ(first->wakeup_calls_, 1);
   EXPECT_EQ(second->wakeup_calls_, 1);
+  EXPECT_TRUE(coordinator.is_suspended());
+
+  first->wakeup_result_ = true;
+  EXPECT_TRUE(
+      coordinator.wakeup(make_wakeup_options(MasterStatus::DEEP_SLEEP)));
+  EXPECT_FALSE(coordinator.is_suspended());
+  EXPECT_EQ(first->wakeup_calls_, 2);
+  EXPECT_EQ(second->wakeup_calls_, 1);
+}
+
+TEST_F(ModelResidencyCoordinatorTest, WakeupRetryRetainsMappedPagesAndBudget) {
+  ResumePageBackend backend;
+  ScopedResumePageAllocator injected_pages(backend);
+  auto& memory = DistributedVirtualMemoryCoordinator::get_instance();
+  auto& pages = memory.vmm_kv_page_allocator();
+  ASSERT_TRUE(pages.register_model(model_id_, /*num_layers=*/2));
+  const auto page = pages.alloc_kv_cache_page(model_id_, /*dp_rank=*/0);
+  ASSERT_NE(page, nullptr);
+  auto first = std::make_shared<RecordingWorkerClient>(model_id_);
+  auto second = std::make_shared<RecordingWorkerClient>(model_id_);
+  auto coordinator =
+      make_coordinator(/*enabled=*/true, make_manager({first, second}));
+  ASSERT_TRUE(coordinator.sleep(MasterStatus::DEEP_SLEEP));
+  first->wakeup_result_ = false;
+  const int32_t map_calls = backend.map_calls_;
+  const int32_t unmap_calls = backend.unmap_calls_;
+
+  EXPECT_FALSE(
+      coordinator.wakeup(make_wakeup_options(MasterStatus::DEEP_SLEEP)));
+  EXPECT_TRUE(coordinator.is_suspended());
+  EXPECT_TRUE(backend.mapped_);
+  EXPECT_EQ(backend.map_calls_, map_calls + 1);
+  EXPECT_EQ(backend.unmap_calls_, unmap_calls);
+  const auto reserved_free_pages = memory.get_worker_free_page_counts();
+  EXPECT_EQ(reserved_free_pages, std::vector<size_t>({4, 4}));
+  // A conflicting transition must reject instead of waiting on RESUMING.
+  EXPECT_FALSE(coordinator.sleep(MasterStatus::DEEP_SLEEP));
+
+  first->wakeup_result_ = true;
+  EXPECT_TRUE(
+      coordinator.wakeup(make_wakeup_options(MasterStatus::DEEP_SLEEP)));
+  EXPECT_FALSE(coordinator.is_suspended());
+  EXPECT_TRUE(backend.mapped_);
+  EXPECT_EQ(backend.map_calls_, map_calls + 1);
+  EXPECT_EQ(backend.unmap_calls_, unmap_calls);
+  EXPECT_EQ(memory.get_worker_free_page_counts(), reserved_free_pages);
+  EXPECT_EQ(first->wakeup_calls_, 2);
+  EXPECT_EQ(second->wakeup_calls_, 1);
+  ASSERT_TRUE(coordinator.sleep(MasterStatus::DEEP_SLEEP));
+  EXPECT_EQ(memory.get_worker_free_page_counts(), std::vector<size_t>({8, 8}));
+}
+
+TEST_F(ModelResidencyCoordinatorTest, WakeupExceptionPreservesPendingState) {
+  auto first = std::make_shared<RecordingWorkerClient>(model_id_);
+  auto second = std::make_shared<RecordingWorkerClient>(model_id_);
+  first->wakeup_exception_ = true;
+  auto coordinator =
+      make_coordinator(/*enabled=*/true, make_manager({first, second}));
+  suspend_model_pages();
+
+  EXPECT_FALSE(
+      coordinator.wakeup(make_wakeup_options(MasterStatus::DEEP_SLEEP)));
+  EXPECT_TRUE(coordinator.is_suspended());
+  EXPECT_EQ(first->wakeup_calls_, 1);
+  EXPECT_EQ(second->wakeup_calls_, 1);
+
+  first->wakeup_exception_ = false;
+  EXPECT_TRUE(
+      coordinator.wakeup(make_wakeup_options(MasterStatus::DEEP_SLEEP)));
+  EXPECT_FALSE(coordinator.is_suspended());
+  EXPECT_EQ(first->wakeup_calls_, 2);
+  EXPECT_EQ(second->wakeup_calls_, 1);
+}
+
+TEST_F(ModelResidencyCoordinatorTest, WakeupRetryRejectsChangedOptions) {
+  KVCacheConfig::get_instance().enable_virtual_memory(true).vmm_elastic(false);
+  auto first = std::make_shared<RecordingWorkerClient>(model_id_);
+  auto second = std::make_shared<RecordingWorkerClient>(model_id_);
+  first->wakeup_result_ = false;
+  auto coordinator =
+      make_coordinator(/*enabled=*/true, make_manager({first, second}));
+  suspend_model_pages();
+  WakeupOptions options;
+  options.master_status = MasterStatus::LIGHT_SLEEP;
+  options.remote_addrs = {"source-0", "source-1"};
+  options.src_weight_segments = {{{32, 8}}, {{64, 16}}};
+  EXPECT_FALSE(coordinator.wakeup(options));
+
+  std::vector<WakeupOptions> changed_options(6, options);
+  changed_options[0].master_status = MasterStatus::DEEP_SLEEP;
+  changed_options[1].remote_addrs[0] = "another-source";
+  changed_options[2].src_weight_segments.clear();
+  changed_options[3].src_weight_segments[0][0].offset = 128;
+  changed_options[4].src_weight_segments[1][0].size = 32;
+  changed_options[5].src_weight_segments[0].clear();
+  for (const auto& changed : changed_options) {
+    EXPECT_FALSE(coordinator.wakeup(changed));
+    EXPECT_TRUE(coordinator.is_suspended());
+    EXPECT_EQ(first->wakeup_calls_, 1);
+    EXPECT_EQ(second->wakeup_calls_, 1);
+  }
+
+  first->wakeup_result_ = true;
+  options.transition_id = 123;
+  EXPECT_TRUE(coordinator.wakeup(options));
+  EXPECT_FALSE(coordinator.is_suspended());
+  EXPECT_EQ(first->wakeup_calls_, 2);
+  EXPECT_EQ(second->wakeup_calls_, 1);
+  EXPECT_EQ(first->wakeup_options_.transition_id, 0);
+  EXPECT_EQ(second->wakeup_options_.transition_id, 0);
+  WakeupOptions first_options;
+  first_options.master_status = options.master_status;
+  first_options.remote_addrs = {"source-0"};
+  first_options.src_weight_segments = {{{32, 8}}};
+  expect_wakeup_options(first->wakeup_options_, first_options);
 }
 
 }  // namespace xllm

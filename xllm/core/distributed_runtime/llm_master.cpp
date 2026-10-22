@@ -618,6 +618,11 @@ bool LLMMaster::sleep() {
   return model_residency_coordinator_->sleep(master_status_);
 }
 
+bool LLMMaster::requires_wakeup() const {
+  return model_residency_coordinator_ != nullptr &&
+         model_residency_coordinator_->is_suspended();
+}
+
 bool LLMMaster::wakeup() {
   WakeupOptions options;
   return wakeup(options);

@@ -160,7 +160,8 @@ class RemoteWorker : public WorkerClient {
   // Get worker global rank
   int32_t global_rank() const { return global_rank_; }
 
-  folly::SemiFuture<bool> sleep_async(MasterStatus master_status) override;
+  folly::SemiFuture<bool> sleep_async(MasterStatus master_status,
+                                      uint64_t transition_id = 0) override;
 
   folly::SemiFuture<bool> wakeup_async(const WakeupOptions& options) override;
 

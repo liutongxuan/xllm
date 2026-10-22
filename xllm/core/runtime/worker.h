@@ -51,7 +51,7 @@ class Worker {
                   int32_t random_seed,
                   MasterStatus master_status);
 
-  bool sleep(MasterStatus master_status);
+  bool sleep(MasterStatus master_status, uint64_t transition_id = 0);
 
   bool wakeup(const WakeupOptions& options);
 

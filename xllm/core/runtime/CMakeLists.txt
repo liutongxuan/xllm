@@ -39,6 +39,7 @@ cc_library(
     $<$<BOOL:${USE_DCU}>:dcu_graph_executor_impl.h>
     worker.h
     worker_impl.h
+    worker_residency_state.h
     llm_worker_impl.h
     vlm_worker_impl.h
     dit_worker_impl.h

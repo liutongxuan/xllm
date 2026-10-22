@@ -89,6 +89,8 @@ message DSparkCalibrationResponse {
 
 message SleepRequest {
   MasterStatus master_status = 1;
+  // Sleep/wakeup retries use the same model-local generation.
+  uint64 transition_id = 2;
 }
 
 message WakeupRequest {
@@ -97,6 +99,7 @@ message WakeupRequest {
   // Per-remote-addr weight segments (index matches remote_addrs)
   // Each entry contains ordered segments to pull from that remote source
   repeated WakeupWeightSegmentList src_weight_segments = 3;
+  uint64 transition_id = 4;
 }
 
 // A single weight segment for P2P transfer

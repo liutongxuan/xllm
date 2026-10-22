@@ -1333,7 +1333,8 @@ void WorkerService::Sleep(::google::protobuf::RpcController* controller,
                           ::google::protobuf::Closure* done) {
   threadpool_->schedule([this, controller, req, resp, done]() mutable {
     brpc::ClosureGuard done_guard(done);
-    bool status = worker_->sleep(MasterStatus(req->master_status()));
+    bool status = worker_->sleep(MasterStatus(req->master_status()),
+                                 req->transition_id());
     resp->set_ok(status);
   });
 
@@ -1348,6 +1349,7 @@ void WorkerService::Wakeup(::google::protobuf::RpcController* controller,
     brpc::ClosureGuard done_guard(done);
     WakeupOptions options;
     options.master_status = MasterStatus(req->master_status());
+    options.transition_id = req->transition_id();
     options.remote_addrs.assign(req->remote_addrs().begin(),
                                 req->remote_addrs().end());
     // Unmarshal weight segments

@@ -18,6 +18,7 @@ limitations under the License.
 #include <folly/futures/Future.h>
 #include <glog/logging.h>
 
+#include <algorithm>
 #include <utility>
 #include <vector>
 
@@ -35,6 +36,34 @@ namespace xllm {
 namespace {
 
 constexpr size_t kWeightPageSafetyMargin = 20;
+
+bool is_sleep_status(MasterStatus status) {
+  return status == MasterStatus::LIGHT_SLEEP ||
+         status == MasterStatus::DEEP_SLEEP;
+}
+
+bool same_wakeup_options(const WakeupOptions& first,
+                         const WakeupOptions& second) {
+  if (first.master_status != second.master_status ||
+      first.remote_addrs != second.remote_addrs ||
+      first.src_weight_segments.size() != second.src_weight_segments.size()) {
+    return false;
+  }
+  for (size_t rank = 0; rank < first.src_weight_segments.size(); ++rank) {
+    const auto& first_segments = first.src_weight_segments[rank];
+    const auto& second_segments = second.src_weight_segments[rank];
+    if (first_segments.size() != second_segments.size() ||
+        !std::equal(first_segments.begin(),
+                    first_segments.end(),
+                    second_segments.begin(),
+                    [](const WeightSegment& lhs, const WeightSegment& rhs) {
+                      return lhs.offset == rhs.offset && lhs.size == rhs.size;
+                    })) {
+      return false;
+    }
+  }
+  return true;
+}
 
 int64_t get_effective_weight_size(const ModelLoader& model_loader,
                                   int64_t num_layers) {
@@ -103,6 +132,7 @@ bool ModelResidencyCoordinator::initialize_model(
     int32_t dp_size,
     int32_t tp_size,
     MasterStatus master_status) {
+  std::lock_guard<std::mutex> lock(lifecycle_mutex_);
   if (!options_.enabled) {
     return true;
   }
@@ -171,6 +201,7 @@ bool ModelResidencyCoordinator::initialize_model(
 
 bool ModelResidencyCoordinator::finish_initialization(
     MasterStatus master_status) {
+  std::lock_guard<std::mutex> lock(lifecycle_mutex_);
   if (!options_.enabled || master_status == MasterStatus::WAKEUP) {
     return true;
   }
@@ -181,6 +212,7 @@ bool ModelResidencyCoordinator::finish_initialization(
                << " after init";
     return false;
   }
+  sleep_status_ = master_status;
   LOG(INFO) << "Model " << options_.model_id
             << " put to sleep after init (master_status=" << master_status
             << ")";
@@ -204,14 +236,32 @@ void ModelResidencyCoordinator::get_virtual_memory_info(
 }
 
 bool ModelResidencyCoordinator::sleep(MasterStatus master_status) {
+  std::lock_guard<std::mutex> lock(lifecycle_mutex_);
   if (!options_.enabled) {
     LOG(WARNING) << "sleep requires --enable_virtual_memory=true";
+    return false;
+  }
+  if (!is_sleep_status(master_status)) {
+    LOG(ERROR) << "Invalid sleep status for model " << options_.model_id;
     return false;
   }
   if (distributed_worker_manager_ == nullptr ||
       distributed_worker_manager_->get_worker_clients().empty()) {
     LOG(ERROR) << "No worker clients available to sleep.";
     return false;
+  }
+  if (pending_wakeup_.has_value()) {
+    LOG(ERROR) << "Cannot sleep model " << options_.model_id
+               << " while worker wakeup acknowledgements are pending";
+    return false;
+  }
+  if (pending_sleep_.has_value()) {
+    if (pending_sleep_->master_status != master_status) {
+      LOG(ERROR) << "Cannot change the pending sleep status for model "
+                 << options_.model_id;
+      return false;
+    }
+    return finish_worker_sleep();
   }
 
   const auto& worker_clients =
@@ -225,25 +275,23 @@ bool ModelResidencyCoordinator::sleep(MasterStatus master_status) {
     return false;
   }
 
-  std::vector<folly::SemiFuture<bool>> futures;
-  futures.reserve(worker_clients.size());
-  for (const auto& worker : worker_clients) {
-    futures.emplace_back(worker->sleep_async(master_status));
-  }
-
-  auto results = folly::collectAll(futures).get();
-  for (const auto& result : results) {
-    if (!result.value()) {
-      LOG(ERROR) << "Sleep failed.";
-      return false;
-    }
-  }
-  return true;
+  ++transition_id_;
+  sleep_status_ = master_status;
+  pending_sleep_.emplace(PendingSleep{
+      master_status, std::vector<bool>(worker_clients.size(), false)});
+  return finish_worker_sleep();
 }
 
 bool ModelResidencyCoordinator::wakeup(const WakeupOptions& options) {
+  std::lock_guard<std::mutex> lock(lifecycle_mutex_);
   if (!options_.enabled) {
     LOG(WARNING) << "wakeup requires --enable_virtual_memory=true";
+    return false;
+  }
+  if (!is_sleep_status(options.master_status) ||
+      (sleep_status_.has_value() && *sleep_status_ != options.master_status)) {
+    LOG(ERROR) << "Wakeup must match the sleep status for model "
+               << options_.model_id;
     return false;
   }
   if (KVCacheConfig::get_instance().enable_virtual_memory() &&
@@ -262,74 +310,159 @@ bool ModelResidencyCoordinator::wakeup(const WakeupOptions& options) {
 
   const auto& worker_clients =
       distributed_worker_manager_->get_worker_clients();
+  if (pending_wakeup_.has_value() &&
+      !same_wakeup_options(pending_wakeup_->options, options)) {
+    LOG(ERROR) << "Cannot change the pending wakeup options for model "
+               << options_.model_id;
+    return false;
+  }
+  // A failed sleep may have left workers retaining different host state.
+  // Complete that transition before restoring any shared device mappings.
+  if (pending_sleep_.has_value() && !finish_worker_sleep()) {
+    return false;
+  }
   LOG(INFO) << "Starting to wakeup model " << options_.model_id
             << ". Worker clients count: " << worker_clients.size();
 
   // Restore weight and KV cache pages before workers load or transfer weights.
   auto& coordinator = DistributedVirtualMemoryCoordinator::get_instance();
   auto& pages = coordinator.vmm_kv_page_allocator();
-  const auto plan = pages.begin_resume(options_.model_id);
-  if (!plan.has_value()) {
-    return false;
+  if (!pending_wakeup_.has_value()) {
+    const auto plan = pages.begin_resume(options_.model_id);
+    if (!plan.has_value()) {
+      return false;
+    }
+    if (!coordinator.try_reserve_model_memory(options_.model_id, *plan)) {
+      pages.finish_resume(options_.model_id, /*success=*/false);
+      LOG(ERROR) << "Insufficient shared capacity to wake model "
+                 << options_.model_id;
+      return false;
+    }
+    if (!pages.map_pages(options_.model_id, *plan)) {
+      coordinator.release_model_memory_budget(options_.model_id, *plan);
+      pages.finish_resume(options_.model_id, /*success=*/false);
+      LOG(ERROR)
+          << "Insufficient physical memory to restore KV pages for model "
+          << options_.model_id;
+      return false;
+    }
+    if (!coordinator.restore_weight_pages(options_.model_id)) {
+      // The weight transaction has already confirmed its rollback on every
+      // worker. Release restored KV before returning the combined reservation.
+      pages.unmap_pages(options_.model_id, *plan);
+      coordinator.release_model_memory_budget(options_.model_id, *plan);
+      pages.finish_resume(options_.model_id, /*success=*/false);
+      LOG(ERROR) << "Insufficient physical memory to restore weights for model "
+                 << options_.model_id;
+      return false;
+    }
+    // Keep the allocator frozen in RESUMING while any worker can be using
+    // these mappings. A retry reuses both the reservation and prepared pages.
+    WakeupOptions requested_options = options;
+    requested_options.transition_id = transition_id_;
+    pending_wakeup_.emplace(
+        PendingWakeup{std::move(requested_options),
+                      std::vector<bool>(worker_clients.size(), false)});
   }
-  if (!coordinator.try_reserve_model_memory(options_.model_id, *plan)) {
-    pages.finish_resume(options_.model_id, /*success=*/false);
-    LOG(ERROR) << "Insufficient shared capacity to wake model "
-               << options_.model_id;
-    return false;
-  }
-  if (!pages.map_pages(options_.model_id, *plan)) {
-    coordinator.release_model_memory_budget(options_.model_id, *plan);
-    pages.finish_resume(options_.model_id, /*success=*/false);
-    LOG(ERROR) << "Insufficient physical memory to restore KV pages for model "
-               << options_.model_id;
-    return false;
-  }
-  if (!coordinator.restore_weight_pages(options_.model_id)) {
-    // The weight transaction has already confirmed its rollback on every
-    // worker. Release restored KV before returning the combined reservation.
-    pages.unmap_pages(options_.model_id, *plan);
-    coordinator.release_model_memory_budget(options_.model_id, *plan);
-    pages.finish_resume(options_.model_id, /*success=*/false);
-    LOG(ERROR) << "Insufficient physical memory to restore weights for model "
-               << options_.model_id;
-    return false;
-  }
-  pages.finish_resume(options_.model_id, /*success=*/true);
 
   LOG(INFO) << "Waking up model " << options_.model_id
             << ", remote_addrs.size()=" << options.remote_addrs.size();
   std::vector<folly::SemiFuture<bool>> futures;
   futures.reserve(worker_clients.size());
-
-  if (!options.remote_addrs.empty() &&
-      options.remote_addrs.size() == worker_clients.size()) {
-    // Each worker pulls weights from the source at the same global rank.
-    for (size_t i = 0; i < worker_clients.size(); ++i) {
+  std::vector<size_t> pending_ranks;
+  pending_ranks.reserve(worker_clients.size());
+  auto& pending = *pending_wakeup_;
+  CHECK_EQ(pending.worker_acked.size(), worker_clients.size());
+  const auto& prepared_options = pending.options;
+  for (size_t rank = 0; rank < worker_clients.size(); ++rank) {
+    if (pending.worker_acked[rank]) {
+      continue;
+    }
+    pending_ranks.emplace_back(rank);
+    if (!prepared_options.remote_addrs.empty() &&
+        prepared_options.remote_addrs.size() == worker_clients.size()) {
+      // Each worker pulls weights from the source at the same global rank.
       WakeupOptions per_worker_options;
-      per_worker_options.master_status = options.master_status;
-      per_worker_options.remote_addrs = {options.remote_addrs[i]};
-      if (i < options.src_weight_segments.size()) {
+      per_worker_options.master_status = prepared_options.master_status;
+      per_worker_options.transition_id = prepared_options.transition_id;
+      per_worker_options.remote_addrs = {prepared_options.remote_addrs[rank]};
+      if (rank < prepared_options.src_weight_segments.size()) {
         per_worker_options.src_weight_segments = {
-            options.src_weight_segments[i]};
+            prepared_options.src_weight_segments[rank]};
       }
-      futures.emplace_back(worker_clients[i]->wakeup_async(per_worker_options));
+      futures.emplace_back(
+          worker_clients[rank]->wakeup_async(per_worker_options));
+      continue;
     }
-  } else {
-    for (const auto& worker : worker_clients) {
-      futures.emplace_back(worker->wakeup_async(options));
-    }
+    futures.emplace_back(worker_clients[rank]->wakeup_async(prepared_options));
   }
 
   auto results = folly::collectAll(futures).get();
-  for (const auto& result : results) {
-    if (!result.value()) {
-      LOG(ERROR) << "Wakeup failed.";
-      return false;
+  bool all_acked = true;
+  for (size_t index = 0; index < results.size(); ++index) {
+    const auto& result = results[index];
+    const size_t rank = pending_ranks[index];
+    if (result.hasValue() && result.value()) {
+      pending.worker_acked[rank] = true;
+      continue;
     }
+    LOG(ERROR) << "Wakeup failed for model " << options_.model_id
+               << " on worker " << rank;
+    all_acked = false;
   }
+  if (!all_acked) {
+    return false;
+  }
+  pages.finish_resume(options_.model_id, /*success=*/true);
+  pending_wakeup_.reset();
   LOG(INFO) << "Wakeup finished for model " << options_.model_id << ".";
   return true;
+}
+
+bool ModelResidencyCoordinator::is_suspended() const {
+  if (!options_.enabled) {
+    return false;
+  }
+  auto& coordinator = DistributedVirtualMemoryCoordinator::get_instance();
+  return coordinator.is_initialized() &&
+         coordinator.vmm_kv_page_allocator().is_suspended(options_.model_id);
+}
+
+bool ModelResidencyCoordinator::finish_worker_sleep() {
+  const auto& worker_clients =
+      distributed_worker_manager_->get_worker_clients();
+  auto& pending = *pending_sleep_;
+  CHECK_EQ(pending.worker_acked.size(), worker_clients.size());
+  std::vector<folly::SemiFuture<bool>> futures;
+  futures.reserve(worker_clients.size());
+  std::vector<size_t> pending_ranks;
+  pending_ranks.reserve(worker_clients.size());
+  for (size_t rank = 0; rank < worker_clients.size(); ++rank) {
+    if (pending.worker_acked[rank]) {
+      continue;
+    }
+    pending_ranks.emplace_back(rank);
+    futures.emplace_back(worker_clients[rank]->sleep_async(
+        pending.master_status, transition_id_));
+  }
+
+  auto results = folly::collectAll(futures).get();
+  bool all_acked = true;
+  for (size_t index = 0; index < results.size(); ++index) {
+    const auto& result = results[index];
+    const size_t rank = pending_ranks[index];
+    if (result.hasValue() && result.value()) {
+      pending.worker_acked[rank] = true;
+      continue;
+    }
+    LOG(ERROR) << "Sleep failed for model " << options_.model_id
+               << " on worker " << rank;
+    all_acked = false;
+  }
+  if (all_acked) {
+    pending_sleep_.reset();
+  }
+  return all_acked;
 }
 
 bool ModelResidencyCoordinator::suspend_memory(bool skip_weight_release) {

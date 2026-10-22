@@ -197,7 +197,8 @@ void WorkerClient::transfer_kv_blocks(
   NOT_IMPLEMENTED();
 }
 
-folly::SemiFuture<bool> WorkerClient::sleep_async(MasterStatus master_status) {
+folly::SemiFuture<bool> WorkerClient::sleep_async(MasterStatus master_status,
+                                                  uint64_t transition_id) {
   LOG(FATAL) << "WorkerClient Method sleep is UnImplemented.";
 }
 

@@ -47,7 +47,8 @@ class WorkerClient {
                           int32_t random_seed,
                           MasterStatus master_status);
 
-  virtual folly::SemiFuture<bool> sleep_async(MasterStatus master_status);
+  virtual folly::SemiFuture<bool> sleep_async(MasterStatus master_status,
+                                              uint64_t transition_id = 0);
 
   virtual folly::SemiFuture<bool> wakeup_async(const WakeupOptions& options);
 

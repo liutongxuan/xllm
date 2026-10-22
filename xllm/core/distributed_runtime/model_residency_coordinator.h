@@ -18,6 +18,8 @@ limitations under the License.
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -62,12 +64,31 @@ class ModelResidencyCoordinator final {
 
   bool sleep(MasterStatus master_status);
   bool wakeup(const WakeupOptions& options);
+  // Admission remains closed until every worker confirms a prepared wakeup.
+  // This query does not wait for an in-progress allocator transition.
+  bool is_suspended() const;
 
  private:
+  struct PendingSleep {
+    MasterStatus master_status;
+    std::vector<bool> worker_acked;
+  };
+
+  struct PendingWakeup {
+    WakeupOptions options;
+    std::vector<bool> worker_acked;
+  };
+
   bool suspend_memory(bool skip_weight_release);
+  bool finish_worker_sleep();
 
   const Options options_;
   std::shared_ptr<DistributedWorkerManager> distributed_worker_manager_;
+  std::mutex lifecycle_mutex_;
+  uint64_t transition_id_ = 0;
+  std::optional<MasterStatus> sleep_status_;
+  std::optional<PendingSleep> pending_sleep_;
+  std::optional<PendingWakeup> pending_wakeup_;
 };
 
 }  // namespace xllm

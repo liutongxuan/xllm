@@ -133,7 +133,7 @@ class CommChannel {
   // Check if the connection to worker is healthy
   virtual bool check_health();
 
-  virtual bool sleep(MasterStatus master_status);
+  virtual bool sleep(MasterStatus master_status, uint64_t transition_id = 0);
 
   virtual bool wakeup(const WakeupOptions& options);
 

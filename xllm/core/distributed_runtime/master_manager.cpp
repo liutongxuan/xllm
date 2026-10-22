@@ -253,6 +253,18 @@ bool MasterManager::sleep(const std::string& model_id,
     return true;
   }
 
+  // Worker RPC failure cannot undo released mappings. Keep admission blocked
+  // until wakeup has restored memory and every worker has acknowledged it.
+  if (llm_master->requires_wakeup()) {
+    LOG(ERROR) << "Failed to sleep model " << model_id
+               << "; memory remains suspended and admission is blocked";
+    if (error_message != nullptr) {
+      *error_message =
+          "Failed to sleep model; memory remains suspended, retry wakeup";
+    }
+    return false;
+  }
+
   llm_master->set_master_status(previous_status);
   if (!rate_limiter->try_wakeup()) {
     LOG(ERROR) << "Failed to restore rate limiter for model " << model_id

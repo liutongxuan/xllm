@@ -29,6 +29,7 @@ limitations under the License.
 #include "core/kv_cache/transfer/hierarchy_kv_cache_transfer.h"
 #include "core/kv_cache/transfer/kv_cache_store.h"
 #include "core/kv_cache/transfer/kv_cache_transfer.h"
+#include "core/runtime/worker_residency_state.h"
 #include "executor.h"
 #include "forward_params.h"
 #include "framework/model/causal_lm.h"
@@ -233,7 +234,7 @@ class WorkerImpl {
   virtual folly::SemiFuture<bool> allocate_kv_cache_with_transfer_async(
       const KVCacheShape& kv_cache_shape);
 
-  virtual bool sleep(MasterStatus master_status);
+  virtual bool sleep(MasterStatus master_status, uint64_t transition_id = 0);
 
   virtual bool wakeup(const WakeupOptions& options);
 
@@ -480,6 +481,12 @@ class WorkerImpl {
 #endif
 
  private:
+  bool init_model_impl(const std::string& model_weights_path,
+                       int32_t random_seed,
+                       MasterStatus master_status);
+
+  WorkerResidencyState residency_state_;
+
   template <typename Input>
   std::optional<ForwardOutput> step_for_schedule_overlap_impl(
       const Input& input);

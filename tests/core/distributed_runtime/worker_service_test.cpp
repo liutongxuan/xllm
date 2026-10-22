@@ -26,14 +26,280 @@ limitations under the License.
 #include <cstdint>
 #include <future>
 #include <memory>
+#include <stdexcept>
 #include <string>
 
 #include "core/framework/config/execution_config.h"
 #include "core/runtime/options.h"
+#include "core/runtime/worker_residency_state.h"
 
 namespace xllm {
 
 namespace {
+
+TEST(WorkerResidencyStateTest, RejectsUninitializedAndInvalidTransitions) {
+  WorkerResidencyState state;
+  int32_t operation_count = 0;
+  auto operation = [&operation_count]() {
+    ++operation_count;
+    return true;
+  };
+  WakeupOptions options;
+  options.master_status = MasterStatus::LIGHT_SLEEP;
+  EXPECT_FALSE(state.sleep(MasterStatus::LIGHT_SLEEP,
+                           /*transition_id=*/1,
+                           operation));
+  EXPECT_FALSE(state.wakeup(options, operation));
+  MasterStatus invalid(static_cast<MasterStatus::Value>(-1));
+  EXPECT_FALSE(state.initialize(invalid, operation));
+  ASSERT_TRUE(state.initialize(MasterStatus::WAKEUP, operation));
+  EXPECT_FALSE(state.sleep(MasterStatus::WAKEUP,
+                           /*transition_id=*/1,
+                           operation));
+  EXPECT_FALSE(state.sleep(invalid, /*transition_id=*/1, operation));
+  EXPECT_FALSE(state.sleep(MasterStatus::LIGHT_SLEEP,
+                           /*transition_id=*/0,
+                           operation));
+  EXPECT_FALSE(state.wakeup(options, operation));
+  options.master_status = invalid;
+  EXPECT_FALSE(state.wakeup(options, operation));
+  EXPECT_EQ(operation_count, 1);
+}
+
+TEST(WorkerResidencyStateTest, InitialSleepUsesTransitionZero) {
+  for (MasterStatus sleep_status :
+       {MasterStatus::LIGHT_SLEEP, MasterStatus::DEEP_SLEEP}) {
+    WorkerResidencyState state;
+    ASSERT_TRUE(state.initialize(sleep_status, []() { return true; }));
+    int32_t sleep_count = 0;
+    EXPECT_TRUE(state.sleep(sleep_status, /*transition_id=*/0, [&]() {
+      ++sleep_count;
+      return true;
+    }));
+    WakeupOptions options;
+    options.master_status = sleep_status;
+    int32_t wakeup_count = 0;
+    auto wakeup = [&]() {
+      ++wakeup_count;
+      return true;
+    };
+    EXPECT_TRUE(state.wakeup(options, wakeup));
+    EXPECT_TRUE(state.wakeup(options, wakeup));
+    EXPECT_EQ(sleep_count, 0);
+    EXPECT_EQ(wakeup_count, 1);
+  }
+}
+
+TEST(WorkerResidencyStateTest, LateSleepRetryDoesNotUndoCompletedWakeup) {
+  WorkerResidencyState state;
+  ASSERT_TRUE(state.initialize(MasterStatus::WAKEUP, []() { return true; }));
+  int32_t sleep_count = 0;
+  auto sleep = [&]() {
+    ++sleep_count;
+    return true;
+  };
+  ASSERT_TRUE(state.sleep(MasterStatus::LIGHT_SLEEP,
+                          /*transition_id=*/1,
+                          sleep));
+  EXPECT_TRUE(state.sleep(MasterStatus::LIGHT_SLEEP,
+                          /*transition_id=*/1,
+                          sleep));
+  EXPECT_FALSE(state.sleep(MasterStatus::DEEP_SLEEP,
+                           /*transition_id=*/1,
+                           sleep));
+  EXPECT_FALSE(state.sleep(MasterStatus::LIGHT_SLEEP,
+                           /*transition_id=*/2,
+                           sleep));
+  WakeupOptions options;
+  options.master_status = MasterStatus::LIGHT_SLEEP;
+  options.transition_id = 1;
+  int32_t wakeup_count = 0;
+  auto wakeup = [&]() {
+    ++wakeup_count;
+    return true;
+  };
+  ASSERT_TRUE(state.wakeup(options, wakeup));
+  EXPECT_TRUE(state.sleep(MasterStatus::LIGHT_SLEEP,
+                          /*transition_id=*/1,
+                          sleep));
+  EXPECT_TRUE(state.wakeup(options, wakeup));
+  EXPECT_EQ(sleep_count, 1);
+  EXPECT_EQ(wakeup_count, 1);
+
+  ASSERT_TRUE(state.sleep(MasterStatus::DEEP_SLEEP,
+                          /*transition_id=*/2,
+                          sleep));
+  EXPECT_FALSE(state.sleep(MasterStatus::LIGHT_SLEEP,
+                           /*transition_id=*/1,
+                           sleep));
+  EXPECT_FALSE(state.wakeup(options, wakeup));
+  options.master_status = MasterStatus::DEEP_SLEEP;
+  options.transition_id = 2;
+  EXPECT_TRUE(state.wakeup(options, wakeup));
+  EXPECT_EQ(sleep_count, 2);
+  EXPECT_EQ(wakeup_count, 2);
+}
+
+TEST(WorkerResidencyStateTest, FailedOperationsDoNotRecordCompletion) {
+  WorkerResidencyState state;
+  EXPECT_FALSE(state.initialize(MasterStatus::WAKEUP, []() { return false; }));
+  int32_t sleep_count = 0;
+  auto sleep = [&]() {
+    ++sleep_count;
+    return true;
+  };
+  EXPECT_FALSE(state.sleep(MasterStatus::LIGHT_SLEEP,
+                           /*transition_id=*/1,
+                           sleep));
+  ASSERT_TRUE(state.initialize(MasterStatus::WAKEUP, []() { return true; }));
+  EXPECT_FALSE(state.sleep(MasterStatus::LIGHT_SLEEP,
+                           /*transition_id=*/1,
+                           []() { return false; }));
+  ASSERT_TRUE(state.sleep(MasterStatus::LIGHT_SLEEP,
+                          /*transition_id=*/1,
+                          sleep));
+  WakeupOptions options;
+  options.master_status = MasterStatus::LIGHT_SLEEP;
+  options.transition_id = 1;
+  EXPECT_FALSE(state.wakeup(options, []() { return false; }));
+  int32_t wakeup_count = 0;
+  EXPECT_TRUE(state.wakeup(options, [&]() {
+    ++wakeup_count;
+    return true;
+  }));
+  EXPECT_EQ(sleep_count, 1);
+  EXPECT_EQ(wakeup_count, 1);
+}
+
+TEST(WorkerResidencyStateTest, ExceptionsPropagateWithoutAcknowledgingSuccess) {
+  WorkerResidencyState state;
+  ASSERT_TRUE(state.initialize(MasterStatus::WAKEUP, []() { return true; }));
+  auto throw_operation = []() -> bool {
+    throw std::runtime_error("injected residency failure");
+  };
+  EXPECT_THROW(state.sleep(MasterStatus::LIGHT_SLEEP,
+                           /*transition_id=*/1,
+                           throw_operation),
+               std::runtime_error);
+  ASSERT_TRUE(state.sleep(MasterStatus::LIGHT_SLEEP,
+                          /*transition_id=*/1,
+                          []() { return true; }));
+  WakeupOptions options;
+  options.master_status = MasterStatus::LIGHT_SLEEP;
+  options.transition_id = 1;
+  EXPECT_THROW(state.wakeup(options, throw_operation), std::runtime_error);
+  EXPECT_TRUE(state.wakeup(options, []() { return true; }));
+}
+
+TEST(WorkerResidencyStateTest, RejectsWakeupRetriesWithChangedOptions) {
+  WorkerResidencyState state;
+  ASSERT_TRUE(
+      state.initialize(MasterStatus::DEEP_SLEEP, []() { return true; }));
+  WakeupOptions options;
+  options.master_status = MasterStatus::DEEP_SLEEP;
+  options.remote_addrs = {"worker:1234"};
+  options.src_weight_segments = {{{0, 128}}};
+  int32_t wakeup_count = 0;
+  auto wakeup = [&]() {
+    ++wakeup_count;
+    return true;
+  };
+  ASSERT_TRUE(state.wakeup(options, wakeup));
+  EXPECT_TRUE(state.wakeup(options, wakeup));
+  WakeupOptions changed = options;
+  changed.master_status = MasterStatus::LIGHT_SLEEP;
+  EXPECT_FALSE(state.wakeup(changed, wakeup));
+  changed = options;
+  changed.transition_id = 1;
+  EXPECT_FALSE(state.wakeup(changed, wakeup));
+  changed = options;
+  changed.remote_addrs[0] = "worker:5678";
+  EXPECT_FALSE(state.wakeup(changed, wakeup));
+  changed = options;
+  changed.src_weight_segments[0][0].offset = 128;
+  EXPECT_FALSE(state.wakeup(changed, wakeup));
+  changed = options;
+  changed.src_weight_segments[0][0].size = 256;
+  EXPECT_FALSE(state.wakeup(changed, wakeup));
+  changed = options;
+  changed.src_weight_segments[0].push_back({128, 128});
+  EXPECT_FALSE(state.wakeup(changed, wakeup));
+  changed = options;
+  changed.src_weight_segments.push_back({});
+  EXPECT_FALSE(state.wakeup(changed, wakeup));
+  EXPECT_EQ(wakeup_count, 1);
+}
+
+TEST(WorkerResidencyStateTest, ConcurrentRetriesSerializeWithWakeup) {
+  WorkerResidencyState state;
+  ASSERT_TRUE(state.initialize(MasterStatus::WAKEUP, []() { return true; }));
+  std::atomic<int32_t> sleep_count{0};
+  auto sleep = [&]() {
+    sleep_count.fetch_add(1, std::memory_order_relaxed);
+    return true;
+  };
+  ASSERT_TRUE(state.sleep(MasterStatus::LIGHT_SLEEP,
+                          /*transition_id=*/1,
+                          sleep));
+  WakeupOptions options;
+  options.master_status = MasterStatus::LIGHT_SLEEP;
+  options.transition_id = 1;
+  std::atomic<int32_t> wakeup_count{0};
+  std::promise<void> wakeup_started;
+  auto started = wakeup_started.get_future();
+  std::promise<void> release_wakeup;
+  auto released = release_wakeup.get_future().share();
+  auto first_wakeup = std::async(std::launch::async, [&]() {
+    return state.wakeup(options, [&]() {
+      wakeup_count.fetch_add(1, std::memory_order_relaxed);
+      wakeup_started.set_value();
+      released.wait();
+      return true;
+    });
+  });
+  EXPECT_EQ(started.wait_for(std::chrono::seconds(5)),
+            std::future_status::ready);
+  auto retry_wakeup = std::async(std::launch::async, [&]() {
+    return state.wakeup(options, [&]() {
+      wakeup_count.fetch_add(1, std::memory_order_relaxed);
+      return true;
+    });
+  });
+  auto late_sleep = std::async(std::launch::async, [&]() {
+    return state.sleep(MasterStatus::LIGHT_SLEEP,
+                       /*transition_id=*/1,
+                       sleep);
+  });
+  release_wakeup.set_value();
+  EXPECT_TRUE(first_wakeup.get());
+  EXPECT_TRUE(retry_wakeup.get());
+  EXPECT_TRUE(late_sleep.get());
+  EXPECT_EQ(sleep_count.load(std::memory_order_relaxed), 1);
+  EXPECT_EQ(wakeup_count.load(std::memory_order_relaxed), 1);
+}
+
+TEST(WorkerResidencyStateTest, SuccessfulInitializationResetsGeneration) {
+  WorkerResidencyState state;
+  ASSERT_TRUE(state.initialize(MasterStatus::WAKEUP, []() { return true; }));
+  ASSERT_TRUE(state.sleep(MasterStatus::LIGHT_SLEEP,
+                          /*transition_id=*/7,
+                          []() { return true; }));
+  EXPECT_FALSE(
+      state.initialize(MasterStatus::DEEP_SLEEP, []() { return false; }));
+  WakeupOptions options;
+  options.master_status = MasterStatus::LIGHT_SLEEP;
+  options.transition_id = 7;
+  EXPECT_TRUE(state.wakeup(options, []() { return true; }));
+  ASSERT_TRUE(
+      state.initialize(MasterStatus::DEEP_SLEEP, []() { return true; }));
+  EXPECT_FALSE(state.wakeup(options, []() { return true; }));
+  options.master_status = MasterStatus::DEEP_SLEEP;
+  options.transition_id = 0;
+  EXPECT_TRUE(state.wakeup(options, []() { return true; }));
+  EXPECT_TRUE(state.sleep(MasterStatus::LIGHT_SLEEP,
+                          /*transition_id=*/1,
+                          []() { return true; }));
+}
 
 class CountingClosure final : public google::protobuf::Closure {
  public:
