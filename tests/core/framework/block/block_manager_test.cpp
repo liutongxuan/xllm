@@ -22,6 +22,7 @@ limitations under the License.
 
 #include "common/global_flags.h"
 #include "core/framework/block/block_manager_pool.h"
+#include "core/framework/block/kv_cache_manager_factory.h"
 #include "core/framework/config/scheduler_config.h"
 #include "core/kv_cache/block/block_manager_impl.h"
 #include "core/kv_cache/block/linear_state_block_manager.h"
@@ -197,6 +198,38 @@ std::vector<XXH3Key> ExpectedChain(const std::vector<int32_t>& tokens,
 }
 
 }  // namespace
+
+TEST(KVCacheManagerFactoryTest,
+     RejectsVirtualMemoryHostOffloadBeforeAllocation) {
+  BlockManagerPool::Options options;
+  options.enable_virtual_memory(true).enable_host_offload(true);
+
+  EXPECT_DEATH(KVCacheManagerFactory::create(KVCacheCapacity{},
+                                             ModelArgs{},
+                                             /*world_size=*/1,
+                                             torch::kBFloat16,
+                                             options,
+                                             /*transfer_coordinator=*/nullptr),
+               "Virtual memory does not support host KV cache offload");
+}
+
+TEST(KVCacheManagerFactoryTest,
+     RejectsVirtualMemoryHostOffloadConfigurationBeforeAllocation) {
+  BlockManagerPool::Options options;
+  options.enable_virtual_memory(true);
+  HostCacheValidationOptions host_options;
+  host_options.host_blocks_factor = 2.0;
+
+  EXPECT_DEATH(KVCacheManagerFactory::create(KVCacheCapacity{},
+                                             ModelArgs{},
+                                             /*world_size=*/1,
+                                             torch::kBFloat16,
+                                             options,
+                                             /*transfer_coordinator=*/nullptr,
+                                             /*dp_size=*/1,
+                                             host_options),
+               "Virtual memory does not support host KV cache offload");
+}
 
 TEST(BlockManagerTest, Basic) {
   const uint32_t n_blocks = 10;

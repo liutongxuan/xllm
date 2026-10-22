@@ -83,6 +83,10 @@ LLMEngine::LLMEngine(
     std::shared_ptr<DistributedWorkerManager> distributed_worker_manager)
     : options_(options),
       distributed_worker_manager_(std::move(distributed_worker_manager)) {
+  CHECK(!KVCacheConfig::get_instance().enable_virtual_memory() ||
+        options_.host_blocks_factor() <= 1.0)
+      << "Virtual memory does not support host KV cache offload; set "
+         "--host_blocks_factor=0.";
   auto master_node_addr = options.master_node_addr().value_or("");
   CHECK(!master_node_addr.empty())
       << " LLM need to set master node addr, Please set --master_node_addr.";
@@ -363,9 +367,7 @@ bool LLMEngine::allocate_kv_cache(
                                         : block_size)
       .host_num_blocks(kv_cache_cap.n_blocks() * options_.host_blocks_factor())
       .enable_linear_state(enable_state_cache)
-      .enable_prefix_cache(kv_cache_config.enable_virtual_memory()
-                               ? false
-                               : options_.enable_prefix_cache())
+      .enable_prefix_cache(options_.enable_prefix_cache())
       .enable_disagg_pd(options_.enable_disagg_pd())
       .enable_kvcache_store(options_.enable_kvcache_store())
       .prefetch_batch_size(options_.prefetch_batch_size())

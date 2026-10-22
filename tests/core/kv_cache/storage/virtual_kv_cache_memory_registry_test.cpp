@@ -785,6 +785,30 @@ TEST_F(VirtualIndexedKVCacheMemoryRegistryTest,
   }
   registry_.erase("indexed");
   EXPECT_EQ(PhysicalPagePool::get_instance().num_available(), pool_pages());
+
+  registry_.create_k_tensors(
+      "symmetric", value_shape, torch::kBFloat16, /*num_layers=*/3);
+  registry_.create_v_tensors(
+      "symmetric", value_shape, torch::kBFloat16, /*num_layers=*/3);
+  registry_.create_index_tensors("symmetric",
+                                 index_shape,
+                                 torch::kBFloat16,
+                                 /*num_layers=*/3,
+                                 {false, false, false});
+  ASSERT_TRUE(registry_.map("symmetric", {0}));
+  EXPECT_EQ(PhysicalPagePool::get_instance().num_available(), pool_pages() - 6);
+  const size_t block_bytes = kBlockSize * kRopeSize * sizeof(uint16_t);
+  for (int64_t layer = 0; layer < 3; ++layer) {
+    const auto offsets =
+        registry_.get_global_offsets_for_block("symmetric", layer, 1);
+    ASSERT_TRUE(offsets.has_value());
+    EXPECT_FALSE(offsets->index_offset.has_value());
+    EXPECT_EQ(registry_.get_global_offsets_for_block(
+                  "symmetric", layer, /*block_id=*/1, block_bytes),
+              std::make_pair(offsets->k_offset, offsets->v_offset));
+  }
+  registry_.erase("symmetric");
+  EXPECT_EQ(PhysicalPagePool::get_instance().num_available(), pool_pages());
 }
 
 TEST_F(VirtualIndexedKVCacheMemoryRegistryTest,

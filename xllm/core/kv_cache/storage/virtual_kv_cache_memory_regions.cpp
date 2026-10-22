@@ -346,7 +346,11 @@ VirtualKVCacheMemoryRegions::get_global_offsets_for_block(
     LOG(ERROR) << "KV tensors not created";
     return {kInvalidOffset, kInvalidOffset};
   }
-  if (k_block_bytes_ != v_block_bytes_ || !index_regions_.empty()) {
+  const bool has_index_regions = std::any_of(
+      index_regions_.begin(), index_regions_.end(), [](const auto& region) {
+        return region != nullptr;
+      });
+  if (k_block_bytes_ != v_block_bytes_ || has_index_regions) {
     LOG(ERROR) << "Virtual memory KV transfer requires equal key and value "
                   "block sizes without INDEX cache";
     return {kInvalidOffset, kInvalidOffset};

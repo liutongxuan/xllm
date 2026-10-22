@@ -99,6 +99,17 @@ KVCacheManagerFactoryResult KVCacheManagerFactory::create(
     std::optional<HostCacheValidationOptions> host_validation_options) {
   CHECK_GT(world_size, 0) << "world_size must be greater than 0";
   CHECK_GT(dp_size, 0) << "dp_size must be greater than 0";
+  CHECK(!options.enable_virtual_memory() ||
+        (!options.enable_host_offload() &&
+         (!host_validation_options.has_value() ||
+          host_validation_options->host_blocks_factor <= 1.0)))
+      << "Virtual memory does not support host KV cache offload; set "
+         "--host_blocks_factor=0.";
+  if (options.enable_virtual_memory() && options.enable_prefix_cache()) {
+    LOG(WARNING) << "Virtual memory does not support prefix caching; "
+                    "disabling prefix caching for this KV cache manager.";
+    options.enable_prefix_cache(false);
+  }
 #if defined(USE_NPU)
   CHECK(!options.enable_virtual_memory() ||
         !use_npu_nz_kv_cache_layout(model_args.model_type()))
