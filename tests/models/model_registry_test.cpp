@@ -400,5 +400,166 @@ TEST(ModelRegistryTest, UnknownExtensionFamilyCannotBypassBackendRules) {
   EXPECT_EQ(error_message, "Unknown extension_impl=npu_backend_unknown_custom");
 }
 
+#if defined(USE_NPU) || defined(USE_MLU)
+TEST(ModelRegistryTest, ResolvesDescriptorForCanonicalAlias) {
+  ResolvedModelDescriptor descriptor;
+  std::string error_message;
+
+  ASSERT_TRUE(ModelRegistry::resolve_model_descriptor(
+      "glm5_3_flash", "", &descriptor, &error_message))
+      << error_message;
+  EXPECT_EQ(descriptor.requested_name, "glm5_3_flash");
+  EXPECT_EQ(descriptor.canonical_name, "glm5_next");
+  EXPECT_EQ(descriptor.registration_name, "glm5_next");
+  EXPECT_EQ(descriptor.family, ModelFamily::LLM);
+  EXPECT_EQ(descriptor.family_name, "llm");
+  EXPECT_TRUE(static_cast<bool>(descriptor.meta.model_args_loader));
+}
+#endif
+
+TEST(ModelRegistryTest, ExposesPartialRegistrationWithoutInferringFamily) {
+  const std::string name = "descriptor_partial_registration_test";
+  ModelRegistry::register_model_args_loader(
+      name,
+      [](const JsonReader& /*json*/, ModelArgs* /*args*/) { return true; });
+
+  ResolvedModelDescriptor descriptor;
+  std::string error_message;
+  ASSERT_TRUE(ModelRegistry::resolve_model_descriptor(
+      name, "", &descriptor, &error_message))
+      << error_message;
+  EXPECT_EQ(descriptor.registration_name, name);
+  EXPECT_EQ(descriptor.family, ModelFamily::UNKNOWN);
+  EXPECT_TRUE(descriptor.family_name.empty());
+  EXPECT_TRUE(static_cast<bool>(descriptor.meta.model_args_loader));
+  EXPECT_TRUE(descriptor.meta.causal_lm_factories.empty());
+}
+
+TEST(ModelRegistryTest, SnapshotsAllRegisteredModelMetadata) {
+  const std::string name = "descriptor_complete_registration_test";
+  ModelRegistry::register_causallm_factory(name,
+                                           [](const ModelContext& /*context*/) {
+                                             return std::unique_ptr<CausalLM>();
+                                           });
+  ModelRegistry::register_rec_model_factory(
+      name, [](const ModelContext& /*context*/) {
+        return std::unique_ptr<RecModel>();
+      });
+  ModelRegistry::register_model_args_loader(
+      name,
+      [](const JsonReader& /*json*/, ModelArgs* /*args*/) { return true; });
+  ModelRegistry::register_quant_args_loader(
+      name,
+      [](const JsonReader& /*json*/, QuantArgs* /*args*/) { return true; });
+  ModelRegistry::register_tokenizer_args_loader(
+      name,
+      [](const JsonReader& /*json*/, TokenizerArgs* /*args*/) { return true; });
+  ModelRegistry::register_multimodal_processor_factory(
+      name,
+      [](const ModelArgs& /*model_args*/,
+         std::shared_ptr<Tokenizer> /*tokenizer*/,
+         const TokenizerArgs& /*tokenizer_args*/) {
+        return std::unique_ptr<MultimodalProcessorBase>();
+      });
+  ModelRegistry::register_cp_sharding_mode(name, CpShardingMode::MODEL);
+  ModelRegistry::register_dcp_capability(name);
+  ModelRegistry::register_mtp_shared_weight_owner(name);
+
+  ResolvedModelDescriptor descriptor;
+  ASSERT_TRUE(
+      ModelRegistry::resolve_model_descriptor(name, "", &descriptor, nullptr));
+  EXPECT_EQ(descriptor.family, ModelFamily::LLM);
+  EXPECT_EQ(descriptor.family_name, "llm");
+  EXPECT_TRUE(descriptor.meta.causal_lm_factories.contains("native"));
+  EXPECT_TRUE(static_cast<bool>(descriptor.meta.rec_model_factory));
+  EXPECT_TRUE(static_cast<bool>(descriptor.meta.model_args_loader));
+  EXPECT_TRUE(static_cast<bool>(descriptor.meta.quant_args_loader));
+  EXPECT_TRUE(static_cast<bool>(descriptor.meta.tokenizer_args_loader));
+  EXPECT_TRUE(static_cast<bool>(descriptor.meta.multimodal_processor_factory));
+  EXPECT_EQ(descriptor.meta.cp_sharding_mode, CpShardingMode::MODEL);
+  EXPECT_TRUE(descriptor.meta.supports_dcp);
+  EXPECT_TRUE(descriptor.meta.owns_mtp_shared_weights);
+}
+
+TEST(ModelRegistryTest, RejectsUnknownDescriptorWithoutMutatingRegistry) {
+  const std::string name = "descriptor_unknown_registration_test";
+  ResolvedModelDescriptor descriptor;
+  std::string error_message;
+
+  EXPECT_FALSE(ModelRegistry::resolve_model_descriptor(
+      name, "", &descriptor, &error_message));
+  EXPECT_NE(error_message.find(name), std::string::npos);
+  EXPECT_EQ(ModelRegistry::get_model_family(name), ModelFamily::UNKNOWN);
+  EXPECT_TRUE(ModelRegistry::get_model_backend(name).empty());
+}
+
+TEST(ModelRegistryTest, ResolvesDiTDescriptorWithoutNpuBackendResolution) {
+  const std::string name = "descriptor_dit_pipeline_test";
+  ModelRegistry::register_dit_model_factory(
+      name, [](const DiTModelContext& /*context*/) {
+        return std::unique_ptr<DiTModel>();
+      });
+
+  ResolvedModelDescriptor descriptor;
+  std::string error_message;
+  ASSERT_TRUE(ModelRegistry::resolve_model_descriptor(
+      name, "INVALID", &descriptor, &error_message))
+      << error_message;
+  EXPECT_EQ(descriptor.registration_name, name);
+  EXPECT_EQ(descriptor.family, ModelFamily::DIT);
+  EXPECT_EQ(descriptor.family_name, "dit");
+  EXPECT_TRUE(descriptor.npu_kernel_backend.empty());
+  EXPECT_TRUE(static_cast<bool>(descriptor.meta.dit_model_factory));
+}
+
+#if defined(USE_NPU)
+TEST(ModelRegistryTest, ResolvesDescriptorForNpuBackendSpecificKey) {
+  ResolvedModelDescriptor descriptor;
+  std::string error_message;
+
+  ASSERT_TRUE(ModelRegistry::resolve_model_descriptor(
+      "qwen3", "AUTO", &descriptor, &error_message))
+      << error_message;
+  EXPECT_EQ(descriptor.registration_name, "qwen3_atb");
+  EXPECT_EQ(descriptor.family, ModelFamily::LLM);
+  EXPECT_EQ(descriptor.family_name, "llm");
+  EXPECT_EQ(descriptor.npu_kernel_backend, "ATB");
+  EXPECT_TRUE(descriptor.meta.causal_lm_factories.contains("native"));
+
+  ASSERT_TRUE(ModelRegistry::resolve_model_descriptor(
+      "qwen3", "TORCH", &descriptor, &error_message))
+      << error_message;
+  EXPECT_EQ(descriptor.registration_name, "qwen3");
+  EXPECT_EQ(descriptor.npu_kernel_backend, "TORCH");
+}
+#endif
+
+TEST(ModelRegistryTest, ExposesRegisteredModelFamily) {
+  ModelRegistry::register_model_backend("model_family_llm_test", "llm");
+  ModelRegistry::register_model_backend("model_family_vlm_test", "vlm");
+  ModelRegistry::register_model_backend("model_family_rec_test", "rec");
+  ModelRegistry::register_model_backend("model_family_dit_test", "dit");
+
+  EXPECT_EQ(ModelRegistry::get_model_family("model_family_llm_test"),
+            ModelFamily::LLM);
+  EXPECT_EQ(ModelRegistry::get_model_family("model_family_vlm_test"),
+            ModelFamily::VLM);
+  EXPECT_EQ(ModelRegistry::get_model_family("model_family_rec_test"),
+            ModelFamily::REC);
+  EXPECT_EQ(ModelRegistry::get_model_family("model_family_dit_test"),
+            ModelFamily::DIT);
+  EXPECT_EQ(ModelRegistry::get_model_family("unknown_model_family"),
+            ModelFamily::UNKNOWN);
+}
+
+TEST(ModelRegistryTest, PreservesFamilyForConflictingBackendRegistration) {
+  const std::string name = "model_family_conflict_test";
+  ModelRegistry::register_model_backend(name, "llm");
+  ModelRegistry::register_model_backend(name, "vlm");
+
+  EXPECT_EQ(ModelRegistry::get_model_backend(name), "llm");
+  EXPECT_EQ(ModelRegistry::get_model_family(name), ModelFamily::LLM);
+}
+
 }  // namespace
 }  // namespace xllm

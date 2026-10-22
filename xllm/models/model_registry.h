@@ -27,6 +27,7 @@ limitations under the License.
 #include "core/framework/model/causal_vlm.h"
 #include "core/framework/model/dit_model.h"
 #include "core/framework/model/generic_rec.h"
+#include "core/framework/model/model_family.h"
 #include "core/framework/model/rec_model.h"
 #include "core/framework/model_context/dit_model_context.h"
 #include "core/framework/model_context/model_context.h"
@@ -85,6 +86,7 @@ enum class CpShardingMode : int8_t {
 
 // TODO: add default args loader.
 struct ModelMeta {
+  ModelFamily family = ModelFamily::UNKNOWN;
   std::unordered_map<std::string, CausalLMRegistration> causal_lm_factories;
   RecModelFactory rec_model_factory;
   std::unordered_map<std::string, CausalVLMRegistration> causal_vlm_factories;
@@ -96,6 +98,19 @@ struct ModelMeta {
   CpShardingMode cp_sharding_mode = CpShardingMode::NONE;
   bool owns_mtp_shared_weights = false;
   bool supports_dcp = false;
+};
+
+// Snapshot of the registration data selected for a model request. The
+// registration name is the key used to look up factories and loaders after
+// alias and backend resolution.
+struct ResolvedModelDescriptor {
+  std::string requested_name;
+  std::string canonical_name;
+  std::string registration_name;
+  ModelFamily family = ModelFamily::UNKNOWN;
+  std::string family_name;
+  std::string npu_kernel_backend;
+  ModelMeta meta;
 };
 
 // Model config names may be aliases, but registry lookups use one canonical
@@ -203,6 +218,17 @@ class ModelRegistry {
   static bool has_dit_model_factory(const std::string& name);
 
   static std::string get_model_backend(const std::string& name);
+
+  static ModelFamily get_model_family(const std::string& name);
+
+  // Resolve aliases and backend-specific registration keys, then return a
+  // read-only snapshot of all metadata registered for the resulting key.
+  // Partial registrations are valid and preserve UNKNOWN family/backend data.
+  static bool resolve_model_descriptor(
+      const std::string& model_type,
+      const std::string& requested_npu_kernel_backend,
+      ResolvedModelDescriptor* descriptor,
+      std::string* error_message = nullptr);
 
  private:
   std::unordered_map<std::string, ModelMeta> model_registry_;

@@ -81,6 +81,22 @@ std::string canonical_model_impl(std::string model_impl) {
   return model_impl;
 }
 
+ModelFamily model_family_from_name(std::string_view family_name) {
+  if (family_name == "llm") {
+    return ModelFamily::LLM;
+  }
+  if (family_name == "vlm") {
+    return ModelFamily::VLM;
+  }
+  if (family_name == "rec") {
+    return ModelFamily::REC;
+  }
+  if (family_name == "dit") {
+    return ModelFamily::DIT;
+  }
+  return ModelFamily::UNKNOWN;
+}
+
 #if defined(USE_NPU)
 constexpr char kAutoBackend[] = "AUTO";
 constexpr char kAtbBackend[] = "ATB";
@@ -309,6 +325,64 @@ bool resolve_model_registration(const std::string& model_type,
 #endif
 }
 
+bool ModelRegistry::resolve_model_descriptor(
+    const std::string& model_type,
+    const std::string& requested_npu_kernel_backend,
+    ResolvedModelDescriptor* descriptor,
+    std::string* error_message) {
+  if (descriptor == nullptr) {
+    if (error_message != nullptr) {
+      *error_message = "descriptor must not be null";
+    }
+    return false;
+  }
+
+  const std::string canonical_name =
+      canonical_model_registration_name(model_type);
+  const ModelRegistry* instance = get_instance();
+  const auto canonical_it = instance->model_registry_.find(canonical_name);
+  const bool is_dit_model = canonical_it != instance->model_registry_.end() &&
+                            (canonical_it->second.family == ModelFamily::DIT ||
+                             canonical_it->second.dit_model_factory != nullptr);
+
+  std::string effective_npu_kernel_backend;
+  std::string resolved_name;
+  if (is_dit_model) {
+    resolved_name = canonical_name;
+  } else if (!resolve_model_registration(model_type,
+                                         requested_npu_kernel_backend,
+                                         &effective_npu_kernel_backend,
+                                         &resolved_name,
+                                         error_message)) {
+    return false;
+  }
+
+  const auto model_it = instance->model_registry_.find(resolved_name);
+  if (model_it == instance->model_registry_.end()) {
+    if (error_message != nullptr) {
+      *error_message =
+          "No model registration found for resolved name: " + resolved_name;
+    }
+    return false;
+  }
+
+  ResolvedModelDescriptor resolved_descriptor;
+  resolved_descriptor.requested_name = model_type;
+  resolved_descriptor.canonical_name = canonical_name;
+  resolved_descriptor.registration_name = resolved_name;
+  resolved_descriptor.family = model_it->second.family;
+  resolved_descriptor.npu_kernel_backend = effective_npu_kernel_backend;
+  resolved_descriptor.meta = model_it->second;
+
+  const auto family_it = instance->model_backend_.find(resolved_name);
+  if (family_it != instance->model_backend_.end()) {
+    resolved_descriptor.family_name = family_it->second;
+  }
+
+  *descriptor = std::move(resolved_descriptor);
+  return true;
+}
+
 #if defined(USE_NPU)
 void resolve_npu_kernel_backend(Options* options,
                                 std::string_view model_component) {
@@ -455,7 +529,8 @@ bool ModelRegistry::register_causallm_factory(std::string name,
   factories.insert_or_assign(
       std::move(implementation),
       CausalLMRegistration{std::move(factory), priority});
-  instance->model_backend_[std::move(name)] = "llm";
+  instance->model_backend_[name] = "llm";
+  instance->model_registry_[name].family = ModelFamily::LLM;
   return true;
 }
 
@@ -471,6 +546,7 @@ void ModelRegistry::register_rec_model_factory(const std::string& name,
     std::string& backend = instance->model_backend_[name];
     if (backend.empty()) {
       backend = "rec";
+      instance->model_registry_[name].family = ModelFamily::REC;
     }
   }
 }
@@ -507,7 +583,8 @@ bool ModelRegistry::register_causalvlm_factory(std::string name,
   factories.insert_or_assign(
       std::move(implementation),
       CausalVLMRegistration{std::move(factory), priority});
-  instance->model_backend_[std::move(name)] = "vlm";
+  instance->model_backend_[name] = "vlm";
+  instance->model_registry_[name].family = ModelFamily::VLM;
   return true;
 }
 
@@ -521,6 +598,7 @@ void ModelRegistry::register_dit_model_factory(const std::string& name,
   } else {
     instance->model_registry_[name].dit_model_factory = factory;
     instance->model_backend_[name] = "dit";
+    instance->model_registry_[name].family = ModelFamily::DIT;
   }
 }
 
@@ -528,7 +606,9 @@ void ModelRegistry::register_model_backend(const std::string& name,
                                            const std::string& backend) {
   ModelRegistry* instance = get_instance();
   auto [it, inserted] = instance->model_backend_.emplace(name, backend);
-  if (!inserted && it->second != backend) {
+  if (inserted || it->second == backend) {
+    instance->model_registry_[name].family = model_family_from_name(it->second);
+  } else {
     SAFE_LOG_WARNING("model backend for "
                      << name << " already registered as " << it->second
                      << "; ignoring conflicting backend " << backend << ".");
@@ -792,6 +872,20 @@ std::string ModelRegistry::get_model_backend(const std::string& name) {
   const std::string canonical_name = canonical_model_registration_name(name);
   it = instance->model_backend_.find(canonical_name);
   return it == instance->model_backend_.end() ? "" : it->second;
+}
+
+ModelFamily ModelRegistry::get_model_family(const std::string& name) {
+  const ModelRegistry* instance = get_instance();
+  const auto it = instance->model_registry_.find(name);
+  if (it != instance->model_registry_.end()) {
+    return it->second.family;
+  }
+
+  const std::string canonical_name = canonical_model_registration_name(name);
+  const auto canonical_it = instance->model_registry_.find(canonical_name);
+  return canonical_it == instance->model_registry_.end()
+             ? ModelFamily::UNKNOWN
+             : canonical_it->second.family;
 }
 
 std::unique_ptr<MultimodalProcessorBase> create_multimodal_processor(
