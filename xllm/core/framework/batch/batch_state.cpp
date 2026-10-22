@@ -20,7 +20,6 @@ limitations under the License.
 #include <torch/torch.h>
 
 #include <algorithm>
-#include <atomic>
 #include <numeric>
 #include <utility>
 
@@ -74,13 +73,6 @@ void BatchState::update_forward_type(Sequence* sequence) {
     case BatchForwardType::EMPTY:
       batch_forward_type_ = BatchForwardType(static_cast<int32_t>(stage));
       break;
-  }
-}
-
-void BatchState::set_batch_id() {
-  static std::atomic<uint64_t> next_batch_id{1};
-  while (batch_id_ == UNINITIALIZED_BATCH_ID) {
-    batch_id_ = next_batch_id.fetch_add(1, std::memory_order_relaxed);
   }
 }
 

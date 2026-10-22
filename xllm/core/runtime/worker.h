@@ -46,6 +46,9 @@ class Worker {
 
   ~Worker();
 
+  // Stop ingress before waking result waiters and draining service queues.
+  void begin_shutdown();
+
   // initialize model, cache manager. blocking call
   bool init_model(const std::string& model_weights_path,
                   int32_t random_seed,

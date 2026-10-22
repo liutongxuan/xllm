@@ -175,9 +175,18 @@ DraftModelSpecWorkerImpl<TargetInput>::DraftModelSpecWorkerImpl(
 
 template <typename TargetInput>
 DraftModelSpecWorkerImpl<TargetInput>::~DraftModelSpecWorkerImpl() {
+  drain_pending_execution();
   // Stop asynchronous transfers before draft_impl_ releases its KV cache.
   if (hierarchy_kv_cache_transfer_ != nullptr) {
     hierarchy_kv_cache_transfer_->shutdown();
+  }
+}
+
+template <typename TargetInput>
+void DraftModelSpecWorkerImpl<TargetInput>::drain_pending_execution() {
+  SpeculativeWorkerImpl<TargetInput>::drain_pending_execution();
+  if (draft_impl_ != nullptr) {
+    draft_impl_->drain_pending_execution();
   }
 }
 

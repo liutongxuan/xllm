@@ -37,6 +37,8 @@ class DraftModelSpecWorkerImpl : public SpeculativeWorkerImpl<TargetInput> {
  public:
   ~DraftModelSpecWorkerImpl() override;
 
+  void drain_pending_execution() override;
+
   bool init_model(const std::string& model_weights_path,
                   int32_t random_seed,
                   MasterStatus master_status) override;

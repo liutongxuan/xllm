@@ -16,6 +16,7 @@ limitations under the License.
 
 #pragma once
 
+#include <atomic>
 #include <limits>
 #include <unordered_map>
 #include <utility>
@@ -44,7 +45,12 @@ class BatchState final {
                size_t input_embedding_count);
   void add(Sequence* sequence, uint32_t token_budget);
   void add(SequencesGroup* group);
-  void set_batch_id();
+  void set_batch_id() {
+    static std::atomic<uint64_t> next_batch_id{1};
+    while (batch_id_ == UNINITIALIZED_BATCH_ID) {
+      batch_id_ = next_batch_id.fetch_add(1, std::memory_order_relaxed);
+    }
+  }
   uint64_t batch_id() const { return batch_id_; }
   bool empty() const {
     return sequence_plan_.empty() && sequence_groups_.empty();

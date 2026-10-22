@@ -44,7 +44,6 @@ void Batch::add(const std::vector<Sequence*>& sequences) {
 }
 
 void Batch::add(SequencesGroup* group) { state_.add(group); }
-void Batch::set_batch_id() { state_.set_batch_id(); }
 void Batch::update_forward_type(Sequence* sequence) {
   state_.update_forward_type(sequence);
 }

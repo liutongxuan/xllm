@@ -191,16 +191,25 @@ Worker::Worker(const ParallelArgs& parallel_args,
 }
 
 Worker::~Worker() {
-  if (enable_task_pipeline_) {
-    folly::Promise<folly::Unit> promise;
-    auto future = promise.getFuture();
-    threadpool_.schedule([promise = std::move(promise)]() mutable {
-      promise.setValue(folly::unit);
-    });
-    std::move(future).get();
-    task_pipeline_.reset();
+  begin_shutdown();
+  // Async methods outside the task pipeline also capture the implementation.
+  folly::Promise<folly::Unit> promise;
+  auto future = promise.getFuture();
+  threadpool_.schedule([promise = std::move(promise)]() mutable {
+    promise.setValue(folly::unit);
+  });
+  std::move(future).get();
+  task_pipeline_.reset();
+  if (impl_ != nullptr) {
+    impl_->drain_pending_execution();
   }
   delete impl_;
+}
+
+void Worker::begin_shutdown() {
+  if (impl_ != nullptr) {
+    impl_->begin_shutdown();
+  }
 }
 
 bool Worker::initialize_task_pipeline() {

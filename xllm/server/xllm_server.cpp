@@ -223,6 +223,7 @@ bool XllmServer::start(std::shared_ptr<CollectiveService> service,
 
 bool XllmServer::start(std::shared_ptr<WorkerService> service,
                        const std::string& addr) {
+  worker_service_ = service;
   return create_server(static_cast<google::protobuf::Service*>(service.get()),
                        addr,
                        -1,
@@ -296,6 +297,11 @@ void XllmServer::stop() {
     return;
   }
   server_->Stop(0);
+  // Join waits for result RPC closures, which may need a shutdown wakeup.
+  // Retain the externally owned service while issuing that notification.
+  if (auto service = worker_service_.lock(); service != nullptr) {
+    service->begin_shutdown();
+  }
   server_->Join();
 }
 

@@ -467,7 +467,47 @@ WorkerImpl::WorkerImpl(const ParallelArgs& parallel_args,
 #endif
 }
 
-WorkerImpl::~WorkerImpl() = default;
+WorkerImpl::~WorkerImpl() {
+  drain_pending_execution();
+  if (hierarchy_kv_cache_transfer_ != nullptr) {
+    hierarchy_kv_cache_transfer_->shutdown();
+  }
+  if (kv_cache_transfer_ != nullptr) {
+    kv_cache_transfer_->drain();
+  }
+}
+
+void WorkerImpl::begin_shutdown() {
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+    shutting_down_ = true;
+  }
+  cv_.notify_all();
+}
+
+void WorkerImpl::drain_pending_execution() {
+  if (worker_execution_drained_) {
+    return;
+  }
+  begin_shutdown();
+  folly::Promise<folly::Unit> barrier;
+  auto future = barrier.getFuture();
+  threadpool_.schedule([barrier = std::move(barrier)]() mutable {
+    barrier.setValue(folly::unit);
+  });
+  std::move(future).get();
+
+  // Destruction may run on an RPC thread with a different current device.
+  device_.set_device();
+  CHECK_EQ(compute_stream_->synchronize(), 0);
+  CHECK_EQ(prepare_stream_->synchronize(), 0);
+#if defined(USE_NPU)
+  if (load_stream_ != nullptr) {
+    CHECK_EQ(load_stream_->synchronize(), 0);
+  }
+#endif
+  worker_execution_drained_ = true;
+}
 
 bool WorkerImpl::has_request_state_cache() const {
   return std::any_of(
@@ -1890,7 +1930,13 @@ folly::SemiFuture<std::optional<ForwardOutput>> WorkerImpl::step_async_impl(
                                           input.json_object_errors.end());
         if (is_driver() || ::xllm::EPLBConfig::get_instance().enable_eplb()) {
           std::unique_lock<std::mutex> lock(mtx_);
-          cv_.wait(lock, [this] { return !is_recorded_; });
+          cv_.wait(lock, [this] { return !is_recorded_ || shutting_down_; });
+          if (shutting_down_) {
+            lock.unlock();
+            CHECK_EQ(compute_stream_->synchronize(), 0);
+            promise.setValue(std::move(output));
+            return;
+          }
           update_last_step_output(output,
                                   input.input_params.embedding.request_ids,
                                   input.sample_sequence_ids);
@@ -1923,7 +1969,13 @@ folly::SemiFuture<std::optional<ForwardOutput>> WorkerImpl::step_async_impl(
       } else {
         if (is_driver() || ::xllm::EPLBConfig::get_instance().enable_eplb()) {
           std::unique_lock<std::mutex> lock(mtx_);
-          cv_.wait(lock, [this] { return !is_recorded_; });
+          cv_.wait(lock, [this] { return !is_recorded_ || shutting_down_; });
+          if (shutting_down_) {
+            lock.unlock();
+            CHECK_EQ(compute_stream_->synchronize(), 0);
+            promise.setValue(std::move(output));
+            return;
+          }
           last_step_output_valid_ = false;
           last_step_output_ = ForwardOutput();
           last_step_request_ids_.clear();
@@ -1956,10 +2008,10 @@ std::optional<ForwardOutput> WorkerImpl::execute_task_pipeline(
 ForwardOutput WorkerImpl::get_last_step_result() {
   ForwardOutput output;
   std::unique_lock<std::mutex> lock(mtx_);
-  cv_.wait(lock, [this] { return is_recorded_; });
-  if (last_step_output_valid_ ||
-      ::xllm::EPLBConfig::get_instance().enable_eplb() ||
-      !last_step_output_.json_object_errors.empty()) {
+  cv_.wait(lock, [this] { return is_recorded_ || shutting_down_; });
+  if (is_recorded_ && (last_step_output_valid_ ||
+                       ::xllm::EPLBConfig::get_instance().enable_eplb() ||
+                       !last_step_output_.json_object_errors.empty())) {
     output = last_step_output_;
   }
   is_recorded_ = false;

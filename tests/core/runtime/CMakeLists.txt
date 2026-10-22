@@ -117,7 +117,7 @@ if(USE_NPU)
 
   cc_test(
     NAME task_execution_pipeline_speculative_test
-    SRCS task_execution_pipeline_speculative_test.cpp
+    SRCS task_execution_pipeline_speculative_test.cpp worker_shutdown_test.cpp
     DEPS :runtime GTest::gtest_main
   )
   target_link_libraries(task_execution_pipeline_speculative_test PRIVATE nnopbase)

@@ -821,16 +821,7 @@ void MTPWorkerImpl<TargetInput>::drain_pending_execution() {
   if (execution_drained_) {
     return;
   }
-  folly::Promise<folly::Unit> barrier;
-  auto future = barrier.getFuture();
-  threadpool_.schedule([barrier = std::move(barrier)]() mutable {
-    barrier.setValue(folly::unit);
-  });
-  std::move(future).get();
-  // Destruction may run on an RPC thread with a different current device.
-  c10::StreamGuard stream_guard = compute_stream_->set_stream_guard();
-  CHECK_EQ(compute_stream_->synchronize(), 0);
-  CHECK_EQ(prepare_stream_->synchronize(), 0);
+  DraftModelSpecWorkerImpl<TargetInput>::drain_pending_execution();
   execution_drained_ = true;
 }
 

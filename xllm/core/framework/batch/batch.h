@@ -69,7 +69,7 @@ class Batch final {
     state_.set_swap_block_transfer_infos(std::move(swap_block_transfer_infos));
   }
 
-  void set_batch_id();
+  void set_batch_id() { state_.set_batch_id(); }
 
   uint64_t batch_id() const { return state_.batch_id(); }
 

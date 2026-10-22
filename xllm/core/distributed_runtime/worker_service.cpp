@@ -338,13 +338,22 @@ WorkerService::WorkerService(runtime::Options options,
 }
 
 WorkerService::~WorkerService() {
+  begin_shutdown();
+  if (polling_thread_ && polling_thread_->joinable()) {
+    polling_thread_->join();
+  }
+}
+
+void WorkerService::begin_shutdown() {
   // The polling thread may be idle in input_read. Cancel that wait before
   // joining, while the worker and its execution resources are still alive.
   if (input_shm_manager_) {
     input_shm_manager_->stop_input_read();
   }
-  if (polling_thread_ && polling_thread_->joinable()) {
-    polling_thread_->join();
+  // Result RPCs can be waiting on overlap output in the request threadpool.
+  // Wake them before joining service threads, while the worker is alive.
+  if (worker_ != nullptr) {
+    worker_->begin_shutdown();
   }
 }
 

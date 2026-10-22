@@ -285,7 +285,7 @@ class MTPWorkerImpl : public DraftModelSpecWorkerImpl<TargetInput> {
   void flush_pending_target_context(size_t keep_latest = 0);
   const PendingTargetContext& latest_pending_target_context() const;
   torch::Tensor snapshot_pending_target_tokens();
-  void drain_pending_execution();
+  void drain_pending_execution() override;
   void retire_legacy_prelaunch();
   bool supports_combined_first_draft_execution() const;
   bool can_use_combined_first_draft() const;

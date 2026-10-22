@@ -73,6 +73,13 @@ class WorkerImpl {
 
   virtual ~WorkerImpl();
 
+  // Teardown requires callers to stop submitting new work first. Wake result
+  // waiters before draining the outer Worker queue. Owners must then drain
+  // execution while the most-derived resources are still alive; the base
+  // destructor's drain cannot protect members of already-destroyed subclasses.
+  void begin_shutdown();
+  virtual void drain_pending_execution();
+
   // Call outside the state executor, after weights load and before KV
   // budgeting.
   virtual ::xllm::Status create_task_pipeline(
@@ -610,6 +617,8 @@ class WorkerImpl {
   std::mutex mtx_;
   std::condition_variable cv_;
   bool is_recorded_ = false;
+  bool shutting_down_ = false;
+  bool worker_execution_drained_ = false;
 
   InstanceRole instance_role_ = InstanceRole::DEFAULT;
 

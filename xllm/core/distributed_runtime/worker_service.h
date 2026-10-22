@@ -33,6 +33,9 @@ class WorkerService : public proto::DistributeWorker {
 
   virtual ~WorkerService();
 
+  // Call after RPC ingress stops and before joining outstanding requests.
+  void begin_shutdown();
+
   void set_worker(std::unique_ptr<Worker> worker);
 
   void create_polling_shm_thread(

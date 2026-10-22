@@ -81,6 +81,10 @@ class KVCacheTransfer {
   KVCacheTransfer() = default;
   virtual ~KVCacheTransfer() = default;
 
+  // Drain locally queued transfers before releasing their cache tensors.
+  // Shared transport shutdown and remote access quiescence remain external.
+  void drain();
+
   virtual void initialize(int32_t device_id) {};
 
   virtual void finalize() {};

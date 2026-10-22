@@ -17,6 +17,8 @@ limitations under the License.
 
 #include <google/protobuf/service.h>
 
+#include <memory>
+
 #include "api_service/api_service.h"
 #include "core/distributed_runtime/collective_service.h"
 #include "core/distributed_runtime/disagg_pd_service.h"
@@ -57,6 +59,7 @@ class XllmServer final {
   bool has_initialized_ = false;
   int listen_port_ = -1;
   std::string listen_address_;
+  std::weak_ptr<WorkerService> worker_service_;
   std::unique_ptr<brpc::Server> server_;
   std::unique_ptr<std::thread> running_thread_;
 };

@@ -63,6 +63,8 @@ class SpeculativeWorkerImpl : public WorkerImpl {
 
   ~SpeculativeWorkerImpl() override;
 
+  void drain_pending_execution() override;
+
  protected:
   // `options` is passed to WorkerImpl (preserves enable_schedule_overlap etc.),
   // `target_options` is used to create impl_ (target model worker).

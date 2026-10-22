@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "core/kv_cache/transfer/kv_cache_transfer.h"
 
+#include <folly/Unit.h>
 #include <glog/logging.h>
 
 #include <algorithm>
@@ -27,6 +28,15 @@ limitations under the License.
 #endif
 
 namespace xllm {
+
+void KVCacheTransfer::drain() {
+  folly::Promise<folly::Unit> barrier;
+  auto future = barrier.getFuture();
+  threadpool_.schedule([barrier = std::move(barrier)]() mutable {
+    barrier.setValue(folly::unit);
+  });
+  std::move(future).get();
+}
 
 bool KVCacheTransfer::validate_transfer_mappings(
     const std::vector<KVTransferMapping>& mappings,
