@@ -18,7 +18,6 @@ limitations under the License.
 #include <glog/logging.h>
 
 #include <cstdint>
-#include <memory>
 #include <optional>
 #include <string>
 #include <unordered_set>
@@ -29,6 +28,7 @@ limitations under the License.
 #include "core/common/macros.h"
 #include "core/framework/model/model_args.h"
 #include "core/framework/model/model_family.h"
+#include "core/framework/model/model_params.h"
 
 namespace xllm {
 
@@ -41,415 +41,253 @@ inline const ModelArgs& default_model_args() {
 
 }  // namespace model_family_args_detail
 
-class TransformerModelArgs final {
- public:
-  TransformerModelArgs()
-      : TransformerModelArgs(model_family_args_detail::default_model_args()) {}
-  explicit TransformerModelArgs(const ModelArgs& args)
-      : model_type_(args.model_type()),
-        dtype_(args.dtype()),
-        hidden_size_(args.hidden_size()),
-        hidden_act_(args.hidden_act()),
-        intermediate_size_(args.intermediate_size()),
-        n_layers_(args.n_layers()),
-        n_encoder_layers_(args.n_encoder_layers()),
-        head_dim_(args.head_dim()),
-        kv_cache_storage_head_dim_(args.kv_cache_storage_head_dim()),
-        decoder_head_dim_(args.decoder_head_dim()),
-        n_heads_(args.n_heads()),
-        decoder_n_heads_(args.decoder_n_heads()),
-        actual_n_heads_(args.actual_n_heads()),
-        n_kv_heads_(args.n_kv_heads()),
-        decoder_n_kv_heads_(args.decoder_n_kv_heads()),
-        vocab_size_(args.vocab_size()),
-        qk_nope_head_dim_(args.qk_nope_head_dim()),
-        qk_rope_head_dim_(args.qk_rope_head_dim()),
-        v_head_dim_(args.v_head_dim()),
-        q_lora_rank_(args.q_lora_rank()),
-        kv_lora_rank_(args.kv_lora_rank()),
-        num_nextn_predict_layers_(args.num_nextn_predict_layers()),
-        enable_mla_(args.enable_mla()),
-        num_experts_per_tok_(args.num_experts_per_tok()),
-        use_qk_norm_(args.use_qk_norm()),
-        rms_norm_eps_(args.rms_norm_eps()),
-        layer_norm_eps_(args.layer_norm_eps()),
-        rotary_dim_(args.rotary_dim()),
-        rope_theta_(args.rope_theta()),
-        rope_scaling_rope_type_(args.rope_scaling_rope_type()),
-        rope_scaling_factor_(args.rope_scaling_factor()),
-        rope_scaling_low_freq_factor_(args.rope_scaling_low_freq_factor()),
-        rope_scaling_high_freq_factor_(args.rope_scaling_high_freq_factor()),
-        rope_extrapolation_factor_(args.rope_extrapolation_factor()),
-        rope_scaling_original_max_position_embeddings_(
-            args.rope_scaling_original_max_position_embeddings()),
-        rope_scaling_beta_fast_(args.rope_scaling_beta_fast()),
-        rope_scaling_beta_slow_(args.rope_scaling_beta_slow()),
-        rope_scaling_attn_factor_(args.rope_scaling_attn_factor()),
-        rope_scaling_mscale_(args.rope_scaling_mscale()),
-        rope_scaling_mscale_all_dim_(args.rope_scaling_mscale_all_dim()),
-        rope_scaling_mrope_section_(args.rope_scaling_mrope_section()),
-        rope_scaling_mrope_interleaved_(args.rope_scaling_mrope_interleaved()),
-        max_position_embeddings_(args.max_position_embeddings()),
-        use_sliding_window_(args.use_sliding_window()),
-        sliding_window_(args.sliding_window()),
-        index_head_dim_(args.index_head_dim()),
-        index_n_heads_(args.index_n_heads()),
-        index_topk_(args.index_topk()),
-        index_kpool_(args.index_kpool()),
-        index_kpool_compress_(args.index_kpool_compress()),
-        index_kpool_always_select_tail_(args.index_kpool_always_select_tail()),
-        indexer_rope_interleave_(args.indexer_rope_interleave()),
-        index_topk_freq_(args.index_topk_freq()),
-        index_topk_pattern_(args.index_topk_pattern()),
-        index_skip_topk_offset_(args.index_skip_topk_offset()),
-        index_share_for_mtp_iteration_(args.index_share_for_mtp_iteration()),
-        indexer_types_(args.indexer_types()),
-        mlp_layer_types_(args.mlp_layer_types()),
-        rope_head_dim_(args.rope_head_dim()),
-        o_lora_rank_(args.o_lora_rank()),
-        o_groups_(args.o_groups()),
-        compress_ratios_(args.compress_ratios()),
-        compress_rope_theta_(args.compress_rope_theta()),
-        window_size_(args.window_size()),
-        n_activated_experts_(args.n_activated_experts()),
-        n_hash_layers_(args.n_hash_layers()),
-        factor_(args.factor()),
-        beta_fast_(args.beta_fast()),
-        beta_slow_(args.beta_slow()),
-        scale_fmt_(args.scale_fmt()),
-        hc_mult_(args.hc_mult()),
-        hc_sinkhorn_iters_(args.hc_sinkhorn_iters()),
-        hc_eps_(args.hc_eps()),
-        max_batch_size_(args.max_batch_size()),
-        max_seq_len_(args.max_seq_len()),
-        use_absolute_position_embedding_(
-            args.use_absolute_position_embedding()),
-        bos_token_id_(args.bos_token_id()),
-        eos_token_id_(args.eos_token_id()),
-        eos_token_id_vec_(args.eos_token_id_vec()),
-        pad_token_id_(args.pad_token_id()),
-        attn_scalar_(args.attn_scalar()),
-        no_bias_(args.no_bias()),
-        qkv_bias_(args.qkv_bias()),
-        stop_token_ids_(args.stop_token_ids()),
-        tie_word_embeddings_(args.tie_word_embeddings()),
-        attention_bias_(args.attention_bias()),
-        attention_dropout_(args.attention_dropout()),
-        decoder_sparse_step_(args.decoder_sparse_step()),
-        initializer_range_(args.initializer_range()),
-        mlp_only_layers_(args.mlp_only_layers()),
-        num_attention_heads_(args.num_attention_heads()),
-        num_experts_(args.num_experts()),
-        output_router_logits_(args.output_router_logits()),
-        rope_scaling_(args.rope_scaling()),
-        router_aux_loss_coef_(args.router_aux_loss_coef()),
-        attn_output_gate_(args.attn_output_gate()),
-        full_attention_interval_(args.full_attention_interval()),
-        full_attn_layers_(args.full_attn_layers()),
-        linear_conv_kernel_dim_(args.linear_conv_kernel_dim()),
-        linear_key_head_dim_(args.linear_key_head_dim()),
-        linear_value_head_dim_(args.linear_value_head_dim()),
-        linear_num_key_heads_(args.linear_num_key_heads()),
-        linear_num_value_heads_(args.linear_num_value_heads()),
-        linear_lower_bound_(args.linear_lower_bound()),
-        mamba_ssm_dtype_(args.mamba_ssm_dtype()),
-        shared_expert_intermediate_size_(
-            args.shared_expert_intermediate_size()),
-        partial_rotary_factor_(args.partial_rotary_factor()),
-        layer_types_(args.layer_types()) {}
+// Preserve the property interface while each field lives in its capability.
+#define MODEL_PARAM(T, property, params)                               \
+ public:                                                               \
+  [[nodiscard]] const T& property() const& noexcept {                  \
+    return params.property();                                          \
+  }                                                                    \
+  [[nodiscard]] T& property() & noexcept { return params.property(); } \
+  [[nodiscard]] T&& property() && noexcept {                           \
+    return std::move(params).property();                               \
+  }                                                                    \
+  auto property(const T& value) & -> decltype(*this) {                 \
+    params.property(value);                                            \
+    return *this;                                                      \
+  }                                                                    \
+  auto property(T&& value) & -> decltype(*this) {                      \
+    params.property(std::move(value));                                 \
+    return *this;                                                      \
+  }                                                                    \
+  void property(const T& value) && = delete;                           \
+  void property(T&& value) && = delete
 
-  explicit TransformerModelArgs(ModelArgs&&) = delete;
-  explicit TransformerModelArgs(const ModelArgs&&) = delete;
-
-  PROPERTY(std::string, model_type) = {};
-  PROPERTY(std::string, dtype) = {};
-  PROPERTY(int64_t, hidden_size) = 0;
-  PROPERTY(std::string, hidden_act) = {};
-  PROPERTY(int64_t, intermediate_size) = 0;
-  PROPERTY(int64_t, n_layers) = 0;
-  PROPERTY(int64_t, n_encoder_layers) = 0;
-  PROPERTY(int64_t, head_dim) = 0;
-  PROPERTY(int64_t, kv_cache_storage_head_dim) = 0;
-  PROPERTY(int64_t, decoder_head_dim) = 0;
-  PROPERTY(int64_t, n_heads) = 0;
-  PROPERTY(int64_t, decoder_n_heads) = 0;
-  PROPERTY(int64_t, actual_n_heads) = 0;
-  PROPERTY(std::optional<int64_t>, n_kv_heads) = {};
-  PROPERTY(std::optional<int64_t>, decoder_n_kv_heads) = {};
-  PROPERTY(int64_t, vocab_size) = -1;
-  PROPERTY(int32_t, qk_nope_head_dim) = 0;
-  PROPERTY(int32_t, qk_rope_head_dim) = 0;
-  PROPERTY(int32_t, v_head_dim) = 0;
-  PROPERTY(int32_t, q_lora_rank) = 0;
-  PROPERTY(int32_t, kv_lora_rank) = 0;
-  PROPERTY(int32_t, num_nextn_predict_layers) = 0;
-  PROPERTY(bool, enable_mla) = false;
-  PROPERTY(int32_t, num_experts_per_tok) = 0;
-  PROPERTY(bool, use_qk_norm) = false;
-  PROPERTY(float, rms_norm_eps) = 0.0f;
-  PROPERTY(float, layer_norm_eps) = 0.0f;
-  PROPERTY(int64_t, rotary_dim) = 0;
-  PROPERTY(float, rope_theta) = 10000.0f;
-  PROPERTY(std::string, rope_scaling_rope_type) = {};
-  PROPERTY(float, rope_scaling_factor) = 0.0f;
-  PROPERTY(float, rope_scaling_low_freq_factor) = 0.0f;
-  PROPERTY(float, rope_scaling_high_freq_factor) = 0.0f;
-  PROPERTY(float, rope_extrapolation_factor) = 0.0f;
-  PROPERTY(int64_t, rope_scaling_original_max_position_embeddings) = 0;
-  PROPERTY(int64_t, rope_scaling_beta_fast) = 0;
-  PROPERTY(int64_t, rope_scaling_beta_slow) = 0;
-  PROPERTY(float, rope_scaling_attn_factor) = 0.0f;
-  PROPERTY(float, rope_scaling_mscale) = 0.0f;
-  PROPERTY(float, rope_scaling_mscale_all_dim) = 0.0f;
-  PROPERTY(std::vector<int64_t>, rope_scaling_mrope_section) = {};
-  PROPERTY(bool, rope_scaling_mrope_interleaved) = false;
-  PROPERTY(int64_t, max_position_embeddings) = 0;
-  PROPERTY(bool, use_sliding_window) = false;
-  PROPERTY(int32_t, sliding_window) = -1;
-  PROPERTY(int32_t, index_head_dim) = 0;
-  PROPERTY(int32_t, index_n_heads) = 0;
-  PROPERTY(int32_t, index_topk) = 0;
-  PROPERTY(int32_t, index_kpool) = 1;
-  PROPERTY(bool, index_kpool_compress) = false;
-  PROPERTY(bool, index_kpool_always_select_tail) = false;
-  PROPERTY(bool, indexer_rope_interleave) = false;
-  PROPERTY(int32_t, index_topk_freq) = 1;
-  PROPERTY(std::string, index_topk_pattern) = {};
-  PROPERTY(int32_t, index_skip_topk_offset) = 0;
-  PROPERTY(bool, index_share_for_mtp_iteration) = false;
-  PROPERTY(std::vector<std::string>, indexer_types) = {};
-  PROPERTY(std::vector<std::string>, mlp_layer_types) = {};
-  PROPERTY(int32_t, rope_head_dim) = 0;
-  PROPERTY(int32_t, o_lora_rank) = 0;
-  PROPERTY(int32_t, o_groups) = 0;
-  PROPERTY(std::vector<int32_t>, compress_ratios) = {};
-  PROPERTY(float, compress_rope_theta) = 0.0f;
-  PROPERTY(int32_t, window_size) = 0;
-  PROPERTY(int32_t, n_activated_experts) = 0;
-  PROPERTY(int32_t, n_hash_layers) = 0;
-  PROPERTY(float, factor) = 0.0f;
-  PROPERTY(float, beta_fast) = 0.0f;
-  PROPERTY(float, beta_slow) = 0.0f;
-  PROPERTY(std::string, scale_fmt) = {};
-  PROPERTY(int32_t, hc_mult) = 0;
-  PROPERTY(int32_t, hc_sinkhorn_iters) = 0;
-  PROPERTY(float, hc_eps) = 1e-6f;
-  PROPERTY(int64_t, max_batch_size) = 0;
-  PROPERTY(int64_t, max_seq_len) = 0;
-  PROPERTY(bool, use_absolute_position_embedding) = false;
-  PROPERTY(int32_t, bos_token_id) = 0;
-  PROPERTY(int32_t, eos_token_id) = -1;
-  PROPERTY(std::vector<int32_t>, eos_token_id_vec) = {};
-  PROPERTY(int32_t, pad_token_id) = 0;
-  PROPERTY(std::optional<float>, attn_scalar) = {};
-  PROPERTY(bool, no_bias) = false;
-  PROPERTY(bool, qkv_bias) = false;
-  PROPERTY(std::unordered_set<int32_t>, stop_token_ids) = {};
-  PROPERTY(bool, tie_word_embeddings) = false;
-  PROPERTY(bool, attention_bias) = false;
-  PROPERTY(float, attention_dropout) = 0.0f;
-  PROPERTY(int32_t, decoder_sparse_step) = 1;
-  PROPERTY(float, initializer_range) = 0.02f;
-  PROPERTY(std::vector<int32_t>, mlp_only_layers) = {};
-  PROPERTY(int64_t, num_attention_heads) = 32;
-  PROPERTY(int32_t, num_experts) = 128;
-  PROPERTY(bool, output_router_logits) = false;
-  PROPERTY(int32_t, rope_scaling) = -1;
-  PROPERTY(float, router_aux_loss_coef) = 0.001f;
-  PROPERTY(bool, attn_output_gate) = false;
-  PROPERTY(int32_t, full_attention_interval) = 0;
-  PROPERTY(std::vector<int32_t>, full_attn_layers) = {};
-  PROPERTY(int32_t, linear_conv_kernel_dim) = 0;
-  PROPERTY(int32_t, linear_key_head_dim) = 0;
-  PROPERTY(int32_t, linear_value_head_dim) = 0;
-  PROPERTY(int64_t, linear_num_key_heads) = 0;
-  PROPERTY(int32_t, linear_num_value_heads) = 0;
-  PROPERTY(float, linear_lower_bound) = -5.0f;
-  PROPERTY(std::string, mamba_ssm_dtype) = {};
-  PROPERTY(int32_t, shared_expert_intermediate_size) = 0;
-  PROPERTY(float, partial_rotary_factor) = 0.0f;
-  PROPERTY(std::vector<std::string>, layer_types) = {};
-};
+// Model-family arguments compose capability parameter objects directly.
+#define COMMON_MODEL_PARAMS                                                    \
+  MODEL_PARAM(std::string, model_type, execution_params_);                     \
+  MODEL_PARAM(std::string, dtype, execution_params_);                          \
+  MODEL_PARAM(int64_t, hidden_size, execution_params_);                        \
+  MODEL_PARAM(std::string, hidden_act, execution_params_);                     \
+  MODEL_PARAM(int64_t, intermediate_size, execution_params_);                  \
+  MODEL_PARAM(int64_t, n_layers, execution_params_);                           \
+  MODEL_PARAM(int64_t, n_encoder_layers, execution_params_);                   \
+  MODEL_PARAM(int64_t, head_dim, attention_params_);                           \
+  MODEL_PARAM(int64_t, kv_cache_storage_head_dim, kv_cache_params_);           \
+  MODEL_PARAM(int64_t, decoder_head_dim, attention_params_);                   \
+  MODEL_PARAM(int64_t, n_heads, attention_params_);                            \
+  MODEL_PARAM(int64_t, decoder_n_heads, attention_params_);                    \
+  MODEL_PARAM(int64_t, actual_n_heads, attention_params_);                     \
+  MODEL_PARAM(std::optional<int64_t>, n_kv_heads, attention_params_);          \
+  MODEL_PARAM(std::optional<int64_t>, decoder_n_kv_heads, attention_params_);  \
+  MODEL_PARAM(int64_t, vocab_size, execution_params_);                         \
+  MODEL_PARAM(int32_t, qk_nope_head_dim, attention_params_);                   \
+  MODEL_PARAM(int32_t, qk_rope_head_dim, attention_params_);                   \
+  MODEL_PARAM(int32_t, v_head_dim, attention_params_);                         \
+  MODEL_PARAM(int32_t, q_lora_rank, attention_params_);                        \
+  MODEL_PARAM(int32_t, kv_lora_rank, attention_params_);                       \
+  MODEL_PARAM(int32_t, num_nextn_predict_layers, speculative_params_);         \
+  MODEL_PARAM(bool, enable_mla, attention_params_);                            \
+  MODEL_PARAM(int32_t, num_experts_per_tok, moe_params_);                      \
+  MODEL_PARAM(bool, use_qk_norm, attention_params_);                           \
+  MODEL_PARAM(float, rms_norm_eps, attention_params_);                         \
+  MODEL_PARAM(float, layer_norm_eps, attention_params_);                       \
+  MODEL_PARAM(int64_t, rotary_dim, attention_params_);                         \
+  MODEL_PARAM(float, rope_theta, attention_params_);                           \
+  MODEL_PARAM(std::string, rope_scaling_rope_type, attention_params_);         \
+  MODEL_PARAM(float, rope_scaling_factor, attention_params_);                  \
+  MODEL_PARAM(float, rope_scaling_low_freq_factor, attention_params_);         \
+  MODEL_PARAM(float, rope_scaling_high_freq_factor, attention_params_);        \
+  MODEL_PARAM(float, rope_extrapolation_factor, attention_params_);            \
+  MODEL_PARAM(int64_t,                                                         \
+              rope_scaling_original_max_position_embeddings,                   \
+              attention_params_);                                              \
+  MODEL_PARAM(int64_t, rope_scaling_beta_fast, attention_params_);             \
+  MODEL_PARAM(int64_t, rope_scaling_beta_slow, attention_params_);             \
+  MODEL_PARAM(float, rope_scaling_attn_factor, attention_params_);             \
+  MODEL_PARAM(float, rope_scaling_mscale, attention_params_);                  \
+  MODEL_PARAM(float, rope_scaling_mscale_all_dim, attention_params_);          \
+  MODEL_PARAM(                                                                 \
+      std::vector<int64_t>, rope_scaling_mrope_section, attention_params_);    \
+  MODEL_PARAM(bool, rope_scaling_mrope_interleaved, attention_params_);        \
+  MODEL_PARAM(int64_t, max_position_embeddings, execution_params_);            \
+  MODEL_PARAM(bool, use_sliding_window, attention_params_);                    \
+  MODEL_PARAM(int32_t, sliding_window, attention_params_);                     \
+  MODEL_PARAM(int32_t, index_head_dim, kv_cache_params_);                      \
+  MODEL_PARAM(int32_t, index_n_heads, kv_cache_params_);                       \
+  MODEL_PARAM(int32_t, index_topk, kv_cache_params_);                          \
+  MODEL_PARAM(int32_t, index_kpool, kv_cache_params_);                         \
+  MODEL_PARAM(bool, index_kpool_compress, kv_cache_params_);                   \
+  MODEL_PARAM(bool, index_kpool_always_select_tail, kv_cache_params_);         \
+  MODEL_PARAM(bool, indexer_rope_interleave, kv_cache_params_);                \
+  MODEL_PARAM(int32_t, index_topk_freq, kv_cache_params_);                     \
+  MODEL_PARAM(std::string, index_topk_pattern, kv_cache_params_);              \
+  MODEL_PARAM(int32_t, index_skip_topk_offset, kv_cache_params_);              \
+  MODEL_PARAM(bool, index_share_for_mtp_iteration, kv_cache_params_);          \
+  MODEL_PARAM(std::vector<std::string>, indexer_types, kv_cache_params_);      \
+  MODEL_PARAM(std::vector<std::string>, mlp_layer_types, moe_params_);         \
+  MODEL_PARAM(int32_t, rope_head_dim, kv_cache_params_);                       \
+  MODEL_PARAM(int32_t, o_lora_rank, kv_cache_params_);                         \
+  MODEL_PARAM(int32_t, o_groups, kv_cache_params_);                            \
+  MODEL_PARAM(std::vector<int32_t>, compress_ratios, kv_cache_params_);        \
+  MODEL_PARAM(float, compress_rope_theta, kv_cache_params_);                   \
+  MODEL_PARAM(int32_t, window_size, kv_cache_params_);                         \
+  MODEL_PARAM(int32_t, n_activated_experts, moe_params_);                      \
+  MODEL_PARAM(int32_t, n_hash_layers, moe_params_);                            \
+  MODEL_PARAM(float, factor, kv_cache_params_);                                \
+  MODEL_PARAM(float, beta_fast, kv_cache_params_);                             \
+  MODEL_PARAM(float, beta_slow, kv_cache_params_);                             \
+  MODEL_PARAM(std::string, scale_fmt, kv_cache_params_);                       \
+  MODEL_PARAM(int32_t, hc_mult, kv_cache_params_);                             \
+  MODEL_PARAM(int32_t, hc_sinkhorn_iters, kv_cache_params_);                   \
+  MODEL_PARAM(float, hc_eps, kv_cache_params_);                                \
+  MODEL_PARAM(int64_t, max_batch_size, kv_cache_params_);                      \
+  MODEL_PARAM(int64_t, max_seq_len, kv_cache_params_);                         \
+  MODEL_PARAM(bool, use_absolute_position_embedding, attention_params_);       \
+  MODEL_PARAM(int32_t, bos_token_id, execution_params_);                       \
+  MODEL_PARAM(int32_t, eos_token_id, execution_params_);                       \
+  MODEL_PARAM(std::vector<int32_t>, eos_token_id_vec, execution_params_);      \
+  MODEL_PARAM(int32_t, pad_token_id, execution_params_);                       \
+  MODEL_PARAM(std::optional<float>, attn_scalar, attention_params_);           \
+  MODEL_PARAM(bool, no_bias, execution_params_);                               \
+  MODEL_PARAM(bool, qkv_bias, attention_params_);                              \
+  MODEL_PARAM(std::unordered_set<int32_t>, stop_token_ids, execution_params_); \
+  MODEL_PARAM(bool, tie_word_embeddings, execution_params_);                   \
+  MODEL_PARAM(bool, attention_bias, attention_params_);                        \
+  MODEL_PARAM(float, attention_dropout, attention_params_);                    \
+  MODEL_PARAM(int32_t, decoder_sparse_step, moe_params_);                      \
+  MODEL_PARAM(float, initializer_range, execution_params_);                    \
+  MODEL_PARAM(std::vector<int32_t>, mlp_only_layers, moe_params_);             \
+  MODEL_PARAM(int64_t, num_attention_heads, attention_params_);                \
+  MODEL_PARAM(int32_t, num_experts, moe_params_);                              \
+  MODEL_PARAM(bool, output_router_logits, moe_params_);                        \
+  MODEL_PARAM(int32_t, rope_scaling, execution_params_);                       \
+  MODEL_PARAM(float, router_aux_loss_coef, moe_params_);                       \
+  MODEL_PARAM(bool, attn_output_gate, attention_params_);                      \
+  MODEL_PARAM(int32_t, full_attention_interval, linear_attention_params_);     \
+  MODEL_PARAM(                                                                 \
+      std::vector<int32_t>, full_attn_layers, linear_attention_params_);       \
+  MODEL_PARAM(int32_t, linear_conv_kernel_dim, linear_attention_params_);      \
+  MODEL_PARAM(int32_t, linear_key_head_dim, linear_attention_params_);         \
+  MODEL_PARAM(int32_t, linear_value_head_dim, linear_attention_params_);       \
+  MODEL_PARAM(int64_t, linear_num_key_heads, linear_attention_params_);        \
+  MODEL_PARAM(int32_t, linear_num_value_heads, linear_attention_params_);      \
+  MODEL_PARAM(float, linear_lower_bound, linear_attention_params_);            \
+  MODEL_PARAM(std::string, mamba_ssm_dtype, linear_attention_params_);         \
+  MODEL_PARAM(int32_t, shared_expert_intermediate_size, moe_params_);          \
+  MODEL_PARAM(float, partial_rotary_factor, attention_params_);                \
+  MODEL_PARAM(std::vector<std::string>, layer_types, linear_attention_params_);
 
 class LlmModelArgs final {
  private:
-  TransformerModelArgs transformer_;
+  AttentionModelParams attention_params_;
+  LinearAttentionModelParams linear_attention_params_;
+  KVCacheModelParams kv_cache_params_;
+  MoEModelParams moe_params_;
+  SpeculativeModelParams speculative_params_;
+  EmbeddingModelParams embedding_params_;
+  ExecutionModelParams execution_params_;
 
  public:
   LlmModelArgs()
       : LlmModelArgs(model_family_args_detail::default_model_args()) {}
   explicit LlmModelArgs(const ModelArgs& args)
-      : transformer_(args),
-        first_k_dense_replace_(args.first_k_dense_replace()),
-        moe_layer_freq_(args.moe_layer_freq()),
-        draft_vocab_size_(args.draft_vocab_size()),
-        markov_rank_(args.markov_rank()),
-        dspark_num_layers_(args.dspark_num_layers()),
-        dspark_block_size_(args.dspark_block_size()),
-        dspark_use_native_sas_(args.dspark_use_native_sas()),
-        enable_confidence_head_(args.enable_confidence_head()),
-        confidence_head_with_markov_(args.confidence_head_with_markov()),
-        dflash2_block_size_(args.dflash2_block_size()),
-        dflash2_conv_group_size_(args.dflash2_conv_group_size()),
-        dflash2_conv_kernel_size_(args.dflash2_conv_kernel_size()),
-        dflash2_selector_rank_(args.dflash2_selector_rank()),
-        dflash2_selector_top_k_(args.dflash2_selector_top_k()),
-        use_moe_(args.use_moe()),
-        moe_score_func_(args.moe_score_func()),
-        moe_route_scale_(args.moe_route_scale()),
-        moe_use_shared_experts_(args.moe_use_shared_experts()),
-        topk_method_(args.topk_method()),
-        n_routed_experts_(args.n_routed_experts()),
-        n_shared_experts_(args.n_shared_experts()),
-        num_experts_per_tok_(args.num_experts_per_tok()),
-        moe_intermediate_size_(args.moe_intermediate_size()),
-        routed_scaling_factor_(args.routed_scaling_factor()),
-        norm_topk_prob_(args.norm_topk_prob()),
-        n_group_(args.n_group()),
-        topk_group_(args.topk_group()),
-        scoring_func_(args.scoring_func()),
-        swiglu_limit_(args.swiglu_limit()),
-        enable_mla_(args.enable_mla()),
-        qk_nope_head_dim_(args.qk_nope_head_dim()),
-        qk_rope_head_dim_(args.qk_rope_head_dim()),
-        v_head_dim_(args.v_head_dim()),
-        q_lora_rank_(args.q_lora_rank()),
-        kv_lora_rank_(args.kv_lora_rank()),
-        num_nextn_predict_layers_(args.num_nextn_predict_layers()),
-        mtp_start_layer_idx_(args.mtp_start_layer_idx()),
-        mtp_mlp_type_(args.mtp_mlp_type()),
-        use_sliding_window_(args.use_sliding_window()),
-        sliding_window_(args.sliding_window()),
-        max_window_layers_(args.max_window_layers()),
-        num_speculative_tokens_(args.num_speculative_tokens()),
-        enable_embedded_eagle3_draft_(args.enable_embedded_eagle3_draft()),
-        max_concurrent_prefills_per_dp_(args.max_concurrent_prefills_per_dp()),
-        layers_to_capture_(args.layers_to_capture()),
-        index_head_dim_(args.index_head_dim()),
-        index_n_heads_(args.index_n_heads()),
-        index_topk_(args.index_topk()),
-        index_kpool_(args.index_kpool()),
-        index_kpool_compress_(args.index_kpool_compress()),
-        index_kpool_always_select_tail_(args.index_kpool_always_select_tail()),
-        indexer_rope_interleave_(args.indexer_rope_interleave()),
-        index_topk_freq_(args.index_topk_freq()),
-        index_topk_pattern_(args.index_topk_pattern()),
-        index_skip_topk_offset_(args.index_skip_topk_offset()),
-        index_share_for_mtp_iteration_(args.index_share_for_mtp_iteration()),
-        indexer_types_(args.indexer_types()),
-        mlp_layer_types_(args.mlp_layer_types()),
-        rope_head_dim_(args.rope_head_dim()),
-        o_lora_rank_(args.o_lora_rank()),
-        o_groups_(args.o_groups()),
-        compress_ratios_(args.compress_ratios()),
-        compress_rope_theta_(args.compress_rope_theta()),
-        window_size_(args.window_size()),
-        n_activated_experts_(args.n_activated_experts()),
-        n_hash_layers_(args.n_hash_layers()),
-        factor_(args.factor()),
-        beta_fast_(args.beta_fast()),
-        beta_slow_(args.beta_slow()),
-        scale_fmt_(args.scale_fmt()),
-        hc_mult_(args.hc_mult()),
-        hc_sinkhorn_iters_(args.hc_sinkhorn_iters()),
-        hc_eps_(args.hc_eps()),
-        max_batch_size_(args.max_batch_size()),
-        max_seq_len_(args.max_seq_len()),
-        norm_before_fc_(args.norm_before_fc()),
-        norm_before_residual_(args.norm_before_residual()),
-        norm_output_(args.norm_output()),
-        fc_norm_(args.fc_norm()),
-        embedding_mode_(args.embedding_mode()) {}
+      : attention_params_(args),
+        linear_attention_params_(args),
+        kv_cache_params_(args),
+        moe_params_(args),
+        speculative_params_(args),
+        embedding_params_(args),
+        execution_params_(args) {}
 
   explicit LlmModelArgs(ModelArgs&&) = delete;
   explicit LlmModelArgs(const ModelArgs&&) = delete;
 
-  const TransformerModelArgs& transformer() const noexcept {
-    return transformer_;
+  const AttentionModelParams& attention_params() const noexcept {
+    return attention_params_;
+  }
+  AttentionModelParams& attention_params() noexcept {
+    return attention_params_;
+  }
+  const LinearAttentionModelParams& linear_attention_params() const noexcept {
+    return linear_attention_params_;
+  }
+  LinearAttentionModelParams& linear_attention_params() noexcept {
+    return linear_attention_params_;
+  }
+  const KVCacheModelParams& kv_cache_params() const noexcept {
+    return kv_cache_params_;
+  }
+  KVCacheModelParams& kv_cache_params() noexcept { return kv_cache_params_; }
+  const MoEModelParams& moe_params() const noexcept { return moe_params_; }
+  MoEModelParams& moe_params() noexcept { return moe_params_; }
+  const SpeculativeModelParams& speculative_params() const noexcept {
+    return speculative_params_;
+  }
+  SpeculativeModelParams& speculative_params() noexcept {
+    return speculative_params_;
+  }
+  const EmbeddingModelParams& embedding_params() const noexcept {
+    return embedding_params_;
+  }
+  EmbeddingModelParams& embedding_params() noexcept {
+    return embedding_params_;
+  }
+  const ExecutionModelParams& execution_params() const noexcept {
+    return execution_params_;
+  }
+  ExecutionModelParams& execution_params() noexcept {
+    return execution_params_;
+  }
+  EmbeddingModelParams& mutable_embedding_params() noexcept {
+    return embedding_params();
   }
 
-  TransformerModelArgs& mutable_transformer() noexcept { return transformer_; }
+  COMMON_MODEL_PARAMS
 
-  PROPERTY(int32_t, first_k_dense_replace) = 0;
-  PROPERTY(int32_t, moe_layer_freq) = 0;
-  PROPERTY(int64_t, draft_vocab_size) = 0;
-  PROPERTY(int64_t, markov_rank) = 0;
-  PROPERTY(int32_t, dspark_num_layers) = 0;
-  PROPERTY(int32_t, dspark_block_size) = 0;
-  PROPERTY(bool, dspark_use_native_sas) = false;
-  PROPERTY(bool, enable_confidence_head) = false;
-  PROPERTY(bool, confidence_head_with_markov) = false;
-  PROPERTY(int32_t, dflash2_block_size) = 0;
-  PROPERTY(int32_t, dflash2_conv_group_size) = 0;
-  PROPERTY(int32_t, dflash2_conv_kernel_size) = 0;
-  PROPERTY(int32_t, dflash2_selector_rank) = 0;
-  PROPERTY(int32_t, dflash2_selector_top_k) = 0;
-  PROPERTY(bool, use_moe) = false;
-  PROPERTY(std::string, moe_score_func) = {};
-  PROPERTY(float, moe_route_scale) = 1.0f;
-  PROPERTY(bool, moe_use_shared_experts) = false;
-  PROPERTY(std::string, topk_method) = {};
-  PROPERTY(int32_t, n_routed_experts) = 0;
-  PROPERTY(int32_t, n_shared_experts) = 0;
-  PROPERTY(int32_t, num_experts_per_tok) = 0;
-  PROPERTY(int32_t, moe_intermediate_size) = 0;
-  PROPERTY(float, routed_scaling_factor) = 0.0f;
-  PROPERTY(bool, norm_topk_prob) = false;
-  PROPERTY(int32_t, n_group) = 0;
-  PROPERTY(int32_t, topk_group) = 0;
-  PROPERTY(std::string, scoring_func) = {};
-  PROPERTY(float, swiglu_limit) = 0.0f;
-  PROPERTY(bool, enable_mla) = false;
-  PROPERTY(int32_t, qk_nope_head_dim) = 0;
-  PROPERTY(int32_t, qk_rope_head_dim) = 0;
-  PROPERTY(int32_t, v_head_dim) = 0;
-  PROPERTY(int32_t, q_lora_rank) = 0;
-  PROPERTY(int32_t, kv_lora_rank) = 0;
-  PROPERTY(int32_t, num_nextn_predict_layers) = 0;
-  PROPERTY(int64_t, mtp_start_layer_idx) = -1;
-  PROPERTY(std::string, mtp_mlp_type) = "moe";
-  PROPERTY(bool, use_sliding_window) = false;
-  PROPERTY(int32_t, sliding_window) = -1;
-  PROPERTY(int32_t, max_window_layers) = 0;
-  PROPERTY(int64_t, num_speculative_tokens) = 0;
-  PROPERTY(bool, enable_embedded_eagle3_draft) = false;
-  PROPERTY(int32_t, max_concurrent_prefills_per_dp) = 0;
-  PROPERTY(std::vector<int32_t>, layers_to_capture) = {};
-  PROPERTY(int32_t, index_head_dim) = 0;
-  PROPERTY(int32_t, index_n_heads) = 0;
-  PROPERTY(int32_t, index_topk) = 0;
-  PROPERTY(int32_t, index_kpool) = 1;
-  PROPERTY(bool, index_kpool_compress) = false;
-  PROPERTY(bool, index_kpool_always_select_tail) = false;
-  PROPERTY(bool, indexer_rope_interleave) = false;
-  PROPERTY(int32_t, index_topk_freq) = 1;
-  PROPERTY(std::string, index_topk_pattern) = {};
-  PROPERTY(int32_t, index_skip_topk_offset) = 0;
-  PROPERTY(bool, index_share_for_mtp_iteration) = false;
-  PROPERTY(std::vector<std::string>, indexer_types) = {};
-  PROPERTY(std::vector<std::string>, mlp_layer_types) = {};
-  PROPERTY(int32_t, rope_head_dim) = 0;
-  PROPERTY(int32_t, o_lora_rank) = 0;
-  PROPERTY(int32_t, o_groups) = 0;
-  PROPERTY(std::vector<int32_t>, compress_ratios) = {};
-  PROPERTY(float, compress_rope_theta) = 0.0f;
-  PROPERTY(int32_t, window_size) = 0;
-  PROPERTY(int32_t, n_activated_experts) = 0;
-  PROPERTY(int32_t, n_hash_layers) = 0;
-  PROPERTY(float, factor) = 0.0f;
-  PROPERTY(float, beta_fast) = 0.0f;
-  PROPERTY(float, beta_slow) = 0.0f;
-  PROPERTY(std::string, scale_fmt) = {};
-  PROPERTY(int32_t, hc_mult) = 0;
-  PROPERTY(int32_t, hc_sinkhorn_iters) = 0;
-  PROPERTY(float, hc_eps) = 1e-6f;
-  PROPERTY(int64_t, max_batch_size) = 0;
-  PROPERTY(int64_t, max_seq_len) = 0;
-  PROPERTY(bool, norm_before_fc) = false;
-  PROPERTY(bool, norm_before_residual) = false;
-  PROPERTY(bool, norm_output) = false;
-  PROPERTY(bool, fc_norm) = false;
-  PROPERTY(bool, embedding_mode) = false;
+  MODEL_PARAM(int32_t, first_k_dense_replace, moe_params_);
+  MODEL_PARAM(int32_t, moe_layer_freq, moe_params_);
+  MODEL_PARAM(int64_t, draft_vocab_size, speculative_params_);
+  MODEL_PARAM(int64_t, markov_rank, speculative_params_);
+  MODEL_PARAM(int32_t, dspark_num_layers, speculative_params_);
+  MODEL_PARAM(int32_t, dspark_block_size, speculative_params_);
+  MODEL_PARAM(bool, dspark_use_native_sas, speculative_params_);
+  MODEL_PARAM(bool, enable_confidence_head, speculative_params_);
+  MODEL_PARAM(bool, confidence_head_with_markov, speculative_params_);
+  MODEL_PARAM(int32_t, dflash2_block_size, speculative_params_);
+  MODEL_PARAM(int32_t, dflash2_conv_group_size, speculative_params_);
+  MODEL_PARAM(int32_t, dflash2_conv_kernel_size, speculative_params_);
+  MODEL_PARAM(int32_t, dflash2_selector_rank, speculative_params_);
+  MODEL_PARAM(int32_t, dflash2_selector_top_k, speculative_params_);
+  MODEL_PARAM(bool, use_moe, moe_params_);
+  MODEL_PARAM(std::string, moe_score_func, moe_params_);
+  MODEL_PARAM(float, moe_route_scale, moe_params_);
+  MODEL_PARAM(bool, moe_use_shared_experts, moe_params_);
+  MODEL_PARAM(std::string, topk_method, moe_params_);
+  MODEL_PARAM(int32_t, n_routed_experts, moe_params_);
+  MODEL_PARAM(int32_t, n_shared_experts, moe_params_);
+
+  MODEL_PARAM(int32_t, moe_intermediate_size, moe_params_);
+  MODEL_PARAM(float, routed_scaling_factor, moe_params_);
+  MODEL_PARAM(bool, norm_topk_prob, moe_params_);
+  MODEL_PARAM(int32_t, n_group, moe_params_);
+  MODEL_PARAM(int32_t, topk_group, moe_params_);
+  MODEL_PARAM(std::string, scoring_func, moe_params_);
+  MODEL_PARAM(float, swiglu_limit, moe_params_);
+
+  MODEL_PARAM(int64_t, mtp_start_layer_idx, speculative_params_);
+  MODEL_PARAM(std::string, mtp_mlp_type, speculative_params_);
+
+  MODEL_PARAM(int32_t, max_window_layers, attention_params_);
+  MODEL_PARAM(int64_t, num_speculative_tokens, speculative_params_);
+  MODEL_PARAM(bool, enable_embedded_eagle3_draft, speculative_params_);
+  MODEL_PARAM(int32_t, max_concurrent_prefills_per_dp, execution_params_);
+  MODEL_PARAM(std::vector<int32_t>, layers_to_capture, speculative_params_);
+
+  MODEL_PARAM(bool, norm_before_fc, speculative_params_);
+  MODEL_PARAM(bool, norm_before_residual, speculative_params_);
+  MODEL_PARAM(bool, norm_output, speculative_params_);
+  MODEL_PARAM(bool, fc_norm, speculative_params_);
+  MODEL_PARAM(bool, embedding_mode, embedding_params_);
 };
 
 class VlmVisionModelArgs final {
@@ -721,95 +559,185 @@ class VlmVisionModelArgs final {
 
 class RecModelArgs final {
  private:
-  TransformerModelArgs transformer_;
+  AttentionModelParams attention_params_;
+  LinearAttentionModelParams linear_attention_params_;
+  KVCacheModelParams kv_cache_params_;
+  MoEModelParams moe_params_;
+  SpeculativeModelParams speculative_params_;
+  EmbeddingModelParams embedding_params_;
+  ExecutionModelParams execution_params_;
 
  public:
   RecModelArgs()
       : RecModelArgs(model_family_args_detail::default_model_args()) {}
   explicit RecModelArgs(const ModelArgs& args)
-      : transformer_(args),
-        query_num_(args.query_num()),
-        encoder_embedding_mode_(args.encoder_embedding_mode()),
-        embedding_mode_(args.embedding_mode()),
-        use_moe_(args.use_moe()),
-        moe_route_scale_(args.moe_route_scale()),
-        moe_use_shared_experts_(args.moe_use_shared_experts()),
-        n_routed_experts_(args.n_routed_experts()),
-        n_shared_experts_(args.n_shared_experts()),
-        moe_intermediate_size_(args.moe_intermediate_size()),
-        enable_mla_(args.enable_mla()),
-        num_experts_per_tok_(args.num_experts_per_tok()),
-        relative_attention_num_buckets_(args.relative_attention_num_buckets()),
-        relative_attention_max_distance_(
-            args.relative_attention_max_distance()) {}
+      : attention_params_(args),
+        linear_attention_params_(args),
+        kv_cache_params_(args),
+        moe_params_(args),
+        speculative_params_(args),
+        embedding_params_(args),
+        execution_params_(args) {}
 
   explicit RecModelArgs(ModelArgs&&) = delete;
   explicit RecModelArgs(const ModelArgs&&) = delete;
 
-  const TransformerModelArgs& transformer() const noexcept {
-    return transformer_;
+  const AttentionModelParams& attention_params() const noexcept {
+    return attention_params_;
+  }
+  AttentionModelParams& attention_params() noexcept {
+    return attention_params_;
+  }
+  const LinearAttentionModelParams& linear_attention_params() const noexcept {
+    return linear_attention_params_;
+  }
+  LinearAttentionModelParams& linear_attention_params() noexcept {
+    return linear_attention_params_;
+  }
+  const KVCacheModelParams& kv_cache_params() const noexcept {
+    return kv_cache_params_;
+  }
+  KVCacheModelParams& kv_cache_params() noexcept { return kv_cache_params_; }
+  const MoEModelParams& moe_params() const noexcept { return moe_params_; }
+  MoEModelParams& moe_params() noexcept { return moe_params_; }
+  const SpeculativeModelParams& speculative_params() const noexcept {
+    return speculative_params_;
+  }
+  SpeculativeModelParams& speculative_params() noexcept {
+    return speculative_params_;
+  }
+  const EmbeddingModelParams& embedding_params() const noexcept {
+    return embedding_params_;
+  }
+  EmbeddingModelParams& embedding_params() noexcept {
+    return embedding_params_;
+  }
+  const ExecutionModelParams& execution_params() const noexcept {
+    return execution_params_;
+  }
+  ExecutionModelParams& execution_params() noexcept {
+    return execution_params_;
+  }
+  EmbeddingModelParams& mutable_embedding_params() noexcept {
+    return embedding_params();
   }
 
-  TransformerModelArgs& mutable_transformer() noexcept { return transformer_; }
+  COMMON_MODEL_PARAMS
 
-  PROPERTY(int32_t, query_num) = 0;
-  PROPERTY(bool, encoder_embedding_mode) = false;
-  PROPERTY(bool, embedding_mode) = false;
-  PROPERTY(bool, use_moe) = false;
-  PROPERTY(float, moe_route_scale) = 1.0f;
-  PROPERTY(bool, moe_use_shared_experts) = false;
-  PROPERTY(int32_t, n_routed_experts) = 0;
-  PROPERTY(int32_t, n_shared_experts) = 0;
-  PROPERTY(int32_t, moe_intermediate_size) = 0;
-  PROPERTY(bool, enable_mla) = false;
+  MODEL_PARAM(int32_t, query_num, embedding_params_);
+  MODEL_PARAM(bool, encoder_embedding_mode, embedding_params_);
+  MODEL_PARAM(bool, embedding_mode, embedding_params_);
+  MODEL_PARAM(bool, use_moe, moe_params_);
+  MODEL_PARAM(float, moe_route_scale, moe_params_);
+  MODEL_PARAM(bool, moe_use_shared_experts, moe_params_);
+  MODEL_PARAM(int32_t, n_routed_experts, moe_params_);
+  MODEL_PARAM(int32_t, n_shared_experts, moe_params_);
+  MODEL_PARAM(int32_t, moe_intermediate_size, moe_params_);
 
-  PROPERTY(int32_t, num_experts_per_tok) = 0;
-  PROPERTY(int64_t, relative_attention_num_buckets) = 0;
-  PROPERTY(int64_t, relative_attention_max_distance) = 0;
+  MODEL_PARAM(int64_t, relative_attention_num_buckets, attention_params_);
+  MODEL_PARAM(int64_t, relative_attention_max_distance, attention_params_);
 };
 
 class VlmModelArgs final {
  private:
-  TransformerModelArgs transformer_;
+  AttentionModelParams attention_params_;
+  LinearAttentionModelParams linear_attention_params_;
+  KVCacheModelParams kv_cache_params_;
+  MoEModelParams moe_params_;
+  SpeculativeModelParams speculative_params_;
+  EmbeddingModelParams embedding_params_;
+  ExecutionModelParams execution_params_;
   VlmVisionModelArgs vision_;
 
  public:
   VlmModelArgs()
       : VlmModelArgs(model_family_args_detail::default_model_args()) {}
   explicit VlmModelArgs(const ModelArgs& args)
-      : transformer_(args),
-        vision_(args),
-        query_num_(args.query_num()),
-        encoder_embedding_mode_(args.encoder_embedding_mode()),
-        embedding_mode_(args.embedding_mode()),
-        num_speculative_tokens_(args.num_speculative_tokens()) {}
+      : attention_params_(args),
+        linear_attention_params_(args),
+        kv_cache_params_(args),
+        moe_params_(args),
+        speculative_params_(args),
+        embedding_params_(args),
+        execution_params_(args),
+        vision_(args) {}
 
   explicit VlmModelArgs(ModelArgs&&) = delete;
   explicit VlmModelArgs(const ModelArgs&&) = delete;
 
-  const TransformerModelArgs& transformer() const noexcept {
-    return transformer_;
+  const AttentionModelParams& attention_params() const noexcept {
+    return attention_params_;
   }
-  TransformerModelArgs& mutable_transformer() noexcept { return transformer_; }
+  AttentionModelParams& attention_params() noexcept {
+    return attention_params_;
+  }
+  const LinearAttentionModelParams& linear_attention_params() const noexcept {
+    return linear_attention_params_;
+  }
+  LinearAttentionModelParams& linear_attention_params() noexcept {
+    return linear_attention_params_;
+  }
+  const KVCacheModelParams& kv_cache_params() const noexcept {
+    return kv_cache_params_;
+  }
+  KVCacheModelParams& kv_cache_params() noexcept { return kv_cache_params_; }
+  const MoEModelParams& moe_params() const noexcept { return moe_params_; }
+  MoEModelParams& moe_params() noexcept { return moe_params_; }
+  const SpeculativeModelParams& speculative_params() const noexcept {
+    return speculative_params_;
+  }
+  SpeculativeModelParams& speculative_params() noexcept {
+    return speculative_params_;
+  }
+  const EmbeddingModelParams& embedding_params() const noexcept {
+    return embedding_params_;
+  }
+  EmbeddingModelParams& embedding_params() noexcept {
+    return embedding_params_;
+  }
+  const ExecutionModelParams& execution_params() const noexcept {
+    return execution_params_;
+  }
+  ExecutionModelParams& execution_params() noexcept {
+    return execution_params_;
+  }
+  EmbeddingModelParams& mutable_embedding_params() noexcept {
+    return embedding_params();
+  }
+
   const VlmVisionModelArgs& vision() const noexcept { return vision_; }
   VlmVisionModelArgs& mutable_vision() noexcept { return vision_; }
 
-  PROPERTY(int32_t, query_num) = 0;
-  PROPERTY(bool, encoder_embedding_mode) = false;
-  PROPERTY(bool, embedding_mode) = false;
-  PROPERTY(int64_t, num_speculative_tokens) = 0;
+  COMMON_MODEL_PARAMS
+
+  MODEL_PARAM(int32_t, query_num, embedding_params_);
+  MODEL_PARAM(bool, encoder_embedding_mode, embedding_params_);
+  MODEL_PARAM(bool, embedding_mode, embedding_params_);
+  MODEL_PARAM(int64_t, num_speculative_tokens, speculative_params_);
 };
 
 class DiTTransformerModelArgs final {
  private:
-  TransformerModelArgs transformer_;
+  AttentionModelParams attention_params_;
+  LinearAttentionModelParams linear_attention_params_;
+  KVCacheModelParams kv_cache_params_;
+  MoEModelParams moe_params_;
+  SpeculativeModelParams speculative_params_;
+  EmbeddingModelParams embedding_params_;
+  ExecutionModelParams execution_params_;
 
  public:
   DiTTransformerModelArgs()
       : DiTTransformerModelArgs(
             model_family_args_detail::default_model_args()) {}
   explicit DiTTransformerModelArgs(const ModelArgs& args)
-      : transformer_(args),
+      : attention_params_(args),
+        linear_attention_params_(args),
+        kv_cache_params_(args),
+        moe_params_(args),
+        speculative_params_(args),
+        embedding_params_(args),
+        execution_params_(args),
         in_channels_(args.in_channels()),
         out_channels_(args.out_channels()),
         latent_channels_(args.latent_channels()),
@@ -865,11 +793,47 @@ class DiTTransformerModelArgs final {
   explicit DiTTransformerModelArgs(ModelArgs&&) = delete;
   explicit DiTTransformerModelArgs(const ModelArgs&&) = delete;
 
-  const TransformerModelArgs& transformer() const noexcept {
-    return transformer_;
+  const AttentionModelParams& attention_params() const noexcept {
+    return attention_params_;
+  }
+  AttentionModelParams& attention_params() noexcept {
+    return attention_params_;
+  }
+  const LinearAttentionModelParams& linear_attention_params() const noexcept {
+    return linear_attention_params_;
+  }
+  LinearAttentionModelParams& linear_attention_params() noexcept {
+    return linear_attention_params_;
+  }
+  const KVCacheModelParams& kv_cache_params() const noexcept {
+    return kv_cache_params_;
+  }
+  KVCacheModelParams& kv_cache_params() noexcept { return kv_cache_params_; }
+  const MoEModelParams& moe_params() const noexcept { return moe_params_; }
+  MoEModelParams& moe_params() noexcept { return moe_params_; }
+  const SpeculativeModelParams& speculative_params() const noexcept {
+    return speculative_params_;
+  }
+  SpeculativeModelParams& speculative_params() noexcept {
+    return speculative_params_;
+  }
+  const EmbeddingModelParams& embedding_params() const noexcept {
+    return embedding_params_;
+  }
+  EmbeddingModelParams& embedding_params() noexcept {
+    return embedding_params_;
+  }
+  const ExecutionModelParams& execution_params() const noexcept {
+    return execution_params_;
+  }
+  ExecutionModelParams& execution_params() noexcept {
+    return execution_params_;
+  }
+  EmbeddingModelParams& mutable_embedding_params() noexcept {
+    return embedding_params();
   }
 
-  TransformerModelArgs& mutable_transformer() noexcept { return transformer_; }
+  COMMON_MODEL_PARAMS
 
   PROPERTY(int64_t, in_channels) = -1;
   PROPERTY(int64_t, out_channels) = -1;
@@ -1191,6 +1155,9 @@ class DiTSchedulerModelArgs final {
   PROPERTY(std::string, time_shift_type) = "exponential";
 };
 
+#undef COMMON_MODEL_PARAMS
+#undef MODEL_PARAM
+
 enum class DiTComponentType : uint8_t {
   UNKNOWN = 0,
   TRANSFORMER = 1,
@@ -1288,10 +1255,8 @@ class DiTComponentModelArgs final {
   DiTComponentModelArgsVariant args_;
 };
 
-// ModelArgsBundle owns the typed parameter aggregate selected for one model
-// family or DiT component. Context copies share this view so model
-// implementations observe the same typed parameters without constructing a
-// view for every access.
+// ModelArgsBundle owns the active family or DiT component. ModelContext shares
+// the aggregate so capability access returns references to existing objects.
 class ModelArgsBundle final {
  public:
   ModelArgsBundle() = default;
@@ -1314,74 +1279,538 @@ class ModelArgsBundle final {
   ModelFamily family() const noexcept { return family_; }
 
   const LlmModelArgs& llm_model_args() const {
-    CHECK(llm_model_args_.has_value())
-        << "Model arguments do not contain LLM arguments";
-    return *llm_model_args_;
+    const auto* args = std::get_if<LlmModelArgs>(&args_);
+    CHECK(args != nullptr) << "Model arguments do not contain LLM arguments";
+    return *args;
   }
 
   const VlmModelArgs& vlm_model_args() const {
-    if (vlm_model_args_.has_value()) {
-      return *vlm_model_args_;
+    if (const auto* args = std::get_if<VlmModelArgs>(&args_)) {
+      return *args;
     }
-    CHECK(dit_model_args_.has_value())
-        << "Model arguments do not contain VLM arguments";
-    return dit_model_args_->vlm();
+    const auto* args = std::get_if<DiTComponentModelArgs>(&args_);
+    CHECK(args != nullptr) << "Model arguments do not contain VLM arguments";
+    return args->vlm();
   }
 
   const RecModelArgs& rec_model_args() const {
-    CHECK(rec_model_args_.has_value())
-        << "Model arguments do not contain Rec arguments";
-    return *rec_model_args_;
+    const auto* args = std::get_if<RecModelArgs>(&args_);
+    CHECK(args != nullptr) << "Model arguments do not contain Rec arguments";
+    return *args;
   }
 
   const DiTComponentModelArgs& dit_model_args() const {
-    CHECK(dit_model_args_.has_value())
-        << "Model arguments do not contain DiT arguments";
-    return *dit_model_args_;
+    const auto* args = std::get_if<DiTComponentModelArgs>(&args_);
+    CHECK(args != nullptr) << "Model arguments do not contain DiT arguments";
+    return *args;
   }
 
+  const AttentionModelParams& attention_params() const {
+    switch (family_) {
+      case ModelFamily::LLM:
+        return llm_model_args().attention_params();
+      case ModelFamily::VLM:
+        return vlm_model_args().attention_params();
+      case ModelFamily::REC:
+        return rec_model_args().attention_params();
+      case ModelFamily::DIT:
+        return dit_transformer_model_args().attention_params();
+      case ModelFamily::UNKNOWN:
+        break;
+    }
+    LOG(FATAL) << "Attention parameters require a registered model family";
+    return llm_model_args().attention_params();
+  }
+
+  const LinearAttentionModelParams& linear_attention_params() const {
+    switch (family_) {
+      case ModelFamily::LLM:
+        return llm_model_args().linear_attention_params();
+      case ModelFamily::VLM:
+        return vlm_model_args().linear_attention_params();
+      case ModelFamily::REC:
+        return rec_model_args().linear_attention_params();
+      case ModelFamily::DIT:
+        return dit_transformer_model_args().linear_attention_params();
+      case ModelFamily::UNKNOWN:
+        break;
+    }
+    LOG(FATAL)
+        << "Linear attention parameters require a registered model family";
+    return llm_model_args().linear_attention_params();
+  }
+
+  const KVCacheModelParams& kv_cache_params() const {
+    switch (family_) {
+      case ModelFamily::LLM:
+        return llm_model_args().kv_cache_params();
+      case ModelFamily::VLM:
+        return vlm_model_args().kv_cache_params();
+      case ModelFamily::REC:
+        return rec_model_args().kv_cache_params();
+      case ModelFamily::DIT:
+        return dit_transformer_model_args().kv_cache_params();
+      case ModelFamily::UNKNOWN:
+        break;
+    }
+    LOG(FATAL) << "KV cache parameters require a registered model family";
+    return llm_model_args().kv_cache_params();
+  }
+
+  const MoEModelParams& moe_params() const {
+    switch (family_) {
+      case ModelFamily::LLM:
+        return llm_model_args().moe_params();
+      case ModelFamily::VLM:
+        return vlm_model_args().moe_params();
+      case ModelFamily::REC:
+        return rec_model_args().moe_params();
+      case ModelFamily::DIT:
+        return dit_transformer_model_args().moe_params();
+      case ModelFamily::UNKNOWN:
+        break;
+    }
+    LOG(FATAL) << "MoE parameters require a registered model family";
+    return llm_model_args().moe_params();
+  }
+
+  const SpeculativeModelParams& speculative_params() const {
+    switch (family_) {
+      case ModelFamily::LLM:
+        return llm_model_args().speculative_params();
+      case ModelFamily::VLM:
+        return vlm_model_args().speculative_params();
+      case ModelFamily::REC:
+        return rec_model_args().speculative_params();
+      case ModelFamily::DIT:
+        return dit_transformer_model_args().speculative_params();
+      case ModelFamily::UNKNOWN:
+        break;
+    }
+    LOG(FATAL) << "Speculative parameters require a registered model family";
+    return llm_model_args().speculative_params();
+  }
+
+  const EmbeddingModelParams& embedding_params() const {
+    switch (family_) {
+      case ModelFamily::LLM:
+        return llm_model_args().embedding_params();
+      case ModelFamily::VLM:
+        return vlm_model_args().embedding_params();
+      case ModelFamily::REC:
+        return rec_model_args().embedding_params();
+      case ModelFamily::DIT:
+        return dit_transformer_model_args().embedding_params();
+      case ModelFamily::UNKNOWN:
+        break;
+    }
+    LOG(FATAL) << "Embedding parameters require a registered model family";
+    return llm_model_args().embedding_params();
+  }
+
+  const ExecutionModelParams& execution_params() const {
+    switch (family_) {
+      case ModelFamily::LLM:
+        return llm_model_args().execution_params();
+      case ModelFamily::VLM:
+        return vlm_model_args().execution_params();
+      case ModelFamily::REC:
+        return rec_model_args().execution_params();
+      case ModelFamily::DIT:
+        return dit_transformer_model_args().execution_params();
+      case ModelFamily::UNKNOWN:
+        break;
+    }
+    LOG(FATAL) << "Execution parameters require a registered model family";
+    return llm_model_args().execution_params();
+  }
+
+  const std::string& model_type() const {
+    return execution_params().model_type();
+  }
+  const std::string& dtype() const { return execution_params().dtype(); }
+  int64_t n_layers() const { return execution_params().n_layers(); }
+  int64_t n_encoder_layers() const {
+    return execution_params().n_encoder_layers();
+  }
+  int64_t hidden_size() const { return execution_params().hidden_size(); }
+  const std::string& hidden_act() const {
+    return execution_params().hidden_act();
+  }
+  int64_t intermediate_size() const {
+    return execution_params().intermediate_size();
+  }
+  int64_t max_position_embeddings() const {
+    return execution_params().max_position_embeddings();
+  }
+  int64_t vocab_size() const { return execution_params().vocab_size(); }
+  int32_t bos_token_id() const { return execution_params().bos_token_id(); }
+  int32_t eos_token_id() const { return execution_params().eos_token_id(); }
+  const std::vector<int32_t>& eos_token_id_vec() const {
+    return execution_params().eos_token_id_vec();
+  }
+  int32_t pad_token_id() const { return execution_params().pad_token_id(); }
+  const std::unordered_set<int32_t>& stop_token_ids() const {
+    return execution_params().stop_token_ids();
+  }
+  bool tie_word_embeddings() const {
+    return execution_params().tie_word_embeddings();
+  }
+  bool no_bias() const { return execution_params().no_bias(); }
+  float initializer_range() const {
+    return execution_params().initializer_range();
+  }
+  int32_t rope_scaling() const { return execution_params().rope_scaling(); }
+  int32_t max_concurrent_prefills_per_dp() const {
+    return execution_params().max_concurrent_prefills_per_dp();
+  }
+  int64_t head_dim() const { return attention_params().head_dim(); }
+  int64_t n_heads() const { return attention_params().n_heads(); }
+  std::optional<int64_t> n_kv_heads() const {
+    return attention_params().n_kv_heads();
+  }
+  bool enable_mla() const { return attention_params().enable_mla(); }
+  int64_t decoder_head_dim() const {
+    return attention_params().decoder_head_dim();
+  }
+  int64_t decoder_n_heads() const {
+    return attention_params().decoder_n_heads();
+  }
+  std::optional<int64_t> decoder_n_kv_heads() const {
+    return attention_params().decoder_n_kv_heads();
+  }
+  int64_t actual_n_heads() const { return attention_params().actual_n_heads(); }
+  int64_t rotary_dim() const { return attention_params().rotary_dim(); }
+  float partial_rotary_factor() const {
+    return attention_params().partial_rotary_factor();
+  }
+  bool use_qk_norm() const { return attention_params().use_qk_norm(); }
+  float rms_norm_eps() const { return attention_params().rms_norm_eps(); }
+  float layer_norm_eps() const { return attention_params().layer_norm_eps(); }
+  bool attention_bias() const { return attention_params().attention_bias(); }
+  bool qkv_bias() const { return attention_params().qkv_bias(); }
+  std::optional<float> attn_scalar() const {
+    return attention_params().attn_scalar();
+  }
+  bool use_sliding_window() const {
+    return attention_params().use_sliding_window();
+  }
+  int32_t sliding_window() const { return attention_params().sliding_window(); }
+  int32_t max_window_layers() const {
+    return attention_params().max_window_layers();
+  }
+  int32_t kv_lora_rank() const { return attention_params().kv_lora_rank(); }
+  int32_t q_lora_rank() const { return attention_params().q_lora_rank(); }
+  int32_t qk_nope_head_dim() const {
+    return attention_params().qk_nope_head_dim();
+  }
+  int32_t qk_rope_head_dim() const {
+    return attention_params().qk_rope_head_dim();
+  }
+  int32_t v_head_dim() const { return attention_params().v_head_dim(); }
+  int64_t num_attention_heads() const {
+    return attention_params().num_attention_heads();
+  }
+  float rope_theta() const { return attention_params().rope_theta(); }
+  const std::string& rope_scaling_rope_type() const {
+    return attention_params().rope_scaling_rope_type();
+  }
+  float rope_scaling_factor() const {
+    return attention_params().rope_scaling_factor();
+  }
+  float rope_scaling_low_freq_factor() const {
+    return attention_params().rope_scaling_low_freq_factor();
+  }
+  float rope_scaling_high_freq_factor() const {
+    return attention_params().rope_scaling_high_freq_factor();
+  }
+  float rope_extrapolation_factor() const {
+    return attention_params().rope_extrapolation_factor();
+  }
+  int64_t rope_scaling_original_max_position_embeddings() const {
+    return attention_params().rope_scaling_original_max_position_embeddings();
+  }
+  int64_t rope_scaling_beta_fast() const {
+    return attention_params().rope_scaling_beta_fast();
+  }
+  int64_t rope_scaling_beta_slow() const {
+    return attention_params().rope_scaling_beta_slow();
+  }
+  float rope_scaling_attn_factor() const {
+    return attention_params().rope_scaling_attn_factor();
+  }
+  float rope_scaling_mscale() const {
+    return attention_params().rope_scaling_mscale();
+  }
+  float rope_scaling_mscale_all_dim() const {
+    return attention_params().rope_scaling_mscale_all_dim();
+  }
+  const std::vector<int64_t>& rope_scaling_mrope_section() const {
+    return attention_params().rope_scaling_mrope_section();
+  }
+  bool rope_scaling_mrope_interleaved() const {
+    return attention_params().rope_scaling_mrope_interleaved();
+  }
+  float attention_dropout() const {
+    return attention_params().attention_dropout();
+  }
+  bool attn_output_gate() const {
+    return attention_params().attn_output_gate();
+  }
+  bool use_absolute_position_embedding() const {
+    return attention_params().use_absolute_position_embedding();
+  }
+  int64_t relative_attention_num_buckets() const {
+    return attention_params().relative_attention_num_buckets();
+  }
+  int64_t relative_attention_max_distance() const {
+    return attention_params().relative_attention_max_distance();
+  }
+  int64_t kv_cache_storage_head_dim() const {
+    return kv_cache_params().kv_cache_storage_head_dim();
+  }
+  int32_t index_head_dim() const { return kv_cache_params().index_head_dim(); }
+  int32_t index_n_heads() const { return kv_cache_params().index_n_heads(); }
+  int32_t index_topk() const { return kv_cache_params().index_topk(); }
+  int32_t index_kpool() const { return kv_cache_params().index_kpool(); }
+  bool index_kpool_compress() const {
+    return kv_cache_params().index_kpool_compress();
+  }
+  bool index_kpool_always_select_tail() const {
+    return kv_cache_params().index_kpool_always_select_tail();
+  }
+  bool indexer_rope_interleave() const {
+    return kv_cache_params().indexer_rope_interleave();
+  }
+  int32_t index_topk_freq() const {
+    return kv_cache_params().index_topk_freq();
+  }
+  const std::string& index_topk_pattern() const {
+    return kv_cache_params().index_topk_pattern();
+  }
+  int32_t index_skip_topk_offset() const {
+    return kv_cache_params().index_skip_topk_offset();
+  }
+  bool index_share_for_mtp_iteration() const {
+    return kv_cache_params().index_share_for_mtp_iteration();
+  }
+  const std::vector<std::string>& indexer_types() const {
+    return kv_cache_params().indexer_types();
+  }
+  int32_t full_attention_interval() const {
+    return linear_attention_params().full_attention_interval();
+  }
+  const std::vector<std::string>& layer_types() const {
+    return linear_attention_params().layer_types();
+  }
+  int32_t linear_conv_kernel_dim() const {
+    return linear_attention_params().linear_conv_kernel_dim();
+  }
+  int32_t linear_key_head_dim() const {
+    return linear_attention_params().linear_key_head_dim();
+  }
+  int32_t linear_value_head_dim() const {
+    return linear_attention_params().linear_value_head_dim();
+  }
+  int64_t linear_num_key_heads() const {
+    return linear_attention_params().linear_num_key_heads();
+  }
+  int32_t linear_num_value_heads() const {
+    return linear_attention_params().linear_num_value_heads();
+  }
+  float linear_lower_bound() const {
+    return linear_attention_params().linear_lower_bound();
+  }
+  const std::string& mamba_ssm_dtype() const {
+    return linear_attention_params().mamba_ssm_dtype();
+  }
+  float factor() const { return kv_cache_params().factor(); }
+  float beta_fast() const { return kv_cache_params().beta_fast(); }
+  float beta_slow() const { return kv_cache_params().beta_slow(); }
+  const std::vector<int32_t>& compress_ratios() const {
+    return kv_cache_params().compress_ratios();
+  }
+  int32_t window_size() const { return kv_cache_params().window_size(); }
+  int64_t max_batch_size() const { return kv_cache_params().max_batch_size(); }
+  int64_t max_seq_len() const { return kv_cache_params().max_seq_len(); }
+  const std::string& scale_fmt() const { return kv_cache_params().scale_fmt(); }
+  int32_t hc_mult() const { return kv_cache_params().hc_mult(); }
+  int32_t hc_sinkhorn_iters() const {
+    return kv_cache_params().hc_sinkhorn_iters();
+  }
+  float hc_eps() const { return kv_cache_params().hc_eps(); }
+  int32_t rope_head_dim() const { return kv_cache_params().rope_head_dim(); }
+  int32_t o_lora_rank() const { return kv_cache_params().o_lora_rank(); }
+  int32_t o_groups() const { return kv_cache_params().o_groups(); }
+  float compress_rope_theta() const {
+    return kv_cache_params().compress_rope_theta();
+  }
+  int32_t num_nextn_predict_layers() const {
+    return speculative_params().num_nextn_predict_layers();
+  }
+  int64_t draft_vocab_size() const {
+    return speculative_params().draft_vocab_size();
+  }
+  int64_t num_speculative_tokens() const {
+    return speculative_params().num_speculative_tokens();
+  }
+  bool enable_embedded_eagle3_draft() const {
+    return speculative_params().enable_embedded_eagle3_draft();
+  }
+  const std::vector<int32_t>& layers_to_capture() const {
+    return speculative_params().layers_to_capture();
+  }
+  int64_t mtp_start_layer_idx() const {
+    return speculative_params().mtp_start_layer_idx();
+  }
+  const std::string& mtp_mlp_type() const {
+    return speculative_params().mtp_mlp_type();
+  }
+  int64_t markov_rank() const { return speculative_params().markov_rank(); }
+  int32_t dspark_num_layers() const {
+    return speculative_params().dspark_num_layers();
+  }
+  int32_t dspark_block_size() const {
+    return speculative_params().dspark_block_size();
+  }
+  bool dspark_use_native_sas() const {
+    return speculative_params().dspark_use_native_sas();
+  }
+  bool enable_confidence_head() const {
+    return speculative_params().enable_confidence_head();
+  }
+  bool confidence_head_with_markov() const {
+    return speculative_params().confidence_head_with_markov();
+  }
+  int32_t dflash2_block_size() const {
+    return speculative_params().dflash2_block_size();
+  }
+  int32_t dflash2_conv_group_size() const {
+    return speculative_params().dflash2_conv_group_size();
+  }
+  int32_t dflash2_conv_kernel_size() const {
+    return speculative_params().dflash2_conv_kernel_size();
+  }
+  int32_t dflash2_selector_rank() const {
+    return speculative_params().dflash2_selector_rank();
+  }
+  int32_t dflash2_selector_top_k() const {
+    return speculative_params().dflash2_selector_top_k();
+  }
+  bool norm_before_fc() const { return speculative_params().norm_before_fc(); }
+  bool norm_before_residual() const {
+    return speculative_params().norm_before_residual();
+  }
+  bool norm_output() const { return speculative_params().norm_output(); }
+  bool fc_norm() const { return speculative_params().fc_norm(); }
+
+  bool use_moe() const { return moe_params().use_moe(); }
+  int32_t first_k_dense_replace() const {
+    return moe_params().first_k_dense_replace();
+  }
+  int32_t moe_layer_freq() const { return moe_params().moe_layer_freq(); }
+  const std::string& moe_score_func() const {
+    return moe_params().moe_score_func();
+  }
+  float moe_route_scale() const { return moe_params().moe_route_scale(); }
+  bool moe_use_shared_experts() const {
+    return moe_params().moe_use_shared_experts();
+  }
+  const std::string& topk_method() const { return moe_params().topk_method(); }
+  int32_t n_routed_experts() const { return moe_params().n_routed_experts(); }
+  int32_t n_shared_experts() const { return moe_params().n_shared_experts(); }
+  int32_t num_experts_per_tok() const {
+    return moe_params().num_experts_per_tok();
+  }
+  int32_t moe_intermediate_size() const {
+    return moe_params().moe_intermediate_size();
+  }
+  float routed_scaling_factor() const {
+    return moe_params().routed_scaling_factor();
+  }
+  bool norm_topk_prob() const { return moe_params().norm_topk_prob(); }
+  int32_t n_group() const { return moe_params().n_group(); }
+  int32_t topk_group() const { return moe_params().topk_group(); }
+  const std::string& scoring_func() const {
+    return moe_params().scoring_func();
+  }
+  float swiglu_limit() const { return moe_params().swiglu_limit(); }
+  int32_t num_experts() const { return moe_params().num_experts(); }
+  int32_t n_activated_experts() const {
+    return moe_params().n_activated_experts();
+  }
+  int32_t shared_expert_intermediate_size() const {
+    return moe_params().shared_expert_intermediate_size();
+  }
+  bool output_router_logits() const {
+    return moe_params().output_router_logits();
+  }
+  float router_aux_loss_coef() const {
+    return moe_params().router_aux_loss_coef();
+  }
+  const std::vector<int32_t>& mlp_only_layers() const {
+    return moe_params().mlp_only_layers();
+  }
+  int32_t n_hash_layers() const { return moe_params().n_hash_layers(); }
+  const std::vector<std::string>& mlp_layer_types() const {
+    return moe_params().mlp_layer_types();
+  }
+  int32_t decoder_sparse_step() const {
+    return moe_params().decoder_sparse_step();
+  }
+  int32_t query_num() const { return embedding_params().query_num(); }
+  bool encoder_embedding_mode() const {
+    return embedding_params().encoder_embedding_mode();
+  }
+  bool embedding_mode() const { return embedding_params().embedding_mode(); }
+
   void set_encoder_embedding_mode(bool encoder_embedding_mode) {
-    if (llm_model_args_.has_value()) {
+    if (auto* args = std::get_if<VlmModelArgs>(&args_)) {
+      args->encoder_embedding_mode(encoder_embedding_mode);
       return;
     }
-    if (vlm_model_args_.has_value()) {
-      vlm_model_args_->encoder_embedding_mode() = encoder_embedding_mode;
+    if (auto* args = std::get_if<RecModelArgs>(&args_)) {
+      args->encoder_embedding_mode(encoder_embedding_mode);
       return;
     }
-    if (rec_model_args_.has_value()) {
-      rec_model_args_->encoder_embedding_mode() = encoder_embedding_mode;
-      return;
-    }
-    if (dit_model_args_.has_value() &&
-        dit_model_args_->family() == ModelFamily::VLM) {
-      dit_model_args_->vlm().encoder_embedding_mode() = encoder_embedding_mode;
+    if (auto* args = std::get_if<DiTComponentModelArgs>(&args_);
+        args != nullptr && args->family() == ModelFamily::VLM) {
+      args->vlm().encoder_embedding_mode(encoder_embedding_mode);
     }
   }
 
  private:
+  const DiTTransformerModelArgs& dit_transformer_model_args() const {
+    const auto& component_args = dit_model_args();
+    CHECK(component_args.component_type() == DiTComponentType::TRANSFORMER)
+        << "Capability parameters require a DiT transformer component";
+    return component_args.transformer();
+  }
+
   void initialize(const ModelArgs& model_args,
                   ModelFamily family,
                   DiTComponentType dit_component_type) {
     switch (family) {
       case ModelFamily::LLM:
-        llm_model_args_.emplace(model_args);
+        args_.emplace<LlmModelArgs>(model_args);
         return;
       case ModelFamily::VLM:
         if (dit_component_type != DiTComponentType::UNKNOWN) {
-          dit_model_args_.emplace(
+          args_.emplace<DiTComponentModelArgs>(
               model_args, dit_component_type, ModelFamily::VLM);
           return;
         }
-        vlm_model_args_.emplace(model_args);
+        args_.emplace<VlmModelArgs>(model_args);
         return;
       case ModelFamily::REC:
-        rec_model_args_.emplace(model_args);
+        args_.emplace<RecModelArgs>(model_args);
         return;
       case ModelFamily::DIT:
-        dit_model_args_.emplace(model_args,
-                                dit_component_type == DiTComponentType::UNKNOWN
-                                    ? DiTComponentType::TRANSFORMER
-                                    : dit_component_type);
+        args_.emplace<DiTComponentModelArgs>(
+            model_args,
+            dit_component_type == DiTComponentType::UNKNOWN
+                ? DiTComponentType::TRANSFORMER
+                : dit_component_type);
         return;
       case ModelFamily::UNKNOWN:
         return;
@@ -1389,41 +1818,21 @@ class ModelArgsBundle final {
   }
 
   ModelFamily family_ = ModelFamily::UNKNOWN;
-  std::optional<LlmModelArgs> llm_model_args_;
-  std::optional<VlmModelArgs> vlm_model_args_;
-  std::optional<RecModelArgs> rec_model_args_;
-  std::optional<DiTComponentModelArgs> dit_model_args_;
+  std::variant<std::monostate,
+               LlmModelArgs,
+               VlmModelArgs,
+               RecModelArgs,
+               DiTComponentModelArgs>
+      args_;
 };
 
-inline bool has_linear_attention_layers(const TransformerModelArgs& args) {
-  const auto& hybrid_layer_types = args.layer_types();
-  if (!hybrid_layer_types.empty()) {
-    return std::any_of(hybrid_layer_types.begin(),
-                       hybrid_layer_types.end(),
-                       [](const std::string& layer_type) {
-                         return layer_type != "full_attention" &&
-                                layer_type != "attention" &&
-                                layer_type != "deepseek_sparse_attention";
-                       });
-  }
-  return args.full_attention_interval() > 1;
+inline bool has_linear_attention_layers(const ModelArgsBundle& args) {
+  return args.linear_attention_params().has_linear_attention_layers();
 }
 
-inline bool is_full_attention_layer(const TransformerModelArgs& args,
+inline bool is_full_attention_layer(const ModelArgsBundle& args,
                                     int64_t layer_id) {
-  const auto& hybrid_layer_types = args.layer_types();
-  if (layer_id >= 0 &&
-      layer_id < static_cast<int64_t>(hybrid_layer_types.size())) {
-    const auto& layer_type = hybrid_layer_types[layer_id];
-    return layer_type == "full_attention" || layer_type == "attention" ||
-           layer_type == "deepseek_sparse_attention";
-  }
-
-  const int32_t attention_interval = args.full_attention_interval();
-  if (attention_interval <= 1) {
-    return true;
-  }
-  return (layer_id + 1) % attention_interval == 0;
+  return args.linear_attention_params().is_full_attention_layer(layer_id);
 }
 
 }  // namespace xllm

@@ -52,12 +52,14 @@ cc_test(
 )
 
 cc_test(
+  NO_NPU_RUNTIME
   NAME
-    model_args_view_test
+    model_family_args_test
   SRCS
-    model_args_view_test.cpp
+    model_family_args_test.cpp
   DEPS
     :model
+    glog::glog
     GTest::gtest_main
 )
 
