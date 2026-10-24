@@ -28,7 +28,7 @@ limitations under the License.
 #include "core/kv_cache/storage/kv_cache.h"
 #include "deepseek_v4_indexer.h"
 #include "framework/batch/batch_forward_type.h"
-#include "framework/model/model_args.h"
+#include "framework/model/model_family_args.h"
 #include "framework/parallel_state/parallel_args.h"
 #include "framework/quantization/quant_args.h"
 #include "framework/state_dict/state_dict.h"
@@ -79,7 +79,7 @@ class DSAttentionImpl : public torch::nn::Module {
  public:
   DSAttentionImpl() = default;
   explicit DSAttentionImpl(const ModelContext& context, int32_t layer_id = -1);
-  DSAttentionImpl(const ModelArgs& args,
+  DSAttentionImpl(const LlmModelArgs& args,
                   const QuantArgs& quant_args,
                   const ParallelArgs& parallel_args,
                   const torch::TensorOptions& options,

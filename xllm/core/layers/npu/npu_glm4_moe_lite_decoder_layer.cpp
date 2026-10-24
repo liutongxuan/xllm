@@ -113,7 +113,7 @@ void NpuGlm4MoeDecoderLiteImpl::initialize_tensors(
 
 void NpuGlm4MoeDecoderLiteImpl::param_from_args(
     atb_speed::glm::MoeLayerParam& param,
-    const ModelArgs& args,
+    const ModelArgsBundle& args,
     const ParallelArgs& parallel_args,
     bool is_prefill,
     bool is_prefixcache) {
@@ -137,7 +137,7 @@ void NpuGlm4MoeDecoderLiteImpl::initialize_weight_tensors(
 
 void NpuGlm4MoeDecoderLiteImpl::initialize_basic_parameters(
     atb_speed::glm::MoeLayerParam& param,
-    const ModelArgs& args,
+    const ModelArgsBundle& args,
     const ParallelArgs& parallel_args,
     bool is_prefill,
     bool is_prefixcache) {
@@ -202,7 +202,7 @@ void NpuGlm4MoeDecoderLiteImpl::initialize_basic_parameters(
 
 void NpuGlm4MoeDecoderLiteImpl::initialize_attention_parameters(
     atb_speed::glm::MoeLayerParam& param,
-    const ModelArgs& args,
+    const ModelArgsBundle& args,
     const ParallelArgs& parallel_args) {
   param.qLoraRank = args.q_lora_rank();
   // NOTE: The operation in this conditional is theoretically compatible with
@@ -231,7 +231,7 @@ void NpuGlm4MoeDecoderLiteImpl::initialize_attention_parameters(
 
 void NpuGlm4MoeDecoderLiteImpl::initialize_mlp_parameters(
     atb_speed::glm::MoeLayerParam& param,
-    const ModelArgs& args,
+    const ModelArgsBundle& args,
     const ParallelArgs& parallel_args) {
   param.hasSharedExpert = (args.n_shared_experts() > 0);
   param.hasSharedExpertGate = false;

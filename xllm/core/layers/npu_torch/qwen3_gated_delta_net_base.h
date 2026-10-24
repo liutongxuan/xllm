@@ -24,7 +24,7 @@ limitations under the License.
 
 #include "attention.h"
 #include "core/kv_cache/storage/kv_cache.h"
-#include "framework/model/model_args.h"
+#include "framework/model/model_family_args.h"
 #include "framework/parallel_state/parallel_args.h"
 #include "framework/quantization/quant_args.h"
 #include "framework/state_dict/state_dict.h"
@@ -38,7 +38,7 @@ namespace layer {
 class Qwen3GatedDeltaNetBaseImpl : public torch::nn::Module {
  public:
   Qwen3GatedDeltaNetBaseImpl() = default;
-  Qwen3GatedDeltaNetBaseImpl(const ModelArgs& args,
+  Qwen3GatedDeltaNetBaseImpl(const ModelArgsBundle& args,
                              const QuantArgs& quant_args,
                              const ParallelArgs& parallel_args,
                              const torch::TensorOptions& options);

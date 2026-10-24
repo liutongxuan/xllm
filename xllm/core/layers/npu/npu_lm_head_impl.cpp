@@ -24,7 +24,7 @@ namespace xllm {
 namespace layer {
 
 void NpuLmHeadImpl::param_from_args(atb_speed::common::LmHeadParam& param,
-                                    const ModelArgs& args,
+                                    const ModelArgsBundle& args,
                                     const ParallelArgs& parallel_args,
                                     bool isPrefill) {
   // Keep outputHidden=false and contextParallelInfo empty to avoid nested CP

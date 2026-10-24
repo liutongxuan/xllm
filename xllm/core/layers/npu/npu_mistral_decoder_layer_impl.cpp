@@ -60,7 +60,7 @@ NpuMistralDecoderLayerImpl::NpuMistralDecoderLayerImpl(
 // fix param
 void NpuMistralDecoderLayerImpl::param_from_args(
     atb_speed::mistral::MistralLayerParam& param,
-    const ModelArgs& args,
+    const ModelArgsBundle& args,
     const ParallelArgs& parallel_args,
     bool is_prefill) {
   // Basic settings

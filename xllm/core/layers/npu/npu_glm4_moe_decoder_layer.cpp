@@ -92,7 +92,7 @@ void NpuGlm4MoeDecoderImpl::initialize_tensors(
 
 void NpuGlm4MoeDecoderImpl::param_from_args(
     atb_speed::glm::MoeLayerParam& param,
-    const ModelArgs& args,
+    const ModelArgsBundle& args,
     const ParallelArgs& parallel_args,
     bool is_prefill) {
   initialize_basic_parameters(param, args, parallel_args, is_prefill);
@@ -112,7 +112,7 @@ void NpuGlm4MoeDecoderImpl::initialize_weight_tensors(
 
 void NpuGlm4MoeDecoderImpl::initialize_basic_parameters(
     atb_speed::glm::MoeLayerParam& param,
-    const ModelArgs& args,
+    const ModelArgsBundle& args,
     const ParallelArgs& parallel_args,
     bool is_prefill) {
   param.isFA = false;
@@ -173,7 +173,7 @@ void NpuGlm4MoeDecoderImpl::initialize_basic_parameters(
 
 void NpuGlm4MoeDecoderImpl::initialize_attention_parameters(
     atb_speed::glm::MoeLayerParam& param,
-    const ModelArgs& args,
+    const ModelArgsBundle& args,
     const ParallelArgs& parallel_args) {
   param.linearHasBias = {true, false, false, false};
   // param.enableFA3 = false;           // TODO
@@ -182,7 +182,7 @@ void NpuGlm4MoeDecoderImpl::initialize_attention_parameters(
 
 void NpuGlm4MoeDecoderImpl::initialize_mlp_parameters(
     atb_speed::glm::MoeLayerParam& param,
-    const ModelArgs& args,
+    const ModelArgsBundle& args,
     const ParallelArgs& parallel_args) {
   param.hasSharedExpert = (args.n_shared_experts() > 0);
   param.hasSharedExpertGate = false;

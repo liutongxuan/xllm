@@ -32,6 +32,8 @@ namespace xllm {
 // expose references to them; ModelArgs remains the loading configuration.
 class AttentionModelParams final {
  public:
+  REFLECT_PROPERTIES(AttentionModelParams);
+
   AttentionModelParams() = default;
   explicit AttentionModelParams(const ModelArgs& args)
       : head_dim_(args.head_dim()),
@@ -130,6 +132,8 @@ class AttentionModelParams final {
 
 class LinearAttentionModelParams final {
  public:
+  REFLECT_PROPERTIES(LinearAttentionModelParams);
+
   LinearAttentionModelParams() = default;
   explicit LinearAttentionModelParams(const ModelArgs& args)
       : full_attention_interval_(args.full_attention_interval()),
@@ -182,6 +186,8 @@ class LinearAttentionModelParams final {
 
 class KVCacheModelParams final {
  public:
+  REFLECT_PROPERTIES(KVCacheModelParams);
+
   KVCacheModelParams() = default;
   explicit KVCacheModelParams(const ModelArgs& args)
       : kv_cache_storage_head_dim_(args.kv_cache_storage_head_dim()),
@@ -245,6 +251,8 @@ class KVCacheModelParams final {
 
 class MoEModelParams final {
  public:
+  REFLECT_PROPERTIES(MoEModelParams);
+
   MoEModelParams() = default;
   explicit MoEModelParams(const ModelArgs& args)
       : use_moe_(args.use_moe()),
@@ -305,6 +313,8 @@ class MoEModelParams final {
 
 class SpeculativeModelParams final {
  public:
+  REFLECT_PROPERTIES(SpeculativeModelParams);
+
   SpeculativeModelParams() = default;
   explicit SpeculativeModelParams(const ModelArgs& args)
       : draft_vocab_size_(args.draft_vocab_size()),
@@ -356,6 +366,8 @@ class SpeculativeModelParams final {
 
 class EmbeddingModelParams final {
  public:
+  REFLECT_PROPERTIES(EmbeddingModelParams);
+
   EmbeddingModelParams() = default;
   explicit EmbeddingModelParams(const ModelArgs& args)
       : query_num_(args.query_num()),
@@ -369,6 +381,8 @@ class EmbeddingModelParams final {
 
 class ExecutionModelParams final {
  public:
+  REFLECT_PROPERTIES(ExecutionModelParams);
+
   ExecutionModelParams() = default;
   explicit ExecutionModelParams(const ModelArgs& args)
       : model_type_(args.model_type()),

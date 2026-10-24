@@ -35,11 +35,11 @@ namespace layer {
 
 namespace {
 
-bool is_kimi_text_model(const ModelArgs& args) {
+bool is_kimi_text_model(const ModelArgsBundle& args) {
   return args.model_type() == "kimi_k2" || args.model_type() == "kimi_k25";
 }
 
-bool uses_deepseek_v2_mla_graph(const ModelArgs& args) {
+bool uses_deepseek_v2_mla_graph(const ModelArgsBundle& args) {
   return args.enable_mla() && args.model_type() == "kimi_k25";
 }
 
@@ -279,7 +279,7 @@ void NpuDeepseekV2DecoderLayerImpl::initialize_tensors(
 
 void NpuDeepseekV2DecoderLayerImpl::param_from_args(
     atb_speed::deepseekV2::DecoderLayerParam& param,
-    const ModelArgs& args,
+    const ModelArgsBundle& args,
     const ParallelArgs& parallel_args,
     bool is_prefill,
     bool is_prefixcache) {
@@ -294,7 +294,7 @@ void NpuDeepseekV2DecoderLayerImpl::param_from_args(
 
 void NpuDeepseekV2DecoderLayerImpl::initialize_basic_parameters(
     atb_speed::deepseekV2::DecoderLayerParam& param,
-    const ModelArgs& args,
+    const ModelArgsBundle& args,
     const ParallelArgs& parallel_args,
     bool is_prefill,
     bool is_prefixcache) {
@@ -357,7 +357,7 @@ void NpuDeepseekV2DecoderLayerImpl::initialize_basic_parameters(
 
 void NpuDeepseekV2DecoderLayerImpl::initialize_attention_parameters(
     atb_speed::deepseekV2::DecoderLayerParam& param,
-    const ModelArgs& args,
+    const ModelArgsBundle& args,
     const ParallelArgs& parallel_args) {
   param.qLoraRank = args.q_lora_rank();
   // NOTE: The operation in this conditional is theoretically compatible with
@@ -382,7 +382,7 @@ void NpuDeepseekV2DecoderLayerImpl::initialize_attention_parameters(
 
 void NpuDeepseekV2DecoderLayerImpl::initialize_mlp_parameters(
     atb_speed::deepseekV2::DecoderLayerParam& param,
-    const ModelArgs& args,
+    const ModelArgsBundle& args,
     const ParallelArgs& parallel_args) {
   param.hasSharedExpert = (args.n_shared_experts() > 0);
   param.hasSharedExpertGate = false;
@@ -457,7 +457,7 @@ void NpuDeepseekV2DecoderLayerImpl::initialize_mlp_parameters(
 
 void NpuDeepseekV2DecoderLayerImpl::initialize_kimi_k2_parameters(
     atb_speed::deepseekV2::DecoderLayerParam& param,
-    const ModelArgs& args,
+    const ModelArgsBundle& args,
     bool is_prefill) {
   if (!is_kimi_text_model(args)) {
     return;

@@ -17,11 +17,89 @@ limitations under the License.
 
 #include <gtest/gtest.h>
 
+#include <string>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
+#include <variant>
+#include <vector>
 
 namespace xllm {
 namespace {
+
+class ConfigPropertyVisitor final : public PropertyVisitor {
+ public:
+  using Value = std::variant<std::monostate,
+                             bool,
+                             int32_t,
+                             int64_t,
+                             float,
+                             double,
+                             std::string,
+                             std::vector<int32_t>,
+                             std::vector<int64_t>,
+                             std::vector<float>,
+                             std::vector<double>,
+                             std::vector<bool>,
+                             std::vector<std::string>,
+                             std::unordered_set<int32_t>>;
+  using Values = std::unordered_map<std::string, Value>;
+
+  void visit(const std::string& name, bool value) override {
+    values_[name] = value;
+  }
+  void visit(const std::string& name, int32_t value) override {
+    values_[name] = value;
+  }
+  void visit(const std::string& name, int64_t value) override {
+    values_[name] = value;
+  }
+  void visit(const std::string& name, float value) override {
+    values_[name] = value;
+  }
+  void visit(const std::string& name, double value) override {
+    values_[name] = value;
+  }
+  void visit(const std::string& name, const std::string& value) override {
+    values_[name] = value;
+  }
+  void visit(const std::string& name,
+             const std::vector<int32_t>& value) override {
+    values_[name] = value;
+  }
+  void visit(const std::string& name,
+             const std::vector<int64_t>& value) override {
+    values_[name] = value;
+  }
+  void visit(const std::string& name,
+             const std::vector<float>& value) override {
+    values_[name] = value;
+  }
+  void visit(const std::string& name,
+             const std::vector<double>& value) override {
+    values_[name] = value;
+  }
+  void visit(const std::string& name, const std::vector<bool>& value) override {
+    values_[name] = value;
+  }
+  void visit(const std::string& name,
+             const std::vector<std::string>& value) override {
+    values_[name] = value;
+  }
+  void visit(const std::string& name,
+             const std::unordered_set<int32_t>& value) override {
+    values_[name] = value;
+  }
+  void visit_absent(const std::string& name) override {
+    values_[name] = std::monostate{};
+  }
+
+  const Values& values() const { return values_; }
+
+ private:
+  Values values_;
+};
 
 TEST(ModelFamilyTest, ParsesAndNamesSupportedFamilies) {
   const std::pair<std::string_view, ModelFamily::Value> cases[] = {
@@ -194,6 +272,91 @@ TEST(ModelFamilyArgsTest, CopiesOwnIndependentCapabilityStorage) {
   EXPECT_NE(&original.attention_params(), &copied.attention_params());
   EXPECT_EQ(&copied.draft_vocab_size(),
             &copied.speculative_params().draft_vocab_size());
+}
+
+TEST(ModelArgsBundleTest, PreservesLanguageConfigPropertyNamesAndValues) {
+  ModelArgs config{};
+  config.model_type() = "qwen3_5_moe";
+  config.hidden_size() = 1024;
+  config.n_layers() = 28;
+  config.n_kv_heads() = 8;
+  config.layer_types() = {"linear_attention", "full_attention"};
+  config.index_topk() = 256;
+  config.n_routed_experts() = 64;
+  config.layers_to_capture() = {1, 3};
+  config.num_speculative_tokens() = 4;
+  config.embedding_mode() = true;
+  config.stop_token_ids() = {2, 3};
+
+  ConfigPropertyVisitor legacy;
+  visit_properties(config, legacy);
+  const ModelArgsBundle bundle(config, ModelFamily::LLM);
+  ConfigPropertyVisitor reflected;
+  visit_language_model_properties(bundle, reflected);
+
+  // All seven language capabilities participate in the exported config.
+  EXPECT_EQ(reflected.values().size(), 152);
+  for (const auto& [name, value] : reflected.values()) {
+    SCOPED_TRACE(name);
+    const auto original = legacy.values().find(name);
+    ASSERT_NE(original, legacy.values().end());
+    EXPECT_EQ(value, original->second);
+  }
+  EXPECT_EQ(std::get<int64_t>(reflected.values().at("n_layers")), 28);
+  EXPECT_EQ(std::get<int64_t>(reflected.values().at("n_kv_heads")), 8);
+  EXPECT_TRUE(std::holds_alternative<std::monostate>(
+      reflected.values().at("decoder_n_kv_heads")));
+  EXPECT_TRUE(std::holds_alternative<std::monostate>(
+      reflected.values().at("attn_scalar")));
+  EXPECT_EQ(std::get<int32_t>(reflected.values().at("n_routed_experts")), 64);
+  EXPECT_EQ(std::get<std::vector<int32_t>>(
+                reflected.values().at("layers_to_capture")),
+            (std::vector<int32_t>{1, 3}));
+  EXPECT_EQ(std::get<int64_t>(reflected.values().at("num_speculative_tokens")),
+            4);
+  EXPECT_EQ(reflected.values().count("mm_hidden_size"), 0);
+}
+
+TEST(ModelArgsBundleTest, PreservesVisionConfigAlongsideLanguageCapabilities) {
+  ModelArgs config{};
+  config.model_type() = "glm4v_moe";
+  config.hidden_size() = 4096;
+  config.mm_hidden_size() = 1152;
+  config.mm_deepstack_visual_indexes() = {2, 5};
+  config.image_token_id() = 100;
+  config.mm_audio_cmvn_means() = {0.25, 0.5};
+  config.n_routed_experts() = 16;
+  config.num_speculative_tokens() = 3;
+  config.attn_scalar() = 0.125f;
+
+  ConfigPropertyVisitor legacy;
+  visit_properties(config, legacy);
+  const ModelArgsBundle bundle(config, ModelFamily::VLM);
+  ConfigPropertyVisitor reflected;
+  visit_language_model_properties(bundle, reflected);
+
+  // Language and vision share the original dtype and RMS norm property names.
+  EXPECT_EQ(reflected.values().size(), 276);
+  for (const auto& [name, value] : reflected.values()) {
+    SCOPED_TRACE(name);
+    const auto original = legacy.values().find(name);
+    ASSERT_NE(original, legacy.values().end());
+    EXPECT_EQ(value, original->second);
+  }
+  EXPECT_EQ(std::get<int64_t>(reflected.values().at("hidden_size")), 4096);
+  EXPECT_EQ(std::get<int64_t>(reflected.values().at("mm_hidden_size")), 1152);
+  EXPECT_EQ(std::get<int32_t>(reflected.values().at("image_token_id")), 100);
+  EXPECT_EQ(std::get<std::vector<int64_t>>(
+                reflected.values().at("mm_deepstack_visual_indexes")),
+            (std::vector<int64_t>{2, 5}));
+  EXPECT_EQ(std::get<std::vector<double>>(
+                reflected.values().at("mm_audio_cmvn_means")),
+            (std::vector<double>{0.25, 0.5}));
+  EXPECT_EQ(std::get<int32_t>(reflected.values().at("n_routed_experts")), 16);
+  EXPECT_EQ(std::get<int64_t>(reflected.values().at("num_speculative_tokens")),
+            3);
+  EXPECT_FLOAT_EQ(std::get<float>(reflected.values().at("attn_scalar")),
+                  0.125f);
 }
 
 TEST(ModelArgsBundleTest, KeepsVlmComponentCapabilitiesWithItsOwnedArguments) {

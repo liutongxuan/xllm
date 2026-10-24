@@ -39,7 +39,7 @@ const int32_t IN_MLP_W2_WEIGHT = 32;
 
 void NpuEagle3DecoderLayerImpl::param_from_args(
     atb_speed::eagle3::DecoderLayerParam& param,
-    const ModelArgs& args,
+    const ModelArgsBundle& args,
     const ParallelArgs& parallel_args,
     bool isPrefill) {
   param.isFA = false;

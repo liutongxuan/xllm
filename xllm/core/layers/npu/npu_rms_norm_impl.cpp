@@ -23,7 +23,7 @@ namespace xllm {
 namespace layer {
 
 void NpuRMSNormImpl::param_from_args(atb::infer::RmsNormParam& param,
-                                     const ModelArgs& args) {
+                                     const ModelArgsBundle& args) {
   param.layerType = atb::infer::RmsNormParam::RmsNormType::RMS_NORM_NORM;
   param.normParam.epsilon = args.rms_norm_eps();
 }

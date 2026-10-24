@@ -34,7 +34,7 @@ const uint64_t WEIGHT_COUNT_PER_LAYER = 52;
 
 void NpuGlm4DecoderLayerImpl::param_from_args(
     atb_speed::chatglm::ChatglmLayerParam& param,
-    const ModelArgs& args,
+    const ModelArgsBundle& args,
     const ParallelArgs& parallel_args,
     bool isPrefill) {
   param.isFA = false;

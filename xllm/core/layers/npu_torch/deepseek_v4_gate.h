@@ -21,7 +21,7 @@ limitations under the License.
 #include <string>
 #include <tuple>
 
-#include "framework/model/model_args.h"
+#include "framework/model/model_family_args.h"
 #include "framework/model_context/model_context.h"
 #include "framework/state_dict/state_dict.h"
 
@@ -32,7 +32,7 @@ class DeepseekV4GateImpl : public torch::nn::Module {
  public:
   DeepseekV4GateImpl() = default;
   DeepseekV4GateImpl(const ModelContext& context, int32_t layer_id);
-  DeepseekV4GateImpl(const ModelArgs& args,
+  DeepseekV4GateImpl(const LlmModelArgs& args,
                      int32_t layer_id,
                      const torch::TensorOptions& options);
 

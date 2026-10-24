@@ -69,7 +69,7 @@ bool is_low_latency_decode_bucket(const torch::Tensor& input) {
 
 void NpuQwen3DecoderLayerImpl::param_from_args(
     atb_speed::qwen::QwenLayerParam& param,
-    const ModelArgs& args,
+    const ModelArgsBundle& args,
     const ParallelArgs& parallel_args,
     bool isPrefill) {
   param.isFA = false;

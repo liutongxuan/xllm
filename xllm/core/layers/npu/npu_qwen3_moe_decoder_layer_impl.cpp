@@ -94,7 +94,7 @@ void NpuQwen3MoeDecoderLayerImpl::initialize_tensors(
 
 void NpuQwen3MoeDecoderLayerImpl::param_from_args(
     atb_speed::qwen::MoeDecoderLayerParam& param,
-    const ModelArgs& args,
+    const ModelArgsBundle& args,
     const ParallelArgs& parallel_args,
     bool is_prefill) {
   initialize_basic_parameters(param, args, parallel_args, is_prefill);
@@ -106,7 +106,7 @@ void NpuQwen3MoeDecoderLayerImpl::param_from_args(
 
 void NpuQwen3MoeDecoderLayerImpl::initialize_basic_parameters(
     atb_speed::qwen::MoeDecoderLayerParam& param,
-    const ModelArgs& args,
+    const ModelArgsBundle& args,
     const ParallelArgs& parallel_args,
     bool is_prefill) {
   param.isFA = false;
@@ -194,7 +194,7 @@ void NpuQwen3MoeDecoderLayerImpl::initialize_basic_parameters(
 
 void NpuQwen3MoeDecoderLayerImpl::initialize_attention_parameters(
     atb_speed::qwen::MoeDecoderLayerParam& param,
-    const ModelArgs& args,
+    const ModelArgsBundle& args,
     const ParallelArgs& parallel_args) {
   param.enableFA3 = false;           // TODO
   param.enableKvQuantLayer = false;  // TODO
@@ -202,7 +202,7 @@ void NpuQwen3MoeDecoderLayerImpl::initialize_attention_parameters(
 
 void NpuQwen3MoeDecoderLayerImpl::initialize_mlp_parameters(
     atb_speed::qwen::MoeDecoderLayerParam& param,
-    const ModelArgs& args,
+    const ModelArgsBundle& args,
     const ParallelArgs& parallel_args) {
   param.hasSharedExpert = (args.n_shared_experts() > 0);
   param.hasSharedExpertGate = false;

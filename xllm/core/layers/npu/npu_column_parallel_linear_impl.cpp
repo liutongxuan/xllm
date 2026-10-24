@@ -22,7 +22,7 @@ namespace layer {
 
 void NpuColumnParallelLinearImpl::param_from_args(
     atb_speed::common::LinearParallelParam& param,
-    const ModelArgs& args,
+    const ModelArgsBundle& args,
     const ParallelArgs& parallel_args) {
   param.fusionLinearParam.isBF16 = args.dtype() == "bfloat16";
   param.unpadInputs = true;

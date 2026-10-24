@@ -65,7 +65,7 @@ NpuLlamaDecoderLayerImpl::NpuLlamaDecoderLayerImpl(const ModelContext& context)
 // fix param
 void NpuLlamaDecoderLayerImpl::param_from_args(
     atb_speed::llama::LlamaLayerParam& param,
-    const ModelArgs& args,
+    const ModelArgsBundle& args,
     const ParallelArgs& parallel_args,
     bool isPrefill) {
   param.isFA = false;

@@ -98,11 +98,11 @@ int64_t python_qwen3_5_mega_moe_max_num_tokens_per_rank(
 
 PyCausalLM::PyCausalLM(const ModelContext& context,
                        std::string python_model_name)
-    : model_args_(context.get_llm_model_args()),
+    : model_args_(context.get_model_args_bundle()),
       python_model_name_(std::move(python_model_name)),
       options_(context.get_tensor_options()),
       device_(context.get_tensor_options().device()),
-      enable_mla_(context.get_llm_model_args().enable_mla()) {
+      enable_mla_(model_args_.enable_mla()) {
   ensure_python_interpreter();
 
   const ParallelArgs& parallel_args = context.get_parallel_args();
@@ -306,9 +306,8 @@ PyCausalLM::PyCausalLM(const ModelContext& context,
   }
   const std::string module_name =
       python_model_name_.empty()
-          ? (context.get_llm_model_args().model_type().empty()
-                 ? std::string("Qwen3ForCausalLM")
-                 : context.get_llm_model_args().model_type())
+          ? (model_args_.model_type().empty() ? std::string("Qwen3ForCausalLM")
+                                              : model_args_.model_type())
           : python_model_name_;
   py::module_ registry = py::module_::import("xllm.python.registry");
   py::object model_cls = registry.attr("get_model_class")(py::str(module_name));
@@ -336,7 +335,7 @@ py::dict PyCausalLM::build_config_dict(const ModelContext& context) const {
   const auto& parallel_args = context.get_parallel_args();
   py::dict d;
   PyDictVisitor visitor(d);
-  visit_properties(model_args_, visitor);
+  visit_language_model_properties(model_args_, visitor);
   visit_properties(parallel_args, visitor);
   d["dtype"] = dtype_to_string(options_);
   d["device"] = c10::str(device_);

@@ -467,7 +467,7 @@ void NpuDeepseekV32DecoderLayerImpl::initialize_tensors(
 
 void NpuDeepseekV32DecoderLayerImpl::param_from_args(
     atb_speed::deepseekV2::DecoderLayerParam& param,
-    const ModelArgs& args,
+    const ModelArgsBundle& args,
     const ParallelArgs& parallel_args,
     bool is_prefill) {
   initialize_basic_parameters(param, args, parallel_args, is_prefill);
@@ -479,7 +479,7 @@ void NpuDeepseekV32DecoderLayerImpl::param_from_args(
 
 void NpuDeepseekV32DecoderLayerImpl::initialize_basic_parameters(
     atb_speed::deepseekV2::DecoderLayerParam& param,
-    const ModelArgs& args,
+    const ModelArgsBundle& args,
     const ParallelArgs& parallel_args,
     bool is_prefill) {
   param.isFA = false;
@@ -562,7 +562,7 @@ void NpuDeepseekV32DecoderLayerImpl::initialize_basic_parameters(
 
 void NpuDeepseekV32DecoderLayerImpl::initialize_attention_parameters(
     atb_speed::deepseekV2::DecoderLayerParam& param,
-    const ModelArgs& args,
+    const ModelArgsBundle& args,
     const ParallelArgs& parallel_args) {
   param.qLoraRank = args.q_lora_rank();
   // NOTE: The operation in this conditional is theoretically compatible with
@@ -596,7 +596,7 @@ void NpuDeepseekV32DecoderLayerImpl::initialize_attention_parameters(
 
 void NpuDeepseekV32DecoderLayerImpl::initialize_mlp_parameters(
     atb_speed::deepseekV2::DecoderLayerParam& param,
-    const ModelArgs& args,
+    const ModelArgsBundle& args,
     const ParallelArgs& parallel_args) {
   const bool is_glm_moe_dsa =
       args.model_type().find("glm_moe_dsa") != std::string::npos;

@@ -293,6 +293,8 @@ class LlmModelArgs final {
 
 class VlmVisionModelArgs final {
  public:
+  REFLECT_PROPERTIES(VlmVisionModelArgs);
+
   VlmVisionModelArgs()
       : VlmVisionModelArgs(model_family_args_detail::default_model_args()) {}
   explicit VlmVisionModelArgs(const ModelArgs& args)
@@ -1865,6 +1867,25 @@ class ModelArgsBundle final {
                DiTComponentModelArgs>
       args_;
 };
+
+// Export the language-model configuration directly from its owned capabilities.
+// VLMs also expose their vision configuration under the original property
+// names.
+inline void visit_language_model_properties(const ModelArgsBundle& args,
+                                            PropertyVisitor& visitor) {
+  CHECK(args.family() == ModelFamily::LLM || args.family() == ModelFamily::VLM)
+      << "Language model properties require LLM or VLM arguments";
+  if (args.family() == ModelFamily::VLM) {
+    visit_properties(args.vlm_model_args().vision(), visitor);
+  }
+  visit_properties(args.attention_params(), visitor);
+  visit_properties(args.linear_attention_params(), visitor);
+  visit_properties(args.kv_cache_params(), visitor);
+  visit_properties(args.moe_params(), visitor);
+  visit_properties(args.speculative_params(), visitor);
+  visit_properties(args.embedding_params(), visitor);
+  visit_properties(args.execution_params(), visitor);
+}
 
 inline bool has_linear_attention_layers(const LlmModelArgs& args) {
   return args.linear_attention_params().has_linear_attention_layers();
