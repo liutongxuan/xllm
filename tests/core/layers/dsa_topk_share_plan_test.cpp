@@ -60,5 +60,37 @@ TEST(DsaTopkSharePlanTest, DisablesCrossStepReuseForTargetModel) {
   EXPECT_FALSE(is_mtp_dsa_topk_reuse_enabled(args));
 }
 
+TEST(DsaTopkSharePlanTest, FiltersTypedHybridTargetIndexerLayers) {
+  ModelArgs config = make_dsa_mtp_args();
+  config.model_type() = "glm5_next";
+  config.n_layers() = 4;
+  config.layer_types() = {"linear_attention",
+                          "deepseek_sparse_attention",
+                          "linear_attention",
+                          "deepseek_sparse_attention"};
+  config.indexer_types() = {"full", "full", "full", "shared"};
+  const LlmModelArgs args(config);
+
+  const DsaTopkSharePlan plan(args);
+  EXPECT_TRUE(has_linear_attention_layers(args));
+  EXPECT_TRUE(plan.has_reuse());
+  EXPECT_TRUE(plan.decision_for(1).output_topk);
+  EXPECT_TRUE(plan.decision_for(3).reuse_topk);
+  EXPECT_EQ(get_dsa_indexer_layer_mask(args, /*num_cache_layers=*/4),
+            (std::vector<bool>{false, true, false, false}));
+}
+
+TEST(DsaTopkSharePlanTest, FiltersTypedHybridMtpIndexerLayers) {
+  ModelArgs config = make_dsa_mtp_args();
+  config.n_layers() = 4;
+  config.full_attention_interval() = 2;
+  config.indexer_types() = {"full", "full", "full", "shared"};
+  const LlmModelArgs args(config);
+
+  EXPECT_TRUE(has_linear_attention_layers(args));
+  EXPECT_EQ(get_dsa_indexer_layer_mask(args, /*num_cache_layers=*/4),
+            (std::vector<bool>{false, true, false, true}));
+}
+
 }  // namespace
 }  // namespace xllm::layer

@@ -901,6 +901,7 @@ class DiTVaeModelArgs final {
         block_out_channels_(args.block_out_channels()),
         layers_per_block_(args.layers_per_block()),
         latent_channels_(args.latent_channels()),
+        latent_dim_(args.latent_dim()),
         norm_num_groups_(args.norm_num_groups()),
         sample_size_(args.sample_size()),
         scale_factor_(args.scale_factor()),
@@ -971,6 +972,7 @@ class DiTVaeModelArgs final {
   PROPERTY(std::vector<int64_t>, block_out_channels) = {};
   PROPERTY(int64_t, layers_per_block) = 1;
   PROPERTY(int64_t, latent_channels) = -1;
+  PROPERTY(int64_t, latent_dim) = 0;
   PROPERTY(int64_t, norm_num_groups) = -1;
   PROPERTY(int64_t, sample_size) = -1;
   PROPERTY(float, scale_factor) = 0.0f;
@@ -1088,7 +1090,8 @@ class DiTSchedulerModelArgs final {
   DiTSchedulerModelArgs()
       : DiTSchedulerModelArgs(model_family_args_detail::default_model_args()) {}
   explicit DiTSchedulerModelArgs(const ModelArgs& args)
-      : num_train_timesteps_(args.num_train_timesteps()),
+      : model_type_(args.model_type()),
+        num_train_timesteps_(args.num_train_timesteps()),
         shift_(args.shift()),
         use_dynamic_shifting_(args.use_dynamic_shifting()),
         base_shift_(args.base_shift()),
@@ -1123,6 +1126,7 @@ class DiTSchedulerModelArgs final {
   explicit DiTSchedulerModelArgs(ModelArgs&&) = delete;
   explicit DiTSchedulerModelArgs(const ModelArgs&&) = delete;
 
+  PROPERTY(std::string, model_type);
   PROPERTY(int64_t, num_train_timesteps) = 0;
   PROPERTY(int64_t, shift) = 0;
   PROPERTY(bool, use_dynamic_shifting) = false;
@@ -1861,6 +1865,15 @@ class ModelArgsBundle final {
                DiTComponentModelArgs>
       args_;
 };
+
+inline bool has_linear_attention_layers(const LlmModelArgs& args) {
+  return args.linear_attention_params().has_linear_attention_layers();
+}
+
+inline bool is_full_attention_layer(const LlmModelArgs& args,
+                                    int64_t layer_id) {
+  return args.linear_attention_params().is_full_attention_layer(layer_id);
+}
 
 inline bool has_linear_attention_layers(const ModelArgsBundle& args) {
   return args.linear_attention_params().has_linear_attention_layers();

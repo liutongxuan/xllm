@@ -112,13 +112,14 @@ TORCH_MODULE(BaseResampler);
 class KVProjectorLinearImpl : public torch::nn::Module {
  public:
   KVProjectorLinearImpl(const ModelContext& context) {
-    const auto& model_args = context.get_vlm_model_args().vision();
+    const auto& model_args = context.get_vlm_model_args();
 
     linear_ = register_module(
         "linear",
-        torch::nn::Linear(torch::nn::LinearOptions(model_args.mm_hidden_size(),
-                                                   model_args.hidden_size())
-                              .bias(false)));
+        torch::nn::Linear(
+            torch::nn::LinearOptions(model_args.vision().mm_hidden_size(),
+                                     model_args.hidden_size())
+                .bias(false)));
     linear_->weight.set_data(linear_->weight.to(context.get_tensor_options()));
   }
 
@@ -560,11 +561,6 @@ class Idefics2EncoderImpl : public torch::nn::Module {
     layers_.reserve(model_args.mm_num_hidden_layers());
     blocks_ = register_module("blocks", torch::nn::ModuleList());
     for (int32_t i = 0; i < model_args.mm_num_hidden_layers(); i++) {
-      int32_t sliding_window = -1;
-      if (model_args.use_sliding_window() &&
-          i >= model_args.max_window_layers()) {
-        sliding_window = model_args.sliding_window();
-      }
       auto block = layer::NpuSiglipEncoderLayer(context);
       layers_.push_back(block);
       blocks_->push_back(block);

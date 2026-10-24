@@ -93,7 +93,7 @@ class XliteCausalLMBase : public CausalLM, public XliteModelHolder {
                     std::unique_ptr<XliteModelAdapter> adapter)
       : options_(context.get_tensor_options()),
         device_(options_.device()),
-        args_(context.get_model_args_bundle()),
+        args_(context.get_llm_model_args()),
         parallel_(context.get_parallel_args()),
         adapter_(std::move(adapter)),
         ready_(false) {
@@ -291,7 +291,7 @@ class XliteCausalLMBase : public CausalLM, public XliteModelHolder {
  protected:
   torch::TensorOptions options_;
   torch::Device device_;
-  ModelArgs args_;
+  LlmModelArgs args_;
   ParallelArgs parallel_;
   XModelConfig cfg_{};
   std::unique_ptr<XRuntime> rt_;

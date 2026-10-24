@@ -266,5 +266,44 @@ TEST(ModelArgsBundleTest, SelectsArgumentsFromParsedDitComponentTypes) {
             256);
 }
 
+TEST(ModelArgsBundleTest, PreservesAudioVaeLatentDimensions) {
+  ModelArgs config{};
+  config.latent_channels() = 64;
+  config.latent_dim() = 2048;
+
+  const ModelArgsBundle bundle(
+      config, ModelFamily::DIT, DiTComponentType("audio_vae"));
+  const auto& vae = bundle.dit_model_args().vae();
+  EXPECT_EQ(vae.latent_channels(), 64);
+  EXPECT_EQ(vae.latent_dim(), 2048);
+}
+
+TEST(ModelArgsBundleTest, PreservesSchedulerModelSelection) {
+  for (const std::string_view model_type :
+       {"FlowMatchEulerDiscreteScheduler", "UniPCMultistepScheduler"}) {
+    SCOPED_TRACE(model_type);
+    ModelArgs config{};
+    config.model_type() = model_type;
+    config.num_train_timesteps() = 1000;
+
+    const ModelArgsBundle bundle(
+        config, ModelFamily::DIT, DiTComponentType::SCHEDULER);
+    const auto& scheduler = bundle.dit_model_args().scheduler();
+    EXPECT_EQ(scheduler.model_type(), model_type);
+    EXPECT_EQ(scheduler.num_train_timesteps(), 1000);
+  }
+}
+
+TEST(ModelArgsBundleTest, KeepsVisionAndTextProjectionWidthsDistinct) {
+  ModelArgs config{};
+  config.hidden_size() = 4096;
+  config.mm_hidden_size() = 1152;
+
+  const ModelArgsBundle bundle(config, ModelFamily::VLM);
+  const auto& vlm = bundle.vlm_model_args();
+  EXPECT_EQ(vlm.vision().mm_hidden_size(), 1152);
+  EXPECT_EQ(vlm.hidden_size(), 4096);
+}
+
 }  // namespace
 }  // namespace xllm
