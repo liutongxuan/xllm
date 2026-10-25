@@ -1410,7 +1410,8 @@ TEST_F(AclGraphExecutorTest, BatchInputCarriesLinearStateIds) {
 
   forward_input.input_params.linear_state_validity_mask = {1};
   forward_input = forward_input.to(*device_, torch::kFloat32);
-  npu::GraphPersistentParam persistent_param(model_args_, *device_, options_);
+  npu::GraphPersistentParam persistent_param(
+      ModelArgsBundle(model_args_, ModelFamily::LLM), *device_, options_);
   std::optional<ModelParamsView> params_for_capture = persistent_param.update(
       forward_input.token_ids,
       first_full_attention_cache(kv_caches_).get_k_cache(),
@@ -1513,7 +1514,7 @@ TEST(AclGraphPersistentParamTest, SpecVerifyMetadataUsesTokenCapacity) {
 
   const torch::Device device("npu:0");
   ::xllm::npu::GraphPersistentParam persistent_param(
-      args,
+      ModelArgsBundle(args, ModelFamily::LLM),
       device,
       options,
       /*need_update_attn_mask=*/false,
@@ -1568,7 +1569,7 @@ TEST(AclGraphPersistentParamTest, SpecVerifyMetadataUsesTokenCapacity) {
   }
 
   ::xllm::npu::GraphPersistentParam hybrid_persistent_param(
-      args,
+      ModelArgsBundle(args, ModelFamily::LLM),
       device,
       options,
       /*need_update_attn_mask=*/false,
@@ -1603,7 +1604,7 @@ TEST(AclGraphPersistentParamTest, HybridSpecVerifyMetadataCoversBucketPadding) {
   const torch::Device device("npu:0");
   // 4 seqs x 5 decoding tokens = 20 rows -> bucket 32 -> 7 metadata rows.
   ::xllm::npu::GraphPersistentParam persistent_param(
-      args,
+      ModelArgsBundle(args, ModelFamily::LLM),
       device,
       options,
       /*need_update_attn_mask=*/false,
@@ -1702,7 +1703,7 @@ TEST(AclGraphPersistentParamTest,
   const torch::Device device("npu:0");
   const auto int_options = torch::dtype(torch::kInt).device(device);
   ::xllm::npu::GraphPersistentParam persistent_param(
-      args,
+      ModelArgsBundle(args, ModelFamily::LLM),
       device,
       options,
       /*need_update_attn_mask=*/false,
@@ -1783,7 +1784,8 @@ TEST(AclGraphPersistentParamTest, AuxHiddenStatesUseGraphTokenCapacity) {
       torch::dtype(torch::kFloat32).device(device);
   const torch::Tensor aux_hidden_states = torch::ones({12, 16}, tensor_options);
 
-  ::xllm::npu::GraphPersistentParam target_param(args, device, options);
+  ::xllm::npu::GraphPersistentParam target_param(
+      ModelArgsBundle(args, ModelFamily::LLM), device, options);
   target_param.set_aux_hidden_states(aux_hidden_states);
   const int64_t expected_target_capacity =
       runtime::get_decode_graph_token_bucket(
@@ -1793,7 +1795,8 @@ TEST(AclGraphPersistentParamTest, AuxHiddenStatesUseGraphTokenCapacity) {
   EXPECT_EQ(target_param.aux_hidden_states().size(0), expected_target_capacity);
 
   options.is_draft_engine(true);
-  ::xllm::npu::GraphPersistentParam draft_param(args, device, options);
+  ::xllm::npu::GraphPersistentParam draft_param(
+      ModelArgsBundle(args, ModelFamily::LLM), device, options);
   draft_param.set_aux_hidden_states(aux_hidden_states.slice(
       /*dim=*/0, /*start=*/0, /*end=*/options.max_seqs_per_batch()));
   const int64_t expected_draft_capacity =
@@ -1945,7 +1948,7 @@ TEST(AclGraphPersistentParamTest, SpecVerifyGraphUpdateSupportsRuntimeBatch) {
 
   const torch::Device device("npu:0");
   ::xllm::npu::GraphPersistentParam persistent_param(
-      args,
+      ModelArgsBundle(args, ModelFamily::LLM),
       device,
       options,
       /*need_update_attn_mask=*/false,
@@ -2107,7 +2110,9 @@ TEST(AclGraphPersistentParamTest, DecodeUpdatesEplbMaskWithoutSpecAttention) {
       .block_size(4)
       .dp_size(1);
   npu::GraphPersistentParam persistent_params(
-      args, torch::Device(torch::kCPU), options);
+      ModelArgsBundle(args, ModelFamily::LLM),
+      torch::Device(torch::kCPU),
+      options);
 
   ModelParamsView params = ModelInputSnapshot(LlmModelParams()).view();
   params.meta.batch_forward_type = BatchForwardType::DECODE;
@@ -2167,7 +2172,9 @@ TEST(AclGraphPersistentParamTest, DecodePadsEachDpRankEplbMaskIndependently) {
       .block_size(4)
       .dp_size(2);
   npu::GraphPersistentParam persistent_params(
-      args, torch::Device(torch::kCPU), options);
+      ModelArgsBundle(args, ModelFamily::LLM),
+      torch::Device(torch::kCPU),
+      options);
 
   ModelParamsView params = ModelInputSnapshot(LlmModelParams()).view();
   params.meta.batch_forward_type = BatchForwardType::DECODE;

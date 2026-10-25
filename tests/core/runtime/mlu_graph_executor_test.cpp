@@ -649,7 +649,9 @@ TEST_F(MluGraphExecutorTest, OverConfiguredTokenLimitFallsBackToEager) {
 
 TEST_F(MluGraphExecutorTest, PersistentTensorBytesIncludeLazyAux) {
   ::xllm::mlu::GraphPersistentParam param(
-      model_args_, tensor_options_.device(), options_);
+      ModelArgsBundle(model_args_, ModelFamily::LLM),
+      tensor_options_.device(),
+      options_);
   const std::size_t output_bytes =
       static_cast<std::size_t>(param.output_.numel()) *
       param.output_.element_size();
@@ -663,7 +665,9 @@ TEST_F(MluGraphExecutorTest, PersistentTensorBytesIncludeLazyAux) {
 
 TEST_F(MluGraphExecutorTest, LinearStatePaddingTailUsesPaddingId) {
   ::xllm::mlu::GraphPersistentParam param(
-      model_args_, tensor_options_.device(), options_);
+      ModelArgsBundle(model_args_, ModelFamily::LLM),
+      tensor_options_.device(),
+      options_);
 
   LlmForwardInput first_input = prepare_inputs(/*batch_size=*/4, /*seed=*/83);
   first_input.input_params.embedding.linear_state_ids = {10, 20, 30, 40};

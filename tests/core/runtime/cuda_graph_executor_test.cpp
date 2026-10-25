@@ -535,7 +535,8 @@ TEST(CudaGraphExecutorTest, DecodeMetadataFastPathUpdatesPersistentBuffers) {
   ModelArgs args = make_test_model_args();
   runtime::Options options =
       make_test_runtime_options(/*max_seqs_per_batch=*/4);
-  runtime::cuda::CudaGraphPersistentParam persistent(args, device, options);
+  runtime::cuda::CudaGraphPersistentParam persistent(
+      ModelArgsBundle(args, ModelFamily::LLM), device, options);
 
   torch::TensorOptions iopt =
       torch::TensorOptions().dtype(torch::kInt32).device(device);
@@ -620,7 +621,8 @@ TEST(CudaGraphExecutorTest, DecodeMetadataFastPathUpdatesLinearStateIndices) {
   ModelArgs args = make_test_model_args();
   runtime::Options options =
       make_test_runtime_options(/*max_seqs_per_batch=*/4);
-  runtime::cuda::CudaGraphPersistentParam persistent(args, device, options);
+  runtime::cuda::CudaGraphPersistentParam persistent(
+      ModelArgsBundle(args, ModelFamily::LLM), device, options);
 
   torch::TensorOptions iopt =
       torch::TensorOptions().dtype(torch::kInt32).device(device);
@@ -664,9 +666,9 @@ TEST(CudaGraphExecutorTest, DecodeMetadataFastPathFallbackMatchesLegacyPath) {
   runtime::Options options =
       make_test_runtime_options(/*max_seqs_per_batch=*/4);
   runtime::cuda::CudaGraphPersistentParam fast_path_persistent(
-      args, device, options);
+      ModelArgsBundle(args, ModelFamily::LLM), device, options);
   runtime::cuda::CudaGraphPersistentParam fallback_persistent(
-      args, device, options);
+      ModelArgsBundle(args, ModelFamily::LLM), device, options);
 
   torch::TensorOptions iopt =
       torch::TensorOptions().dtype(torch::kInt32).device(device);
@@ -836,7 +838,8 @@ TEST(CudaGraphExecutorTest, BatchDecodePaddedBucket100CaptureAndReplay) {
   runtime::Options options =
       make_test_runtime_options(/*max_seqs_per_batch=*/100);
 
-  runtime::cuda::CudaGraphPersistentParam persistent(args, device, options);
+  runtime::cuda::CudaGraphPersistentParam persistent(
+      ModelArgsBundle(args, ModelFamily::LLM), device, options);
   EXPECT_EQ(persistent.q_seq_lens(/*actual_batch_size=*/0).size(0), 113);
   EXPECT_EQ(persistent.kv_seq_lens(/*actual_batch_size=*/0).size(0), 113);
   EXPECT_EQ(
@@ -911,7 +914,8 @@ TEST(CudaGraphExecutorTest, BatchDecodeNoPaddingBucket100CaptureAndReplay) {
   runtime::Options options =
       make_test_runtime_options(/*max_seqs_per_batch=*/100);
 
-  runtime::cuda::CudaGraphPersistentParam persistent(args, device, options);
+  runtime::cuda::CudaGraphPersistentParam persistent(
+      ModelArgsBundle(args, ModelFamily::LLM), device, options);
   EXPECT_EQ(persistent.q_seq_lens(/*actual_batch_size=*/0).size(0), 101);
   EXPECT_EQ(persistent.kv_seq_lens(/*actual_batch_size=*/0).size(0), 101);
   EXPECT_EQ(
