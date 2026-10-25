@@ -2088,12 +2088,13 @@ TEST(AclGraphExecutorHybridTest, ModelArgsCountsHybridLayerTypes) {
   args.n_layers(4);
   args.layer_types(
       {"linear_attention", "full_attention", "linear_attention", "attention"});
+  const ModelArgsBundle args_bundle(args, ModelFamily::LLM);
 
-  EXPECT_FALSE(is_full_attention_layer(args, 0));
-  EXPECT_TRUE(is_full_attention_layer(args, 1));
-  EXPECT_FALSE(is_full_attention_layer(args, 2));
-  EXPECT_TRUE(is_full_attention_layer(args, 3));
-  EXPECT_TRUE(has_linear_attention_layers(args));
+  EXPECT_FALSE(is_full_attention_layer(args_bundle, 0));
+  EXPECT_TRUE(is_full_attention_layer(args_bundle, 1));
+  EXPECT_FALSE(is_full_attention_layer(args_bundle, 2));
+  EXPECT_TRUE(is_full_attention_layer(args_bundle, 3));
+  EXPECT_TRUE(has_linear_attention_layers(args_bundle));
 }
 
 TEST(AclGraphPersistentParamTest, DecodeUpdatesEplbMaskWithoutSpecAttention) {
