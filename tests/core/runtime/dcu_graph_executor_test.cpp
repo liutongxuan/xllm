@@ -381,7 +381,8 @@ TEST(DcuGraphExecutorTest, NativeRecReplaysAndRecapturesChangedKvStorage) {
   const ModelArgs args = MakeFakeModelArgs(64);
   const runtime::Options options = MakeRuntimeOptions(8);
   CountingRecModel model(tensor_options);
-  runtime::dcu::DcuGraphExecutorImpl executor(&model, args, device, options);
+  runtime::dcu::DcuGraphExecutorImpl executor(
+      &model, ModelArgsBundle(args, ModelFamily::REC), device, options);
   auto params = MakeDecodeParams<RecModelParams>(device, 1);
   params.embedding.input_embedding = torch::ones({1, 64}, tensor_options);
   auto& strategy = params.mutable_onerec_xattention_params();
@@ -431,7 +432,7 @@ TEST(DcuGraphExecutorTest, DecodeCaptureAndReplay) {
 
   auto model = std::make_unique<FakeSimpleCausalLM>(args, device);
   auto graph_exec = std::make_unique<runtime::dcu::DcuGraphExecutorImpl>(
-      model.get(), args, device, options);
+      model.get(), ModelArgsBundle(args, ModelFamily::LLM), device, options);
 
   auto iopt = torch::TensorOptions().dtype(torch::kInt32).device(device);
 
@@ -486,7 +487,7 @@ TEST(DcuGraphExecutorTest, PrefillFallsBackToEager) {
 
   auto model = std::make_unique<FakeSimpleCausalLM>(args, device);
   auto graph_exec = std::make_unique<runtime::dcu::DcuGraphExecutorImpl>(
-      model.get(), args, device, options);
+      model.get(), ModelArgsBundle(args, ModelFamily::LLM), device, options);
 
   constexpr int32_t kNumTokens = 7;
 

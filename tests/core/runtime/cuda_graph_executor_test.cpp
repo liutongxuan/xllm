@@ -479,7 +479,8 @@ TEST(CudaGraphExecutorTest,
   args.dtype("float32");
   runtime::Options options = make_test_runtime_options(4);
   NativeRecGraphModel model(args.hidden_size(), device);
-  runtime::cuda::CudaGraphExecutorImpl executor(&model, args, device, options);
+  runtime::cuda::CudaGraphExecutorImpl executor(
+      &model, ModelArgsBundle(args, ModelFamily::REC), device, options);
   auto kv_caches = MakeKvCaches(device, 16, 1, 1, 128);
   const auto int_options =
       torch::TensorOptions().dtype(torch::kInt32).device(device);
@@ -783,7 +784,7 @@ TEST(CudaGraphExecutorTest, BatchDecodeCaptureAndReplay) {
 
   auto model = std::make_unique<FakeAttnCausalLM>(args, device);
   auto graph_exec = std::make_unique<runtime::cuda::CudaGraphExecutorImpl>(
-      model.get(), args, device, options);
+      model.get(), ModelArgsBundle(args, ModelFamily::LLM), device, options);
 
   auto tokens = torch::tensor(
       {1}, torch::TensorOptions().dtype(torch::kInt32).device(device));
@@ -853,7 +854,7 @@ TEST(CudaGraphExecutorTest, BatchDecodePaddedBucket100CaptureAndReplay) {
 
   auto model = std::make_unique<FakeAttnCausalLM>(args, device);
   auto graph_exec = std::make_unique<runtime::cuda::CudaGraphExecutorImpl>(
-      model.get(), args, device, options);
+      model.get(), ModelArgsBundle(args, ModelFamily::LLM), device, options);
 
   constexpr int32_t kActualBatchSize = 100;
   torch::TensorOptions iopt =
@@ -928,7 +929,7 @@ TEST(CudaGraphExecutorTest, BatchDecodeNoPaddingBucket100CaptureAndReplay) {
 
   auto model = std::make_unique<FakeAttnCausalLM>(args, device);
   auto graph_exec = std::make_unique<runtime::cuda::CudaGraphExecutorImpl>(
-      model.get(), args, device, options);
+      model.get(), ModelArgsBundle(args, ModelFamily::LLM), device, options);
 
   constexpr int32_t kActualBatchSize = 100;
   torch::TensorOptions iopt =
@@ -996,7 +997,7 @@ TEST(CudaGraphExecutorTest,
 
   auto model = std::make_unique<FakeAttnCausalLM>(args, device);
   auto graph_exec = std::make_unique<runtime::cuda::CudaGraphExecutorImpl>(
-      model.get(), args, device, options);
+      model.get(), ModelArgsBundle(args, ModelFamily::LLM), device, options);
 
   auto tokens = torch::tensor(
       {1}, torch::TensorOptions().dtype(torch::kInt32).device(device));
@@ -1056,7 +1057,7 @@ TEST(CudaGraphExecutorTest, PrefillPiecewiseCaptureAndReplay) {
 
   auto model = std::make_unique<FakeAttnCausalLM>(args, device);
   auto graph_exec = std::make_unique<runtime::cuda::CudaGraphExecutorImpl>(
-      model.get(), args, device, options);
+      model.get(), ModelArgsBundle(args, ModelFamily::LLM), device, options);
 
   constexpr int32_t kNumTokens = 113;
   auto iopt = torch::TensorOptions().dtype(torch::kInt32).device(device);
@@ -1155,7 +1156,7 @@ TEST(CudaGraphExecutorTest, CompareMqa2v1AndMqa8v1) {
 
     auto model = std::make_unique<FakeAttnCausalLM>(args, device);
     auto graph_exec = std::make_unique<runtime::cuda::CudaGraphExecutorImpl>(
-        model.get(), args, device, options);
+        model.get(), ModelArgsBundle(args, ModelFamily::LLM), device, options);
 
     auto params = MakePrefillParams(device, kNumTokens);
     auto kv = MakeKvCaches(device,
@@ -1252,7 +1253,7 @@ TEST(CudaGraphExecutorTest, GraphVmmPoolMemoryReuseAcrossMultiShape) {
   auto create_executor = [&]() {
     auto model = std::make_unique<FakeAttnCausalLM>(args, device);
     auto exec = std::make_unique<runtime::cuda::CudaGraphExecutorImpl>(
-        model.get(), args, device, options);
+        model.get(), ModelArgsBundle(args, ModelFamily::LLM), device, options);
     return std::make_pair(std::move(model), std::move(exec));
   };
 
@@ -1350,7 +1351,7 @@ TEST(CudaGraphExecutorTest, GraphVmmPoolEnabledPrefillCorrectness) {
 
   auto model = std::make_unique<FakeAttnCausalLM>(args, device);
   auto exec = std::make_unique<runtime::cuda::CudaGraphExecutorImpl>(
-      model.get(), args, device, options);
+      model.get(), ModelArgsBundle(args, ModelFamily::LLM), device, options);
 
   auto iopt = torch::TensorOptions().dtype(torch::kInt32).device(device);
   auto all_tokens = torch::arange(1, 257, iopt);

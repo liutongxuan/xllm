@@ -561,7 +561,7 @@ TEST(ModelRegistryTest, ReusesSelectedRegistrationWithoutBackendResolution) {
       selected_descriptor.registration_name, &reused_descriptor));
   EXPECT_EQ(reused_descriptor.registration_name, "qwen3");
   EXPECT_EQ(reused_descriptor.family, selected_descriptor.family);
-  EXPECT_TRUE(static_cast<bool>(reused_descriptor.meta.causal_lm_factory));
+  EXPECT_TRUE(reused_descriptor.meta.causal_lm_factories.contains("native"));
   EXPECT_TRUE(reused_descriptor.npu_kernel_backend.empty());
 }
 #endif
@@ -695,8 +695,8 @@ TEST(ModelRegistryTest, AllowsPythonContextWithoutNativeFactory) {
   ASSERT_TRUE(
       ModelRegistry::resolve_model_descriptor(name, "", &descriptor, nullptr));
   ASSERT_EQ(descriptor.family, ModelFamily::LLM);
-  ASSERT_FALSE(descriptor.meta.causal_lm_factory);
-  ASSERT_FALSE(descriptor.meta.causal_vlm_factory);
+  ASSERT_TRUE(descriptor.meta.causal_lm_factories.empty());
+  ASSERT_TRUE(descriptor.meta.causal_vlm_factories.empty());
 
   const ParallelArgs parallel_args(
       /*rank=*/0, /*world_size=*/1, /*process_group=*/nullptr);

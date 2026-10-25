@@ -587,7 +587,10 @@ class AclGraphTaskUpdateTest : public ::testing::Test {
 
     auto kv_graph = create_hybrid_kv_caches();
     auto graph_exec = std::make_unique<npu::AclGraphExecutorImpl>(
-        model_.get(), model_args_, *device_, options_);
+        model_.get(),
+        ModelArgsBundle(model_args_, ModelFamily::LLM),
+        *device_,
+        options_);
     graph_exec->run({capture_fi.token_ids},
                     {capture_fi.positions},
                     kv_graph,
@@ -783,7 +786,10 @@ TEST_F(AclGraphTaskUpdateTest, Qwen35DpPrepareSkipsUnsupportedDecodeSteps) {
 
   auto kv_graph = create_hybrid_kv_caches();
   auto graph_exec = std::make_unique<npu::AclGraphExecutorImpl>(
-      model_.get(), model_args_, *device_, options_);
+      model_.get(),
+      ModelArgsBundle(model_args_, ModelFamily::LLM),
+      *device_,
+      options_);
   (void)graph_exec->run(input.token_ids,
                         input.positions,
                         kv_graph,
@@ -840,7 +846,10 @@ TEST_F(AclGraphTaskUpdateTest, CaptureReplayVsEagerDecodeBranch) {
     kv_eager[0].get_conv_cache().normal_();
     auto kv_graph = clone_kv_caches(kv_eager);
     auto graph_exec = std::make_unique<npu::AclGraphExecutorImpl>(
-        model_.get(), model_args_, *device_, options_);
+        model_.get(),
+        ModelArgsBundle(model_args_, ModelFamily::LLM),
+        *device_,
+        options_);
     for (int32_t step = 0; step < 3; ++step) {
       SCOPED_TRACE(step);
       if (step == 2) {
@@ -894,7 +903,10 @@ TEST_F(AclGraphTaskUpdateTest, DcpReplayUpdatesZeroShardAcrossBlockBoundary) {
   auto capture_input = make_input(/*prompt_size=*/127, /*token_seed=*/200);
   auto kv_graph = create_hybrid_kv_caches();
   auto graph_exec = std::make_unique<npu::AclGraphExecutorImpl>(
-      model_.get(), model_args_, *device_, options_);
+      model_.get(),
+      ModelArgsBundle(model_args_, ModelFamily::LLM),
+      *device_,
+      options_);
   graph_exec->run(capture_input.token_ids,
                   capture_input.positions,
                   kv_graph,
@@ -945,7 +957,10 @@ TEST_F(AclGraphTaskUpdateTest,
 
   auto kv_graph = create_hybrid_kv_caches();
   auto graph_exec = std::make_unique<npu::AclGraphExecutorImpl>(
-      shared_workspace_model.get(), model_args_, *device_, options_);
+      shared_workspace_model.get(),
+      ModelArgsBundle(model_args_, ModelFamily::LLM),
+      *device_,
+      options_);
   auto graph_out =
       graph_exec->run({forward_input.token_ids},
                       {forward_input.positions},
@@ -990,7 +1005,10 @@ TEST_F(AclGraphTaskUpdateTest,
 
   auto kv_graph = create_hybrid_kv_caches();
   auto graph_exec = std::make_unique<npu::AclGraphExecutorImpl>(
-      non_qwen_model.get(), non_qwen_args, *device_, options_);
+      non_qwen_model.get(),
+      ModelArgsBundle(non_qwen_args, ModelFamily::LLM),
+      *device_,
+      options_);
   auto graph_out =
       graph_exec->run({forward_input.token_ids},
                       {forward_input.positions},
@@ -1036,7 +1054,10 @@ TEST_F(AclGraphTaskUpdateTest,
 
   auto kv_graph = create_hybrid_kv_caches();
   auto graph_exec = std::make_unique<npu::AclGraphExecutorImpl>(
-      pa_model.get(), model_args_, *device_, options_);
+      pa_model.get(),
+      ModelArgsBundle(model_args_, ModelFamily::LLM),
+      *device_,
+      options_);
   auto graph_out = graph_exec->run(forward_input.token_ids,
                                    forward_input.positions,
                                    kv_graph,
@@ -1061,7 +1082,10 @@ TEST_F(AclGraphTaskUpdateTest,
 
   auto kv_graph = create_hybrid_kv_caches();
   auto graph_exec = std::make_unique<npu::AclGraphExecutorImpl>(
-      model_.get(), model_args_, *device_, options_);
+      model_.get(),
+      ModelArgsBundle(model_args_, ModelFamily::LLM),
+      *device_,
+      options_);
 
   auto out1 = graph_exec->run({fi1.token_ids},
                               {fi1.positions},
@@ -1144,7 +1168,10 @@ TEST_F(AclGraphTaskUpdateTest, CaptureReplayVsEagerSpecVerifyBranch) {
 
   auto kv_graph = create_hybrid_kv_caches();
   auto graph_exec = std::make_unique<npu::AclGraphExecutorImpl>(
-      model_.get(), model_args_, *device_, options_);
+      model_.get(),
+      ModelArgsBundle(model_args_, ModelFamily::LLM),
+      *device_,
+      options_);
   auto graph_out = graph_exec->run(
       fi.token_ids, fi.positions, kv_graph, ModelParamsView(fi.input_params));
 
@@ -1178,7 +1205,10 @@ TEST_F(AclGraphTaskUpdateTest, StaticMtpPrepareReplaysFiaSpecVerifyWidths) {
 
     auto kv_graph = create_hybrid_kv_caches();
     auto graph_exec = std::make_unique<npu::AclGraphExecutorImpl>(
-        fia_model.get(), model_args_, *device_, options_);
+        fia_model.get(),
+        ModelArgsBundle(model_args_, ModelFamily::LLM),
+        *device_,
+        options_);
     graph_exec->run(forward_input.token_ids,
                     forward_input.positions,
                     kv_graph,
@@ -1254,7 +1284,10 @@ TEST_F(AclGraphTaskUpdateTest, StaticMtpPrepareRejectsUnsupportedWidth) {
       .max_kv_seq_len = 6,
   };
   EXPECT_FALSE(std::make_unique<npu::AclGraphExecutorImpl>(
-                   model_.get(), model_args_, *device_, options_)
+                   model_.get(),
+                   ModelArgsBundle(model_args_, ModelFamily::LLM),
+                   *device_,
+                   options_)
                    ->prepare_static_mtp_graph_tasks(signal, Stream(*device_)));
 }
 

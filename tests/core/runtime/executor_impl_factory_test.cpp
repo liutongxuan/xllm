@@ -80,7 +80,7 @@ namespace executor_factory_test {
 class NamespacedExecutorImpl final : public ExecutorImpl {
  public:
   NamespacedExecutorImpl(CausalLM* /*model*/,
-                         const ModelArgs& /*args*/,
+                         const ModelArgsBundle& /*args*/,
                          const torch::Device& /*device*/,
                          const runtime::Options& /*options*/) {}
 

@@ -10,7 +10,6 @@ cc_library(
     model_context.cpp
     dit_model_context.cpp
   DEPS
-    :model
     :platform
     :quantization
     torch

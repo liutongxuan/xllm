@@ -256,9 +256,15 @@ class MluGraphExecutorTest : public ::testing::Test {
   void rebuild_impl() {
     const torch::Device device("mlu:0");
     impl_ = std::make_unique<::xllm::mlu::MluGraphExecutorImpl>(
-        model_.get(), model_args_, device, options_);
+        model_.get(),
+        ModelArgsBundle(model_args_, ModelFamily::LLM),
+        device,
+        options_);
     base_impl_ = std::make_unique<BaseExecutorImpl>(
-        model_.get(), model_args_, device, options_);
+        model_.get(),
+        ModelArgsBundle(model_args_, ModelFamily::LLM),
+        device,
+        options_);
   }
 
   ModelArgs model_args_;
@@ -456,7 +462,7 @@ TEST_F(MluGraphExecutorTest, NativeRecReplaysAndRecapturesChangedKvStorage) {
   const torch::Device device("mlu:0");
   CountingRecModel model(tensor_options_);
   ::xllm::mlu::MluGraphExecutorImpl executor(
-      &model, model_args_, device, options_);
+      &model, ModelArgsBundle(model_args_, ModelFamily::REC), device, options_);
   RecModelParams params;
   params.meta.batch_forward_type = BatchForwardType::DECODE;
   params.meta.num_sequences = 1;

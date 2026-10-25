@@ -154,6 +154,7 @@ cc_library(
     :state_dict
     :worker_memory_resources
     :model
+    :model_context
     glog::glog
     gflags::gflags
     spdlog::spdlog

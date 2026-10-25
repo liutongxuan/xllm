@@ -327,7 +327,8 @@ TEST_F(AclGraphExecutorRecTest, ReplaysRoundsAndRecapturesChangedKvBindings) {
   const auto& device = device_;
   const auto& options = options_;
   NativeRecGraphModel model(args.hidden_size(), device);
-  npu::AclGraphExecutorImpl executor(&model, args, device, options);
+  npu::AclGraphExecutorImpl executor(
+      &model, ModelArgsBundle(args, ModelFamily::REC), device, options);
   auto kv_tensor = torch::zeros({16, 32}, model.options());
   std::vector<KVCache> kv_caches;
   kv_caches.emplace_back(KVCacheTensors{kv_tensor, kv_tensor});
@@ -387,7 +388,8 @@ TEST_P(AclGraphExecutorRecCaptureFailureTest,
           : c10_npu::getDefaultNPUStream(device_.index());
   c10_npu::NPUStreamGuard stream_guard(producer_stream);
   NativeRecGraphModel model(args_.hidden_size(), device_);
-  npu::AclGraphExecutorImpl executor(&model, args_, device_, options_);
+  npu::AclGraphExecutorImpl executor(
+      &model, ModelArgsBundle(args_, ModelFamily::REC), device_, options_);
   auto kv_tensor = torch::zeros({16, 32}, model.options());
   std::vector<KVCache> kv_caches;
   kv_caches.emplace_back(KVCacheTensors{kv_tensor, kv_tensor});
@@ -807,7 +809,10 @@ TEST_F(AclGraphExecutorTest, GraphExecutorVsEagerExecution) {
   auto eager_output = eager_model_output.hidden_states;
   // Create ACL graph executor
   auto graph_executor = std::make_unique<::xllm::npu::AclGraphExecutorImpl>(
-      model_.get(), model_args_, *device_, options_);
+      model_.get(),
+      ModelArgsBundle(model_args_, ModelFamily::LLM),
+      *device_,
+      options_);
 
   // Test graph execution with NPUGraph mempool optimization
   auto graph_model_output =
@@ -837,7 +842,10 @@ TEST_F(AclGraphExecutorTest, GraphReplayConsistency) {
 
   // Create ACL graph executor
   auto graph_executor = std::make_unique<::xllm::npu::AclGraphExecutorImpl>(
-      model_.get(), model_args_, *device_, options_);
+      model_.get(),
+      ModelArgsBundle(model_args_, ModelFamily::LLM),
+      *device_,
+      options_);
 
   // First execution (should create graph with NPUGraph mempool)
   auto output1 =
@@ -884,7 +892,10 @@ TEST_F(AclGraphExecutorTest, PreservesAuxHiddenStatesAcrossGraphReplay) {
                       kv_caches_,
                       {ModelParamsView(forward_input.input_params)});
   auto graph_executor = std::make_unique<::xllm::npu::AclGraphExecutorImpl>(
-      model_.get(), model_args_, *device_, options_);
+      model_.get(),
+      ModelArgsBundle(model_args_, ModelFamily::LLM),
+      *device_,
+      options_);
   const double eager_fallbacks_before =
       COUNTER_num_model_execution_total_eager.get_value();
   auto run_graph = [&]() {
@@ -984,7 +995,10 @@ TEST_F(AclGraphExecutorTest, DifferentBatchSizes) {
   // Test with different batch sizes to ensure graph creation works
   const std::vector<uint32_t> batch_sizes = {1, 2, 4};
   auto graph_executor = std::make_unique<::xllm::npu::AclGraphExecutorImpl>(
-      model_.get(), model_args_, *device_, options_);
+      model_.get(),
+      ModelArgsBundle(model_args_, ModelFamily::LLM),
+      *device_,
+      options_);
   std::vector<torch::Tensor> captured_token_ids;
   std::vector<torch::Tensor> captured_positions;
   std::vector<ModelParamsView> captured_input_params;
@@ -1111,9 +1125,15 @@ TEST_F(AclGraphExecutorTest, DecodeBatchSizeThresholdFallsBackToEager) {
       std::make_shared<layer::AttentionMetadata>();
 
   auto npu_executor = std::make_unique<BaseExecutorImpl>(
-      model_.get(), model_args_, *device_, options_);
+      model_.get(),
+      ModelArgsBundle(model_args_, ModelFamily::LLM),
+      *device_,
+      options_);
   auto graph_executor = std::make_unique<::xllm::npu::AclGraphExecutorImpl>(
-      model_.get(), model_args_, *device_, options_);
+      model_.get(),
+      ModelArgsBundle(model_args_, ModelFamily::LLM),
+      *device_,
+      options_);
 
   auto eager_out =
       npu_executor->run({forward_input.token_ids},
@@ -1178,9 +1198,15 @@ TEST_F(AclGraphExecutorTest, NoPaddingBucketCapturesOnlyForWarmup) {
   options_.max_seqs_per_batch(20);
 
   auto npu_executor = std::make_unique<BaseExecutorImpl>(
-      model_.get(), model_args_, *device_, options_);
+      model_.get(),
+      ModelArgsBundle(model_args_, ModelFamily::LLM),
+      *device_,
+      options_);
   auto graph_executor = std::make_unique<::xllm::npu::AclGraphExecutorImpl>(
-      model_.get(), model_args_, *device_, options_);
+      model_.get(),
+      ModelArgsBundle(model_args_, ModelFamily::LLM),
+      *device_,
+      options_);
 
   auto eager_out =
       npu_executor->run({forward_input.token_ids},
@@ -1237,7 +1263,10 @@ TEST_F(AclGraphExecutorTest, AclGraphExecutorVsBaseExecutorImpl) {
   forward_input = forward_input.to(*device_, torch::kFloat32);
   // Test NPU Executor Impl (original implementation)
   auto npu_executor = std::make_unique<BaseExecutorImpl>(
-      model_.get(), model_args_, *device_, options_);
+      model_.get(),
+      ModelArgsBundle(model_args_, ModelFamily::LLM),
+      *device_,
+      options_);
 
   auto npu_model_output =
       npu_executor->run({forward_input.token_ids},
@@ -1248,7 +1277,10 @@ TEST_F(AclGraphExecutorTest, AclGraphExecutorVsBaseExecutorImpl) {
 
   // Test ACL Graph Executor with NPUGraph mempool optimization
   auto graph_executor = std::make_unique<::xllm::npu::AclGraphExecutorImpl>(
-      model_.get(), model_args_, *device_, options_);
+      model_.get(),
+      ModelArgsBundle(model_args_, ModelFamily::LLM),
+      *device_,
+      options_);
 
   auto graph_model_output =
       graph_executor->run({forward_input.token_ids},
@@ -1282,9 +1314,15 @@ TEST_F(AclGraphExecutorTest, AclGraphExecutorVsBaseExecutorImplMultipleRuns) {
   forward_input = forward_input.to(*device_, torch::kFloat32);
   // Create both executors
   auto npu_executor = std::make_unique<BaseExecutorImpl>(
-      model_.get(), model_args_, *device_, options_);
+      model_.get(),
+      ModelArgsBundle(model_args_, ModelFamily::LLM),
+      *device_,
+      options_);
   auto graph_executor = std::make_unique<::xllm::npu::AclGraphExecutorImpl>(
-      model_.get(), model_args_, *device_, options_);
+      model_.get(),
+      ModelArgsBundle(model_args_, ModelFamily::LLM),
+      *device_,
+      options_);
 
   // Run multiple times and compare results
   const int num_runs = 3;
@@ -1399,13 +1437,19 @@ TEST_F(AclGraphExecutorTest, GraphDoubleBufferFlagControlsSlotCount) {
   execution_config.enable_graph_double_buffer(true);
   std::unique_ptr<::xllm::npu::AclGraphExecutorImpl> double_buffer_executor =
       std::make_unique<::xllm::npu::AclGraphExecutorImpl>(
-          model_.get(), model_args_, *device_, options_);
+          model_.get(),
+          ModelArgsBundle(model_args_, ModelFamily::LLM),
+          *device_,
+          options_);
   EXPECT_EQ(double_buffer_executor->graph_slot_count_for_test(), 2);
 
   execution_config.enable_graph_double_buffer(false);
   std::unique_ptr<::xllm::npu::AclGraphExecutorImpl> single_buffer_executor =
       std::make_unique<::xllm::npu::AclGraphExecutorImpl>(
-          model_.get(), model_args_, *device_, options_);
+          model_.get(),
+          ModelArgsBundle(model_args_, ModelFamily::LLM),
+          *device_,
+          options_);
   EXPECT_EQ(single_buffer_executor->graph_slot_count_for_test(), 1);
 
   execution_config.enable_graph_double_buffer(
@@ -1415,7 +1459,10 @@ TEST_F(AclGraphExecutorTest, GraphDoubleBufferFlagControlsSlotCount) {
 TEST_F(AclGraphExecutorTest, DpDecodeGraphKeyIgnoresRawTokenDistribution) {
   options_.world_size(16).dp_size(8);
   ::xllm::npu::AclGraphExecutorImpl graph_executor(
-      model_.get(), model_args_, *device_, options_);
+      model_.get(),
+      ModelArgsBundle(model_args_, ModelFamily::LLM),
+      *device_,
+      options_);
 
   ModelParamsView params = ModelInputSnapshot(LlmModelParams()).view();
   params.meta.batch_forward_type = BatchForwardType::DECODE;
@@ -2176,7 +2223,10 @@ TEST_F(AclGraphExecutorTest, GraphExecutorUsesFirstFullAttentionKvCache) {
                       hybrid_kv_caches,
                       {ModelParamsView(forward_input.input_params)});
   auto graph_executor = std::make_unique<::xllm::npu::AclGraphExecutorImpl>(
-      model_.get(), model_args_, *device_, options_);
+      model_.get(),
+      ModelArgsBundle(model_args_, ModelFamily::LLM),
+      *device_,
+      options_);
   auto graph_model_output =
       graph_executor->run({forward_input.token_ids},
                           {forward_input.positions},

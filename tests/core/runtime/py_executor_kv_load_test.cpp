@@ -139,7 +139,10 @@ patch.__enter__()
     std::vector<KVCache> caches;
     for (bool layerwise : {false, true}) {
       scope["layerwise"] = layerwise;
-      PyExecutorImpl executor(&model, args, device, runtime::Options());
+      PyExecutorImpl executor(&model,
+                              ModelArgsBundle(args, ModelFamily::LLM),
+                              device,
+                              runtime::Options());
       for (bool graph : {false, true}) {
         ready.zero_();
         auto load = std::make_shared<TestLoadSynchronizer>(ready);
