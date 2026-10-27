@@ -19,8 +19,9 @@ limitations under the License.
 #include <gtest/gtest.h>
 
 #include "api_service/chat_json_parser.h"
-#include "chat_template/jinja_chat_template.h"
+#include "application/chat_template_renderer.h"
 #include "core/framework/request/request_params.h"
+#include "core/framework/tokenizer/tokenizer_args.h"
 
 namespace xllm {
 namespace {
@@ -232,7 +233,8 @@ TEST(AnthropicRequestUtilsTest,
       R"({})"};
   TokenizerArgs args;
   args.chat_template("{% for tool in tools %}{{ tool | tojson }}{% endfor %}");
-  JinjaChatTemplate chat_template(args);
+  auto renderer = create_chat_prompt_renderer_factory(
+      /*use_cpp_template=*/false)(args, /*model_type=*/"test");
   for (bool count_tokens : {false, true}) {
     for (const std::string& schema : schemas) {
       SCOPED_TRACE(schema);
@@ -248,16 +250,17 @@ TEST(AnthropicRequestUtilsTest,
       ASSERT_TRUE(api_service::validate_anthropic_request(request).ok());
       const RequestParams params(request, "", "");
       const auto prompt =
-          chat_template.apply(api_service::build_anthropic_messages(request),
-                              params.tools,
-                              params.chat_template_kwargs);
+          renderer->render(api_service::build_anthropic_messages(request),
+                           params.tools,
+                           params.chat_template_kwargs);
       ASSERT_TRUE(prompt.has_value());
       // Compare serialization, since JSON object equality ignores key order.
       auto expected = nlohmann::ordered_json::parse(schema);
       if (!expected.contains("type")) {
         expected["type"] = "object";
       }
-      EXPECT_EQ(nlohmann::ordered_json::parse(*prompt)["function"]["parameters"]
+      EXPECT_EQ(nlohmann::ordered_json::parse(
+                    prompt->prompt)["function"]["parameters"]
                     .dump(),
                 expected.dump());
     }

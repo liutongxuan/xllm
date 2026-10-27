@@ -27,6 +27,7 @@ limitations under the License.
 #include <limits>
 #include <stdexcept>
 
+#include "application/master_factory.h"
 #include "core/common/native_library.h"
 #include "core/framework/config/beam_search_config.h"
 #include "core/framework/config/execution_config.h"
@@ -37,7 +38,6 @@ limitations under the License.
 #include "core/framework/model_loader/model_loader.h"
 #include "core/util/cpu_affinity.h"
 #include "helper.h"
-#include "server/master_factory.h"
 
 XLLM_CAPI_EXPORT XLLM_REC_Handler* xllm_rec_create(void) {
   XLLM_REC_Handler* handler = new XLLM_REC_Handler();

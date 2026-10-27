@@ -31,6 +31,7 @@ namespace py = pybind11;
 #include <vector>
 
 #include "api_service/api_service.h"
+#include "application/master_factory.h"
 #include "core/common/global_flags.h"
 #include "core/common/instance_name.h"
 #include "core/common/metrics.h"
@@ -62,7 +63,6 @@ namespace py = pybind11;
 #include "core/framework/config/service_config.h"
 #include "core/framework/config/speculative_config.h"
 #include "core/framework/model_loader/hf_model_config.h"
-#include "server/master_factory.h"
 #if defined(USE_NPU) || defined(USE_MLU) || defined(USE_DCU)
 #include "core/framework/transfer/mooncake_transfer_engine.h"
 #endif

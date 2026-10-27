@@ -1,6 +1,8 @@
 include(cc_test)
 
 cc_test (
+  # This public-contract test needs neither core nor device initialization.
+  NO_NPU_RUNTIME
   NAME
     chat_template_test
   SRCS
@@ -19,6 +21,7 @@ cc_test(
   SRCS
     jinja_chat_template_test.cpp
   DEPS
+    :chat_template_renderer
     :jinja_chat_template
     GTest::gtest_main
 )
@@ -29,6 +32,7 @@ cc_test (
   SRCS
     deepseek_v32_cpp_template_test.cpp
   DEPS
+    :chat_template_renderer
     :deepseek_v32_cpp_template
     GTest::gtest_main
 )
@@ -39,6 +43,7 @@ cc_test (
   SRCS
     deepseek_v4_cpp_template_test.cpp
   DEPS
+    :chat_template_renderer
     :deepseek_v4_cpp_template
     GTest::gtest_main
 )

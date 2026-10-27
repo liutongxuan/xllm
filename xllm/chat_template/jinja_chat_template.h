@@ -23,25 +23,20 @@ limitations under the License.
 #include <vector>
 
 #include "chat_template/chat_template.h"
-#include "core/common/message.h"
-#include "core/common/types.h"
-#include "framework/tokenizer/tokenizer_args.h"
 
 namespace xllm {
 
 // A chat template implementation that uses jinja2 as the template engine.
 class JinjaChatTemplate : public ChatTemplate {
  public:
-  explicit JinjaChatTemplate(const TokenizerArgs& args);
-
-  std::optional<std::string> apply(const ChatMessages& messages) const override;
-
-  std::optional<std::string> apply(
-      const ChatMessages& messages,
-      const std::vector<xllm::JsonTool>& json_tools,
-      const nlohmann::ordered_json& chat_template_kwargs) const override;
+  explicit JinjaChatTemplate(const chat_template::TemplateConfig& config);
 
  protected:
+  std::optional<std::string> render_prompt(
+      const std::vector<chat_template::MessageView>& messages,
+      const std::vector<chat_template::ToolView>& json_tools,
+      const nlohmann::ordered_json& chat_template_kwargs) const override;
+
   // Renders already-converted JSON documents. `messages` and `tools` are sinks:
   // they are handed to the template engine by move, so callers that own them
   // should std::move them in to avoid a deep copy of the conversation.
@@ -52,11 +47,8 @@ class JinjaChatTemplate : public ChatTemplate {
       nlohmann::ordered_json tools,
       const nlohmann::ordered_json& chat_template_kwargs) const;
 
-  std::optional<std::string> apply(
-      const ChatMessages& messages,
-      const nlohmann::ordered_json& chat_template_kwargs) const;
-
-  nlohmann::ordered_json get_mm_content(const MMContentVec& vec) const;
+  nlohmann::ordered_json get_mm_content(
+      const std::vector<chat_template::ContentPartView>& vec) const;
 
   // Whether minja::chat_template::apply would rewrite these inputs before
   // rendering (system-role, tools, tool-call, tool-response, object-argument

@@ -20,18 +20,21 @@ limitations under the License.
 #include <string>
 #include <utility>
 
+#include "tests/chat_template/chat_template_test_utils.h"
+
 namespace xllm {
 
 TEST(DeepseekV32CppTemplate, PreservesLastUserThinkingAfterDroppingDeveloper) {
   const TokenizerArgs args;
-  const DeepseekV32CppTemplate encoder(args);
+  const DeepseekV32CppTemplate encoder(make_template_config(args));
   ChatMessages messages;
   messages.emplace_back("developer", "old instruction");
   messages.emplace_back("user", "hello");
 
   const nlohmann::ordered_json kwargs = {{"thinking", true},
                                          {"reasoning_effort", "low"}};
-  const auto prompt = encoder.apply(messages, /*json_tools=*/{}, kwargs);
+  const auto prompt =
+      apply_template(encoder, messages, /*json_tools=*/{}, kwargs);
   ASSERT_TRUE(prompt.has_value());
   EXPECT_EQ(*prompt,
             "<｜begin▁of▁sentence｜><｜User｜>hello<｜Assistant｜><think>");
@@ -40,20 +43,23 @@ TEST(DeepseekV32CppTemplate, PreservesLastUserThinkingAfterDroppingDeveloper) {
 TEST(DeepseekV32CppTemplate, SnapshotsCustomBosToken) {
   TokenizerArgs args;
   args.bos_token("<custom-bos>");
-  const DeepseekV32CppTemplate encoder(args);
+  const DeepseekV32CppTemplate encoder(make_template_config(args));
   args.bos_token("<changed-bos>");
   ChatMessages messages;
   messages.emplace_back("user", "hello");
 
-  const auto prompt = encoder.apply(
-      messages, /*json_tools=*/{}, nlohmann::ordered_json{{"thinking", false}});
+  const auto prompt =
+      apply_template(encoder,
+                     messages,
+                     /*json_tools=*/{},
+                     nlohmann::ordered_json{{"thinking", false}});
   ASSERT_TRUE(prompt.has_value());
   EXPECT_EQ(*prompt, "<custom-bos><｜User｜>hello<｜Assistant｜></think>");
 }
 
 TEST(DeepseekV32CppTemplate, RendersHistoryWithoutUserMessages) {
   const TokenizerArgs args;
-  const DeepseekV32CppTemplate encoder(args);
+  const DeepseekV32CppTemplate encoder(make_template_config(args));
   ChatMessages messages;
   constexpr int32_t kMessageCount = 64;
   messages.reserve(kMessageCount);
@@ -63,14 +69,17 @@ TEST(DeepseekV32CppTemplate, RendersHistoryWithoutUserMessages) {
     expected += "instruction";
   }
 
-  const auto prompt = encoder.apply(
-      messages, /*json_tools=*/{}, nlohmann::ordered_json{{"thinking", false}});
+  const auto prompt =
+      apply_template(encoder,
+                     messages,
+                     /*json_tools=*/{},
+                     nlohmann::ordered_json{{"thinking", false}});
   ASSERT_TRUE(prompt.has_value());
   EXPECT_EQ(*prompt, expected);
 }
 
 TEST(DeepseekV32CppTemplate, PreservesLongPayloadBytesAndLiteralPlaceholders) {
-  const DeepseekV32CppTemplate encoder{TokenizerArgs()};
+  const DeepseekV32CppTemplate encoder{chat_template::TemplateConfig{}};
   const std::string literals =
       "中文🙂{content}{thinking_content}{reasoning}{tool_calls}{dsml_token}";
   const std::string system_content =
@@ -93,7 +102,8 @@ TEST(DeepseekV32CppTemplate, PreservesLongPayloadBytesAndLiteralPlaceholders) {
     SCOPED_TRACE(thinking);
     const nlohmann::ordered_json kwargs = {{"thinking", thinking},
                                            {"reasoning_effort", "low"}};
-    const auto prompt = encoder.apply(messages, /*json_tools=*/{}, kwargs);
+    const auto prompt =
+        apply_template(encoder, messages, /*json_tools=*/{}, kwargs);
     ASSERT_TRUE(prompt.has_value());
     const std::string expected =
         std::string("<｜begin▁of▁sentence｜>") + system_content + "<｜User｜>" +
@@ -107,13 +117,13 @@ TEST(DeepseekV32CppTemplate, PreservesLongPayloadBytesAndLiteralPlaceholders) {
 TEST(DeepseekV32CppTemplate, BasicUserMessage) {
   TokenizerArgs args;
   args.bos_token("<｜begin▁of▁sentence｜>");
-  DeepseekV32CppTemplate encoder(args);
+  DeepseekV32CppTemplate encoder(make_template_config(args));
 
   ChatMessages messages;
   messages.emplace_back("user", "hello");
 
   nlohmann::ordered_json kwargs = nlohmann::json::object();
-  auto prompt = encoder.apply(messages, /*json_tools=*/{}, kwargs);
+  auto prompt = apply_template(encoder, messages, /*json_tools=*/{}, kwargs);
   ASSERT_TRUE(prompt.has_value());
 
   EXPECT_NE(prompt->find("<｜begin▁of▁sentence｜>"), std::string::npos);
@@ -123,13 +133,13 @@ TEST(DeepseekV32CppTemplate, BasicUserMessage) {
 TEST(DeepseekV32CppTemplate, DefaultThinkingModeIsChat) {
   TokenizerArgs args;
   args.bos_token("<｜begin▁of▁sentence｜>");
-  DeepseekV32CppTemplate encoder(args);
+  DeepseekV32CppTemplate encoder(make_template_config(args));
 
   ChatMessages messages;
   messages.emplace_back("user", "hello");
 
   nlohmann::ordered_json kwargs = nlohmann::json::object();
-  auto prompt = encoder.apply(messages, /*json_tools=*/{}, kwargs);
+  auto prompt = apply_template(encoder, messages, /*json_tools=*/{}, kwargs);
   ASSERT_TRUE(prompt.has_value());
 
   EXPECT_NE(prompt->find("</think>"), std::string::npos);
@@ -139,7 +149,7 @@ TEST(DeepseekV32CppTemplate, DefaultThinkingModeIsChat) {
 TEST(DeepseekV32CppTemplate, ThinkingModeEnabledByKwargs) {
   TokenizerArgs args;
   args.bos_token("<｜begin▁of▁sentence｜>");
-  DeepseekV32CppTemplate encoder(args);
+  DeepseekV32CppTemplate encoder(make_template_config(args));
 
   ChatMessages messages;
   messages.emplace_back("user", "hello");
@@ -147,7 +157,7 @@ TEST(DeepseekV32CppTemplate, ThinkingModeEnabledByKwargs) {
   nlohmann::ordered_json kwargs = nlohmann::json::object();
   kwargs["thinking"] = true;
 
-  auto prompt = encoder.apply(messages, /*json_tools=*/{}, kwargs);
+  auto prompt = apply_template(encoder, messages, /*json_tools=*/{}, kwargs);
   ASSERT_TRUE(prompt.has_value());
 
   EXPECT_NE(prompt->find("<think>"), std::string::npos);
@@ -156,25 +166,28 @@ TEST(DeepseekV32CppTemplate, ThinkingModeEnabledByKwargs) {
 TEST(DeepseekV32CppTemplate, ReportsRenderedGenerationMode) {
   TokenizerArgs args;
   args.bos_token("<｜begin▁of▁sentence｜>");
-  DeepseekV32CppTemplate encoder(args);
+  DeepseekV32CppTemplate encoder(make_template_config(args));
   ChatMessages messages;
   messages.emplace_back("user", "hello");
 
-  auto chat = encoder.render(
-      messages, /*json_tools=*/{}, nlohmann::ordered_json::object());
+  auto chat = render_template(
+      encoder, messages, /*json_tools=*/{}, nlohmann::ordered_json::object());
   ASSERT_TRUE(chat.has_value());
-  EXPECT_EQ(chat->generation_mode, ChatGenerationMode::CHAT);
+  EXPECT_EQ(chat->generation_mode, chat_template::GenerationMode::CHAT);
 
-  auto reasoning = encoder.render(
-      messages, /*json_tools=*/{}, nlohmann::ordered_json{{"thinking", true}});
+  auto reasoning = render_template(encoder,
+                                   messages,
+                                   /*json_tools=*/{},
+                                   nlohmann::ordered_json{{"thinking", true}});
   ASSERT_TRUE(reasoning.has_value());
-  EXPECT_EQ(reasoning->generation_mode, ChatGenerationMode::REASONING);
+  EXPECT_EQ(reasoning->generation_mode,
+            chat_template::GenerationMode::REASONING);
 }
 
 TEST(DeepseekV32CppTemplate, ToolsInjectionFormat) {
   TokenizerArgs args;
   args.bos_token("<｜begin▁of▁sentence｜>");
-  DeepseekV32CppTemplate encoder(args);
+  DeepseekV32CppTemplate encoder(make_template_config(args));
 
   ChatMessages messages;
   messages.emplace_back("user", "weather in beijing");
@@ -189,7 +202,7 @@ TEST(DeepseekV32CppTemplate, ToolsInjectionFormat) {
   tools.push_back(tool);
 
   nlohmann::ordered_json kwargs = nlohmann::json::object();
-  auto prompt = encoder.apply(messages, tools, kwargs);
+  auto prompt = apply_template(encoder, messages, tools, kwargs);
   ASSERT_TRUE(prompt.has_value());
 
   // vLLM DSML format
@@ -206,7 +219,7 @@ TEST(DeepseekV32CppTemplate, ToolsInjectionFormat) {
 TEST(DeepseekV32CppTemplate, ToolsInjectedAsNewSystemMessage) {
   TokenizerArgs args;
   args.bos_token("<｜begin▁of▁sentence｜>");
-  DeepseekV32CppTemplate encoder(args);
+  DeepseekV32CppTemplate encoder(make_template_config(args));
 
   ChatMessages messages;
   messages.emplace_back("system", "You are helpful.");
@@ -221,7 +234,7 @@ TEST(DeepseekV32CppTemplate, ToolsInjectedAsNewSystemMessage) {
   tools.push_back(tool);
 
   nlohmann::ordered_json kwargs = nlohmann::json::object();
-  auto prompt = encoder.apply(messages, tools, kwargs);
+  auto prompt = apply_template(encoder, messages, tools, kwargs);
   ASSERT_TRUE(prompt.has_value());
 
   // Tools section before system content
@@ -235,7 +248,7 @@ TEST(DeepseekV32CppTemplate, ToolsInjectedAsNewSystemMessage) {
 TEST(DeepseekV32CppTemplate, DropThinkingOnlyWhenLastMessageIsUser) {
   TokenizerArgs args;
   args.bos_token("<｜begin▁of▁sentence｜>");
-  DeepseekV32CppTemplate encoder(args);
+  DeepseekV32CppTemplate encoder(make_template_config(args));
 
   // user -> assistant(with reasoning) -> tool
   ChatMessages messages;
@@ -256,7 +269,7 @@ TEST(DeepseekV32CppTemplate, DropThinkingOnlyWhenLastMessageIsUser) {
   nlohmann::ordered_json kwargs = nlohmann::json::object();
   kwargs["thinking"] = true;
 
-  auto prompt = encoder.apply(messages, /*json_tools=*/{}, kwargs);
+  auto prompt = apply_template(encoder, messages, /*json_tools=*/{}, kwargs);
   ASSERT_TRUE(prompt.has_value());
 
   // Last message is "tool", NOT "user",
@@ -284,7 +297,7 @@ Message make_tool_assistant(int32_t call_count) {
 }
 
 TEST(DeepseekV32CppTemplate, PreservesEmptyAndBinaryToolResults) {
-  const DeepseekV32CppTemplate encoder{TokenizerArgs()};
+  const DeepseekV32CppTemplate encoder{chat_template::TemplateConfig{}};
   const std::string tool_content =
       std::string("工具结果🙂") + '\0' +
       "{content}{thinking_content}{reasoning}{tool_calls}{dsml_token}";
@@ -297,8 +310,11 @@ TEST(DeepseekV32CppTemplate, PreservesEmptyAndBinaryToolResults) {
   messages.emplace_back("tool", "");
   messages.emplace_back("tool", tool_content);
 
-  const auto prompt = encoder.apply(
-      messages, /*json_tools=*/{}, nlohmann::ordered_json{{"thinking", true}});
+  const auto prompt =
+      apply_template(encoder,
+                     messages,
+                     /*json_tools=*/{},
+                     nlohmann::ordered_json{{"thinking", true}});
   ASSERT_TRUE(prompt.has_value());
   const std::string expected =
       std::string(
@@ -318,7 +334,7 @@ TEST(DeepseekV32CppTemplate, PreservesEmptyAndBinaryToolResults) {
 }
 
 TEST(DeepseekV32CppTemplate, ConsecutiveToolResultsKeepRoundBoundaries) {
-  const DeepseekV32CppTemplate encoder{TokenizerArgs()};
+  const DeepseekV32CppTemplate encoder{chat_template::TemplateConfig{}};
   ChatMessages messages;
   messages.emplace_back("user", "run tools");
   messages.emplace_back(make_tool_assistant(/*call_count=*/3));
@@ -330,9 +346,10 @@ TEST(DeepseekV32CppTemplate, ConsecutiveToolResultsKeepRoundBoundaries) {
 
   for (const bool thinking : {false, true}) {
     const auto prompt =
-        encoder.apply(messages,
-                      /*json_tools=*/{},
-                      nlohmann::ordered_json{{"thinking", thinking}});
+        apply_template(encoder,
+                       messages,
+                       /*json_tools=*/{},
+                       nlohmann::ordered_json{{"thinking", thinking}});
     ASSERT_TRUE(prompt.has_value());
     EXPECT_NE(prompt->find("<function_results>\n<result>first</result>"
                            "\n<result>second</result>\n<result>third</result>"
@@ -347,37 +364,37 @@ TEST(DeepseekV32CppTemplate, ConsecutiveToolResultsKeepRoundBoundaries) {
 }
 
 TEST(DeepseekV32CppTemplate, PartialToolResultsLeaveResultBlockOpen) {
-  const DeepseekV32CppTemplate encoder{TokenizerArgs()};
+  const DeepseekV32CppTemplate encoder{chat_template::TemplateConfig{}};
   ChatMessages messages;
   messages.emplace_back("user", "run tools");
   messages.emplace_back(make_tool_assistant(/*call_count=*/2));
   messages.emplace_back("tool", "first");
-  const auto prompt = encoder.apply(messages);
+  const auto prompt = apply_template(encoder, messages);
   ASSERT_TRUE(prompt.has_value());
   const std::string ending = "<function_results>\n<result>first</result>";
   EXPECT_EQ(prompt->substr(prompt->size() - ending.size()), ending);
 }
 
 TEST(DeepseekV32CppTemplate, RejectsToolResultAfterInterveningUser) {
-  const DeepseekV32CppTemplate encoder{TokenizerArgs()};
+  const DeepseekV32CppTemplate encoder{chat_template::TemplateConfig{}};
   ChatMessages messages;
   messages.emplace_back("user", "run tools");
   messages.emplace_back(make_tool_assistant(/*call_count=*/1));
   messages.emplace_back("tool", "first");
   messages.emplace_back("user", "new request");
   messages.emplace_back("tool", "orphan");
-  EXPECT_DEATH(encoder.apply(messages),
+  EXPECT_DEATH(apply_template(encoder, messages),
                "Tool message does not follow assistant");
 }
 
 TEST(DeepseekV32CppTemplate, RejectsMoreResultsThanAssistantCalls) {
-  const DeepseekV32CppTemplate encoder{TokenizerArgs()};
+  const DeepseekV32CppTemplate encoder{chat_template::TemplateConfig{}};
   ChatMessages messages;
   messages.emplace_back("user", "run tools");
   messages.emplace_back(make_tool_assistant(/*call_count=*/1));
   messages.emplace_back("tool", "first");
   messages.emplace_back("tool", "extra");
-  EXPECT_DEATH(encoder.apply(messages), "Invalid tool call order");
+  EXPECT_DEATH(apply_template(encoder, messages), "Invalid tool call order");
 }
 
 }  // namespace

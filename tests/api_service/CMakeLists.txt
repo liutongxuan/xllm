@@ -280,6 +280,7 @@ cc_test(
     anthropic_request_utils_test.cpp
   DEPS
     api_service
+    :chat_template_renderer
     GTest::gtest_main
   ENVIRONMENT
     "${_api_json_test_env}"

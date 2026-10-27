@@ -23,27 +23,19 @@ limitations under the License.
 
 namespace xllm {
 
-ChatPromptRendererFactory ChatTemplateFactory::renderer_factory(
-    bool use_cpp_template) {
-  return [use_cpp_template](const TokenizerArgs& args,
-                            const std::string& model_type) {
-    return create(args, model_type, use_cpp_template);
-  };
-}
-
 std::unique_ptr<ChatTemplate> ChatTemplateFactory::create(
-    const TokenizerArgs& tokenizer_args,
+    const chat_template::TemplateConfig& config,
     const std::string& model_type,
     bool use_cpp_template) {
   if (use_cpp_template) {
     if (model_type == "deepseek_v32") {
       LOG(INFO) << "Using native C++ chat template for "
                 << "model_type: " << model_type;
-      return std::make_unique<DeepseekV32CppTemplate>(tokenizer_args);
+      return std::make_unique<DeepseekV32CppTemplate>(config);
     } else if (model_type == "deepseek_v4") {
       LOG(INFO) << "Using native C++ chat template for "
                 << "model_type: " << model_type;
-      return std::make_unique<DeepseekV4CppTemplate>(tokenizer_args);
+      return std::make_unique<DeepseekV4CppTemplate>(config);
     } else {
       LOG(FATAL) << "cpp_chat_template only support deepseekv32 and deepseekv4 "
                     "models currently.";
@@ -51,7 +43,7 @@ std::unique_ptr<ChatTemplate> ChatTemplateFactory::create(
   }
   LOG(INFO) << "Using Jinja chat template for "
             << "model_type: " << model_type;
-  return std::make_unique<JinjaChatTemplate>(tokenizer_args);
+  return std::make_unique<JinjaChatTemplate>(config);
 }
 
 }  // namespace xllm

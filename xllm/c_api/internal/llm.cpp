@@ -26,11 +26,11 @@ limitations under the License.
 #include <exception>
 #include <stdexcept>
 
+#include "application/master_factory.h"
 #include "core/common/native_library.h"
 #include "core/framework/config/beam_search_config.h"
 #include "core/framework/config/execution_config.h"
 #include "helper.h"
-#include "server/master_factory.h"
 
 XLLM_CAPI_EXPORT XLLM_LLM_Handler* xllm_llm_create(void) {
   XLLM_LLM_Handler* handler = new XLLM_LLM_Handler();

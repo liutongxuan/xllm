@@ -13,14 +13,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "server/master_factory.h"
+#include "application/master_factory.h"
 
 #include <glog/logging.h>
 
 #include <memory>
 #include <string>
 
-#include "chat_template/chat_template_factory.h"
+#include "application/chat_template_renderer.h"
 #include "core/distributed_runtime/dit_master.h"
 #include "core/distributed_runtime/llm_master.h"
 #include "core/distributed_runtime/rec_master.h"
@@ -32,20 +32,18 @@ namespace xllm {
 std::unique_ptr<LLMMaster> create_llm_master(const Options& options) {
   return std::make_unique<LLMMaster>(
       options,
-      ChatTemplateFactory::renderer_factory(
+      create_chat_prompt_renderer_factory(
           ModelConfig::get_instance().use_cpp_chat_template()));
 }
 
 std::unique_ptr<VLMMaster> create_vlm_master(const Options& options) {
   return std::make_unique<VLMMaster>(
-      options,
-      ChatTemplateFactory::renderer_factory(/*use_cpp_template=*/false));
+      options, create_chat_prompt_renderer_factory(/*use_cpp_template=*/false));
 }
 
 std::unique_ptr<RecMaster> create_rec_master(const Options& options) {
   return std::make_unique<RecMaster>(
-      options,
-      ChatTemplateFactory::renderer_factory(/*use_cpp_template=*/false));
+      options, create_chat_prompt_renderer_factory(/*use_cpp_template=*/false));
 }
 
 std::unique_ptr<Master> create_master(const std::string& backend,

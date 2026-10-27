@@ -134,11 +134,11 @@ std::string get_thinking_mode(const nlohmann::ordered_json& kwargs) {
 }
 
 nlohmann::ordered_json tool_calls_from_openai_format(
-    const Message::ToolCallVec& tool_calls,
+    const std::vector<chat_template::ToolCallView>& tool_calls,
     size_t& prompt_capacity) {
   nlohmann::ordered_json out = nlohmann::ordered_json::array();
   out.get_ref<nlohmann::ordered_json::array_t&>().reserve(tool_calls.size());
-  for (const Message::ToolCall& tool_call : tool_calls) {
+  for (const chat_template::ToolCallView& tool_call : tool_calls) {
     prompt_capacity += tool_call.function.name.size() +
                        tool_call.function.arguments.size() + 128;
     nlohmann::ordered_json args_json = nlohmann::json::object();
@@ -261,9 +261,10 @@ std::string render_response_format(
                              {{"{schema}", to_json(response_format)}});
 }
 
-std::string get_text_content(const Message::Content& content) {
-  if (std::holds_alternative<std::string>(content)) {
-    return std::get<std::string>(content);
+std::string get_text_content(
+    const chat_template::MessageView::Content& content) {
+  if (std::holds_alternative<std::string_view>(content)) {
+    return std::string(std::get<std::string_view>(content));
   }
   return "";
 }
@@ -272,13 +273,13 @@ std::string get_text_content(const Message::Content& content) {
 // matching the Python behavior where existing system messages are kept
 // separately (tools section comes before system content).
 nlohmann::ordered_json normalize_messages(
-    const ChatMessages& messages,
-    const std::vector<xllm::JsonTool>& tools,
+    const std::vector<chat_template::MessageView>& messages,
+    const std::vector<chat_template::ToolView>& tools,
     size_t& prompt_capacity) {
   nlohmann::ordered_json out = nlohmann::ordered_json::array();
   out.get_ref<nlohmann::ordered_json::array_t&>().reserve(
       messages.size() + (tools.empty() ? 0 : 1));
-  for (const Message& message : messages) {
+  for (const chat_template::MessageView& message : messages) {
     nlohmann::ordered_json item;
     item["role"] = message.role;
     item["content"] = get_text_content(message.content);
@@ -300,7 +301,7 @@ nlohmann::ordered_json normalize_messages(
     nlohmann::ordered_json tools_json = nlohmann::ordered_json::array();
     tools_json.get_ref<nlohmann::ordered_json::array_t&>().reserve(
         tools.size());
-    for (const xllm::JsonTool& tool : tools) {
+    for (const chat_template::ToolView& tool : tools) {
       nlohmann::ordered_json openai_tool;
       openai_tool["type"] = "function";
       nlohmann::ordered_json function;
@@ -490,19 +491,13 @@ std::string render_message(const nlohmann::ordered_json& messages,
 
 }  // namespace
 
-DeepseekV32CppTemplate::DeepseekV32CppTemplate(const TokenizerArgs& args)
-    : bos_token_(args.bos_token().empty() ? kBosToken : args.bos_token()) {}
+DeepseekV32CppTemplate::DeepseekV32CppTemplate(
+    const chat_template::TemplateConfig& config)
+    : bos_token_(config.bos_token.empty() ? kBosToken : config.bos_token) {}
 
-std::optional<std::string> DeepseekV32CppTemplate::apply(
-    const ChatMessages& messages) const {
-  const std::vector<xllm::JsonTool> empty_tools;
-  const nlohmann::ordered_json kwargs = nlohmann::json::object();
-  return apply(messages, empty_tools, kwargs);
-}
-
-std::optional<std::string> DeepseekV32CppTemplate::apply(
-    const ChatMessages& messages,
-    const std::vector<xllm::JsonTool>& json_tools,
+std::optional<std::string> DeepseekV32CppTemplate::render_prompt(
+    const std::vector<chat_template::MessageView>& messages,
+    const std::vector<chat_template::ToolView>& json_tools,
     const nlohmann::ordered_json& chat_template_kwargs) const {
   try {
     size_t prompt_capacity = bos_token_.size();

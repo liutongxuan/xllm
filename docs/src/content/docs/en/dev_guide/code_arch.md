@@ -88,6 +88,7 @@ entry is **`xllm/xllm.cpp`**, inside the source directory.
 │   │   ├── kernels_npu/                   # NPU operators, including TileLang/Triton sources
 │   │   └── distributed/                   # Model-side collectives
 │   ├── processors/                        # Multimodal input preprocessing
+│   ├── application/                       # Shared template adaptation and master assembly
 │   ├── chat_template/                     # Chat messages to model prompts
 │   ├── parser/                            # Reasoning-output parsers
 │   ├── function_call/                     # Tool-call parsers
@@ -107,12 +108,21 @@ entry is **`xllm/xllm.cpp`**, inside the source directory.
 └── setup.py                               # Python packaging and build entry
 ```
 
-Chat prompt rendering is a separate module beside the output parsers. Core
+Chat prompt rendering is a separate module beside the output parsers. Templates
+accept their own configuration and borrowed message/tool views, without core,
+Torch, protobuf or tokenizer dependencies. Views carry text and modality types,
+not media payloads. The synchronous render returns an owned prompt and generation
+mode; unrecognized suffixes remain unknown.
+
+`application/chat_template_renderer.cpp` adapts core messages and tokenizer
+metadata to this contract without copying conversation text or tool schemas. Core
 request preparation consumes the `ChatPromptRenderer` interface and its rendered
 prompt/generation mode; it does not construct Jinja or native templates.
-`server/master_factory.cpp` supplies a renderer factory when assembling a master.
+`application/master_factory.cpp` supplies a renderer factory when assembling a master.
 LLM masters retain that policy for forks, which build their own renderer from the
 new model's metadata. VLM and recommendation masters use Jinja rendering.
+The existing `model -> processors -> chat_template` CMake dependency remains;
+the processor boundary is separate from the request-rendering boundary above.
 
 ## KV cache and virtual memory boundaries
 
@@ -349,7 +359,7 @@ interfaces; `scheduler/` decides what runs next; `distributed_runtime/` and
 [`launch_server.py`](https://github.com/xLLM-AI/xllm/blob/main/xllm/launch_server.py)
 handles the `xllm serve` launch command. In the C++ executable,
 `main()` initializes configuration, then `run()` creates the master through
-[`create_master()`](https://github.com/xLLM-AI/xllm/blob/main/xllm/server/master_factory.cpp).
+[`create_master()`](https://github.com/xLLM-AI/xllm/blob/main/xllm/application/master_factory.cpp).
 For the `llm` backend, `LLMMaster` sets up the engine, scheduler, tokenizer,
 and request factory. `master->run()` starts its loop, and the serving rank
 starts `APIService` through

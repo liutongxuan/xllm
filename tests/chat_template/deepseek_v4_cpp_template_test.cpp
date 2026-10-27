@@ -20,13 +20,15 @@ limitations under the License.
 #include <string>
 #include <utility>
 
+#include "tests/chat_template/chat_template_test_utils.h"
+
 namespace xllm {
 namespace {
 
 DeepseekV4CppTemplate make_encoder() {
   TokenizerArgs args;
   args.bos_token("<｜begin▁of▁sentence｜>");
-  return DeepseekV4CppTemplate(args);
+  return DeepseekV4CppTemplate(make_template_config(args));
 }
 
 Message make_assistant_tool_call(const std::string& content,
@@ -63,14 +65,15 @@ Message make_multi_tool_call() {
 
 TEST(DeepseekV4CppTemplate, PreservesLastUserThinkingAfterDroppingDeveloper) {
   const TokenizerArgs args;
-  const DeepseekV4CppTemplate encoder(args);
+  const DeepseekV4CppTemplate encoder(make_template_config(args));
   ChatMessages messages;
   messages.emplace_back("developer", "old instruction");
   messages.emplace_back("user", "hello");
 
   const nlohmann::ordered_json kwargs = {{"thinking", true},
                                          {"reasoning_effort", "low"}};
-  const auto prompt = encoder.apply(messages, /*json_tools=*/{}, kwargs);
+  const auto prompt =
+      apply_template(encoder, messages, /*json_tools=*/{}, kwargs);
   ASSERT_TRUE(prompt.has_value());
   EXPECT_EQ(*prompt,
             "<｜begin▁of▁sentence｜><｜User｜>hello<｜Assistant｜><think>");
@@ -79,20 +82,23 @@ TEST(DeepseekV4CppTemplate, PreservesLastUserThinkingAfterDroppingDeveloper) {
 TEST(DeepseekV4CppTemplate, SnapshotsCustomBosToken) {
   TokenizerArgs args;
   args.bos_token("<custom-bos>");
-  const DeepseekV4CppTemplate encoder(args);
+  const DeepseekV4CppTemplate encoder(make_template_config(args));
   args.bos_token("<changed-bos>");
   ChatMessages messages;
   messages.emplace_back("user", "hello");
 
-  const auto prompt = encoder.apply(
-      messages, /*json_tools=*/{}, nlohmann::ordered_json{{"thinking", false}});
+  const auto prompt =
+      apply_template(encoder,
+                     messages,
+                     /*json_tools=*/{},
+                     nlohmann::ordered_json{{"thinking", false}});
   ASSERT_TRUE(prompt.has_value());
   EXPECT_EQ(*prompt, "<custom-bos><｜User｜>hello<｜Assistant｜></think>");
 }
 
 TEST(DeepseekV4CppTemplate, RendersHistoryWithoutUserMessages) {
   const TokenizerArgs args;
-  const DeepseekV4CppTemplate encoder(args);
+  const DeepseekV4CppTemplate encoder(make_template_config(args));
   ChatMessages messages;
   constexpr int32_t kMessageCount = 64;
   messages.reserve(kMessageCount);
@@ -102,8 +108,11 @@ TEST(DeepseekV4CppTemplate, RendersHistoryWithoutUserMessages) {
     expected += "instruction";
   }
 
-  const auto prompt = encoder.apply(
-      messages, /*json_tools=*/{}, nlohmann::ordered_json{{"thinking", false}});
+  const auto prompt =
+      apply_template(encoder,
+                     messages,
+                     /*json_tools=*/{},
+                     nlohmann::ordered_json{{"thinking", false}});
   ASSERT_TRUE(prompt.has_value());
   EXPECT_EQ(*prompt, expected);
 }
@@ -132,7 +141,8 @@ TEST(DeepseekV4CppTemplate, PreservesLongPayloadBytesAndLiteralPlaceholders) {
     SCOPED_TRACE(thinking);
     const nlohmann::ordered_json kwargs = {{"thinking", thinking},
                                            {"reasoning_effort", "low"}};
-    const auto prompt = encoder.apply(messages, /*json_tools=*/{}, kwargs);
+    const auto prompt =
+        apply_template(encoder, messages, /*json_tools=*/{}, kwargs);
     ASSERT_TRUE(prompt.has_value());
     const std::string expected =
         std::string("<｜begin▁of▁sentence｜>") + system_content + "<｜User｜>" +
@@ -154,7 +164,7 @@ TEST(DeepseekV4CppTemplate, BasicChatModeUserMessage) {
   // means thinking. See BareRequestDefaultsToThinkingWithHighEffort.
   nlohmann::ordered_json kwargs = nlohmann::json::object();
   kwargs["thinking"] = false;
-  auto prompt = encoder.apply(messages, /*json_tools=*/{}, kwargs);
+  auto prompt = apply_template(encoder, messages, /*json_tools=*/{}, kwargs);
   ASSERT_TRUE(prompt.has_value());
 
   EXPECT_EQ(*prompt,
@@ -173,7 +183,7 @@ TEST(DeepseekV4CppTemplate, BareRequestDefaultsToThinkingWithHighEffort) {
   messages.emplace_back("user", "Hello");
 
   nlohmann::ordered_json kwargs = nlohmann::json::object();
-  auto prompt = encoder.apply(messages, /*json_tools=*/{}, kwargs);
+  auto prompt = apply_template(encoder, messages, /*json_tools=*/{}, kwargs);
   ASSERT_TRUE(prompt.has_value());
 
   EXPECT_NE(prompt->find("Reasoning Effort: Absolute maximum"),
@@ -192,7 +202,7 @@ TEST(DeepseekV4CppTemplate, ThinkingModeAddsThinkAfterLastUser) {
 
   nlohmann::ordered_json kwargs = nlohmann::json::object();
   kwargs["thinking"] = true;
-  auto prompt = encoder.apply(messages, /*json_tools=*/{}, kwargs);
+  auto prompt = apply_template(encoder, messages, /*json_tools=*/{}, kwargs);
   ASSERT_TRUE(prompt.has_value());
 
   // An absent reasoning_effort resolves to the "high" tier, so the prefix is
@@ -217,17 +227,20 @@ TEST(DeepseekV4CppTemplate, ReportsRenderedGenerationMode) {
   ChatMessages messages;
   messages.emplace_back("user", "Hello");
 
-  auto chat = encoder.render(messages,
-                             /*json_tools=*/{},
-                             nlohmann::ordered_json{{"thinking", false}});
+  auto chat = render_template(encoder,
+                              messages,
+                              /*json_tools=*/{},
+                              nlohmann::ordered_json{{"thinking", false}});
   ASSERT_TRUE(chat.has_value());
-  EXPECT_EQ(chat->generation_mode, ChatGenerationMode::CHAT);
+  EXPECT_EQ(chat->generation_mode, chat_template::GenerationMode::CHAT);
 
-  auto reasoning = encoder.render(messages,
-                                  /*json_tools=*/{},
-                                  nlohmann::ordered_json{{"thinking", true}});
+  auto reasoning = render_template(encoder,
+                                   messages,
+                                   /*json_tools=*/{},
+                                   nlohmann::ordered_json{{"thinking", true}});
   ASSERT_TRUE(reasoning.has_value());
-  EXPECT_EQ(reasoning->generation_mode, ChatGenerationMode::REASONING);
+  EXPECT_EQ(reasoning->generation_mode,
+            chat_template::GenerationMode::REASONING);
 }
 
 TEST(DeepseekV4CppTemplate, UsesToolCallsBlockName) {
@@ -242,7 +255,7 @@ TEST(DeepseekV4CppTemplate, UsesToolCallsBlockName) {
 
   nlohmann::ordered_json kwargs = nlohmann::json::object();
   kwargs["thinking"] = true;
-  auto prompt = encoder.apply(messages, /*json_tools=*/{}, kwargs);
+  auto prompt = apply_template(encoder, messages, /*json_tools=*/{}, kwargs);
   ASSERT_TRUE(prompt.has_value());
 
   EXPECT_NE(prompt->find("<｜DSML｜tool_calls>"), std::string::npos);
@@ -265,7 +278,7 @@ TEST(DeepseekV4CppTemplate, ToolResultIsMergedAsUserToolResult) {
 
   nlohmann::ordered_json kwargs = nlohmann::json::object();
   kwargs["thinking"] = false;
-  auto prompt = encoder.apply(messages, /*json_tools=*/{}, kwargs);
+  auto prompt = apply_template(encoder, messages, /*json_tools=*/{}, kwargs);
   ASSERT_TRUE(prompt.has_value());
 
   EXPECT_NE(prompt->find("<｜User｜><tool_result>{\"temperature\":22}"
@@ -291,7 +304,7 @@ TEST(DeepseekV4CppTemplate, ToolsInjectionUsesV4SchemaText) {
   tools.push_back(tool);
 
   nlohmann::ordered_json kwargs = nlohmann::json::object();
-  auto prompt = encoder.apply(messages, tools, kwargs);
+  auto prompt = apply_template(encoder, messages, tools, kwargs);
   ASSERT_TRUE(prompt.has_value());
 
   EXPECT_NE(prompt->find("You can invoke tools by writing a "
@@ -321,7 +334,7 @@ TEST(DeepseekV4CppTemplate, ToolsKeepHistoricalReasoning) {
 
   nlohmann::ordered_json kwargs = nlohmann::json::object();
   kwargs["thinking"] = true;
-  auto prompt = encoder.apply(messages, tools, kwargs);
+  auto prompt = apply_template(encoder, messages, tools, kwargs);
   ASSERT_TRUE(prompt.has_value());
 
   EXPECT_NE(prompt->find("historical reasoning</think>"), std::string::npos);
@@ -337,7 +350,7 @@ TEST(DeepseekV4CppTemplate, LatestReminderUsesDedicatedToken) {
 
   nlohmann::ordered_json kwargs = nlohmann::json::object();
   kwargs["thinking"] = false;
-  auto prompt = encoder.apply(messages, /*json_tools=*/{}, kwargs);
+  auto prompt = apply_template(encoder, messages, /*json_tools=*/{}, kwargs);
   ASSERT_TRUE(prompt.has_value());
 
   EXPECT_EQ(*prompt,
@@ -355,7 +368,7 @@ TEST(DeepseekV4CppTemplate, AdjacentUserMessagesAreMergedAsContentBlocks) {
 
   nlohmann::ordered_json kwargs = nlohmann::json::object();
   kwargs["thinking"] = false;
-  auto prompt = encoder.apply(messages, /*json_tools=*/{}, kwargs);
+  auto prompt = apply_template(encoder, messages, /*json_tools=*/{}, kwargs);
   ASSERT_TRUE(prompt.has_value());
 
   EXPECT_EQ(*prompt,
@@ -381,8 +394,11 @@ TEST(DeepseekV4CppTemplate, PreservesSeparatorsAroundEmptyTextAndToolResults) {
   messages.emplace_back(std::move(second_result));
   messages.emplace_back("user", "");
 
-  const auto prompt = encoder.apply(
-      messages, /*json_tools=*/{}, nlohmann::ordered_json{{"thinking", false}});
+  const auto prompt =
+      apply_template(encoder,
+                     messages,
+                     /*json_tools=*/{},
+                     nlohmann::ordered_json{{"thinking", false}});
   ASSERT_TRUE(prompt.has_value());
   const std::string expected =
       std::string(
@@ -417,7 +433,7 @@ TEST(DeepseekV4CppTemplate, ToolResultsAreSortedByToolCallId) {
   messages.push_back(first_result);
 
   nlohmann::ordered_json kwargs = nlohmann::json::object();
-  auto prompt = encoder.apply(messages, /*json_tools=*/{}, kwargs);
+  auto prompt = apply_template(encoder, messages, /*json_tools=*/{}, kwargs);
   ASSERT_TRUE(prompt.has_value());
 
   size_t first_pos = prompt->find("<tool_result>first result</tool_result>");
@@ -439,8 +455,11 @@ TEST(DeepseekV4CppTemplate, OrderedToolResultsKeepTheirOrder) {
   second_result.tool_call_id = "call_second";
   messages.emplace_back(std::move(second_result));
 
-  const auto prompt = encoder.apply(
-      messages, /*json_tools=*/{}, nlohmann::ordered_json{{"thinking", false}});
+  const auto prompt =
+      apply_template(encoder,
+                     messages,
+                     /*json_tools=*/{},
+                     nlohmann::ordered_json{{"thinking", false}});
   ASSERT_TRUE(prompt.has_value());
   EXPECT_NE(prompt->find("<｜User｜><tool_result>first result</tool_result>"
                          "\n\n<tool_result>second result</tool_result>"
@@ -461,8 +480,11 @@ TEST(DeepseekV4CppTemplate, SortingToolResultsPreservesTextBlockPositions) {
   first_result.tool_call_id = "call_first";
   messages.emplace_back(std::move(first_result));
 
-  const auto prompt = encoder.apply(
-      messages, /*json_tools=*/{}, nlohmann::ordered_json{{"thinking", false}});
+  const auto prompt =
+      apply_template(encoder,
+                     messages,
+                     /*json_tools=*/{},
+                     nlohmann::ordered_json{{"thinking", false}});
   ASSERT_TRUE(prompt.has_value());
   EXPECT_NE(prompt->find("<｜User｜><tool_result>first result</tool_result>"
                          "\n\nbetween results\n\n"
@@ -488,8 +510,11 @@ TEST(DeepseekV4CppTemplate, UnknownToolResultsPrecedeLastDuplicateCallId) {
   unknown_result.tool_call_id = "unknown";
   messages.emplace_back(std::move(unknown_result));
 
-  const auto prompt = encoder.apply(
-      messages, /*json_tools=*/{}, nlohmann::ordered_json{{"thinking", false}});
+  const auto prompt =
+      apply_template(encoder,
+                     messages,
+                     /*json_tools=*/{},
+                     nlohmann::ordered_json{{"thinking", false}});
   ASSERT_TRUE(prompt.has_value());
   EXPECT_NE(prompt->find("<｜User｜><tool_result>unknown result</tool_result>"
                          "\n\n<tool_result>second result</tool_result>"
@@ -509,7 +534,8 @@ TEST(DeepseekV4CppTemplate, ThinkingHistoryDropsReasoningBeforeLastUser) {
 
   const nlohmann::ordered_json kwargs = {{"thinking", true},
                                          {"reasoning_effort", "low"}};
-  const auto prompt = encoder.apply(messages, /*json_tools=*/{}, kwargs);
+  const auto prompt =
+      apply_template(encoder, messages, /*json_tools=*/{}, kwargs);
   ASSERT_TRUE(prompt.has_value());
   EXPECT_EQ(*prompt,
             "<｜begin▁of▁sentence｜><｜User｜>first question"
@@ -528,7 +554,7 @@ std::optional<std::string> render_with_effort(const std::string& effort) {
   if (!effort.empty()) {
     kwargs["reasoning_effort"] = effort;
   }
-  return encoder.apply(messages, /*json_tools=*/{}, kwargs);
+  return apply_template(encoder, messages, /*json_tools=*/{}, kwargs);
 }
 
 // DeepSeek-V4-Flash-0731 introduced a third tier above "high". Only "max"
@@ -596,7 +622,7 @@ TEST(DeepseekV4CppTemplate, ReasoningEffortAloneEnablesThinking) {
 
   nlohmann::ordered_json kwargs = nlohmann::json::object();
   kwargs["reasoning_effort"] = "max";
-  auto prompt = encoder.apply(messages, /*json_tools=*/{}, kwargs);
+  auto prompt = apply_template(encoder, messages, /*json_tools=*/{}, kwargs);
   ASSERT_TRUE(prompt.has_value());
 
   EXPECT_NE(prompt->find("Reasoning Effort: Beyond maximum"),
@@ -615,7 +641,7 @@ TEST(DeepseekV4CppTemplate, ExplicitThinkingFalseOverridesReasoningEffort) {
   nlohmann::ordered_json kwargs = nlohmann::json::object();
   kwargs["thinking"] = false;
   kwargs["reasoning_effort"] = "max";
-  auto prompt = encoder.apply(messages, /*json_tools=*/{}, kwargs);
+  auto prompt = apply_template(encoder, messages, /*json_tools=*/{}, kwargs);
   ASSERT_TRUE(prompt.has_value());
 
   EXPECT_EQ(*prompt,

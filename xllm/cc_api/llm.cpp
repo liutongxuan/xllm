@@ -24,10 +24,10 @@ limitations under the License.
 #include <atomic>
 #include <exception>
 
+#include "application/master_factory.h"
 #include "core/common/native_library.h"
 #include "core/framework/config/beam_search_config.h"
 #include "internal.h"
-#include "server/master_factory.h"
 
 namespace xllm {
 namespace {

@@ -194,7 +194,7 @@ std::string to_json(const nlohmann::ordered_json& value) {
   }
 }
 
-nlohmann::ordered_json parse_json_object_or_empty(const std::string& text) {
+nlohmann::ordered_json parse_json_object_or_empty(std::string_view text) {
   if (text.empty()) {
     return nlohmann::ordered_json::object();
   }
@@ -296,11 +296,11 @@ std::string get_thinking_mode(const nlohmann::ordered_json& kwargs) {
 }
 
 nlohmann::ordered_json tool_calls_from_openai_format(
-    const Message::ToolCallVec& tool_calls,
+    const std::vector<chat_template::ToolCallView>& tool_calls,
     size_t& prompt_capacity) {
   nlohmann::ordered_json out = nlohmann::ordered_json::array();
   out.get_ref<nlohmann::ordered_json::array_t&>().reserve(tool_calls.size());
-  for (const Message::ToolCall& tc : tool_calls) {
+  for (const chat_template::ToolCallView& tc : tool_calls) {
     prompt_capacity +=
         tc.function.name.size() + tc.function.arguments.size() + 128;
     nlohmann::ordered_json item;
@@ -356,9 +356,10 @@ int32_t find_last_user_index(const nlohmann::ordered_json& messages) {
   return -1;
 }
 
-std::string get_text_content(const Message::Content& content) {
-  if (std::holds_alternative<std::string>(content)) {
-    return std::get<std::string>(content);
+std::string get_text_content(
+    const chat_template::MessageView::Content& content) {
+  if (std::holds_alternative<std::string_view>(content)) {
+    return std::string(std::get<std::string_view>(content));
   }
   return "";
 }
@@ -572,14 +573,14 @@ nlohmann::ordered_json drop_thinking_messages(nlohmann::ordered_json messages) {
 // ============================================================
 
 nlohmann::ordered_json normalize_messages(
-    const ChatMessages& messages,
-    const std::vector<xllm::JsonTool>& tools,
+    const std::vector<chat_template::MessageView>& messages,
+    const std::vector<chat_template::ToolView>& tools,
     size_t& prompt_capacity) {
   nlohmann::ordered_json out = nlohmann::json::array();
   out.get_ref<nlohmann::ordered_json::array_t&>().reserve(messages.size() +
                                                           !tools.empty());
   prompt_capacity = 0;
-  for (const Message& message : messages) {
+  for (const chat_template::MessageView& message : messages) {
     nlohmann::ordered_json item;
     item["role"] = message.role;
     std::string content = get_text_content(message.content);
@@ -602,7 +603,7 @@ nlohmann::ordered_json normalize_messages(
     nlohmann::ordered_json tools_json = nlohmann::json::array();
     tools_json.get_ref<nlohmann::ordered_json::array_t&>().reserve(
         tools.size());
-    for (const xllm::JsonTool& tool : tools) {
+    for (const chat_template::ToolView& tool : tools) {
       prompt_capacity +=
           tool.function.name.size() + tool.function.description.size() + 256;
       nlohmann::ordered_json openai_tool;
@@ -801,19 +802,13 @@ std::string render_message(const nlohmann::ordered_json& messages,
 // Public Interface
 // ============================================================
 
-DeepseekV4CppTemplate::DeepseekV4CppTemplate(const TokenizerArgs& args)
-    : bos_token_(args.bos_token().empty() ? kBosToken : args.bos_token()) {}
+DeepseekV4CppTemplate::DeepseekV4CppTemplate(
+    const chat_template::TemplateConfig& config)
+    : bos_token_(config.bos_token.empty() ? kBosToken : config.bos_token) {}
 
-std::optional<std::string> DeepseekV4CppTemplate::apply(
-    const ChatMessages& messages) const {
-  const std::vector<xllm::JsonTool> empty_tools;
-  const nlohmann::ordered_json kwargs = nlohmann::json::object();
-  return apply(messages, empty_tools, kwargs);
-}
-
-std::optional<std::string> DeepseekV4CppTemplate::apply(
-    const ChatMessages& messages,
-    const std::vector<xllm::JsonTool>& json_tools,
+std::optional<std::string> DeepseekV4CppTemplate::render_prompt(
+    const std::vector<chat_template::MessageView>& messages,
+    const std::vector<chat_template::ToolView>& json_tools,
     const nlohmann::ordered_json& chat_template_kwargs) const {
   try {
     size_t prompt_capacity = 0;

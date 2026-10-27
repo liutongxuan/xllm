@@ -20,6 +20,7 @@ limitations under the License.
 #include <torch/python.h>
 
 #include "api_service/call.h"
+#include "application/master_factory.h"
 #include "core/common/native_library.h"
 #include "core/common/options.h"
 #include "core/common/types.h"
@@ -32,7 +33,6 @@ limitations under the License.
 #include "core/framework/request/sample_slot.h"
 #include "core/util/pybind_helper.h"
 #include "models/model_registry.h"
-#include "server/master_factory.h"
 
 namespace xllm {
 namespace py = pybind11;

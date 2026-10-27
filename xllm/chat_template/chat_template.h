@@ -15,37 +15,52 @@ limitations under the License.
 
 #pragma once
 
+#include <cstdint>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
-#include "core/common/message.h"
-#include "core/common/types.h"
-#include "core/framework/request/chat_prompt_renderer.h"
+#include "chat_template/chat_template_input.h"
+
+namespace xllm::chat_template {
+
+enum class GenerationMode : uint8_t {
+  CHAT = 0,
+  REASONING = 1,
+  UNKNOWN = 2,
+};
+
+struct RenderResult {
+  std::string prompt;
+  GenerationMode generation_mode = GenerationMode::UNKNOWN;
+};
+
+}  // namespace xllm::chat_template
 
 namespace xllm {
 
-class ChatTemplate : public ChatPromptRenderer {
+// Immutable after construction; supports concurrent synchronous rendering.
+class ChatTemplate {
  public:
-  ~ChatTemplate() override = default;
+  virtual ~ChatTemplate() = default;
 
-  virtual std::optional<std::string> apply(
-      const ChatMessages& messages) const = 0;
+  std::optional<chat_template::RenderResult> render(
+      const std::vector<chat_template::MessageView>& messages,
+      const std::vector<chat_template::ToolView>& tools = {},
+      const nlohmann::ordered_json& kwargs = {}) const;
 
-  virtual std::optional<std::string> apply(
-      const ChatMessages& messages,
-      const std::vector<xllm::JsonTool>& json_tools,
-      const nlohmann::ordered_json& chat_template_kwargs) const = 0;
-
-  std::optional<RenderedChatPrompt> render(
-      const ChatMessages& messages,
-      const std::vector<xllm::JsonTool>& json_tools,
-      const nlohmann::ordered_json& chat_template_kwargs) const override final;
-
-  static ChatGenerationMode generation_mode_from_prompt(
+  // Compatibility classification for the existing think-marker protocol.
+  // Unrecognized suffixes stay unknown; this does not infer request intent.
+  static chat_template::GenerationMode generation_mode_from_prompt(
       std::string_view prompt);
+
+ protected:
+  virtual std::optional<std::string> render_prompt(
+      const std::vector<chat_template::MessageView>& messages,
+      const std::vector<chat_template::ToolView>& tools,
+      const nlohmann::ordered_json& kwargs) const = 0;
 };
 
 }  // namespace xllm

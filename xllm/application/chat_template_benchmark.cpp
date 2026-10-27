@@ -18,8 +18,8 @@ limitations under the License.
 // template, exactly the call LLMRequestFactory::create(messages, ...) makes.
 //
 // The other hop benchmarks stub the chat template out (llm_request_factory
-// benchmark uses a FakeChatTemplate), so this is the only place the render
-// itself is measured. The conversation shape mirrors
+// benchmark uses a FakeChatPromptRenderer), so this is the only place the
+// render itself is measured. The conversation shape mirrors
 // api_service_benchmark's make_chat_json (system + alternating user/assistant
 // turns of 256 chars) so the two hops can be compared per request.
 //
@@ -76,6 +76,7 @@ limitations under the License.
 #include <variant>
 #include <vector>
 
+#include "application/chat_template_renderer.h"
 #include "chat_template/chat_template.h"
 #include "chat_template/deepseek_v32_cpp_template.h"
 #include "chat_template/deepseek_v4_cpp_template.h"
@@ -317,7 +318,8 @@ void run_deepseek_benchmark(
     bool thinking,
     std::optional<ChatGenerationMode> expected_generation_mode = std::nullopt) {
   const TokenizerArgs tokenizer_args;
-  const Template chat_template(tokenizer_args);
+  const ChatTemplateRenderer chat_template(
+      std::make_unique<Template>(make_template_config(tokenizer_args)));
   const nlohmann::ordered_json kwargs = {{"thinking", thinking},
                                          {"reasoning_effort", "low"}};
   const std::optional<RenderedChatPrompt> expected =
@@ -400,7 +402,8 @@ void BM_ChatTemplate_DeepseekPayload(benchmark::State& state) {
 }
 
 void BM_ChatTemplate_JinjaRender(benchmark::State& state) {
-  const JinjaChatTemplate chat_template(make_tokenizer_args());
+  const ChatTemplateRenderer chat_template(std::make_unique<JinjaChatTemplate>(
+      make_template_config(make_tokenizer_args())));
   const ChatMessages messages =
       make_messages(static_cast<size_t>(state.range(0)));
   const std::vector<JsonTool> no_tools;
@@ -420,7 +423,8 @@ void BM_ChatTemplate_JinjaRender(benchmark::State& state) {
 }
 
 void BM_ChatTemplate_JinjaRenderWithTools(benchmark::State& state) {
-  const JinjaChatTemplate chat_template(make_tokenizer_args());
+  const ChatTemplateRenderer chat_template(std::make_unique<JinjaChatTemplate>(
+      make_template_config(make_tokenizer_args())));
   const ChatMessages messages = make_tool_messages();
   const std::vector<JsonTool> tools =
       make_tools(static_cast<size_t>(state.range(0)));

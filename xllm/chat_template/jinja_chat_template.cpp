@@ -141,12 +141,13 @@ std::string normalize_minja_tests(std::string chat_template) {
 }
 }  // namespace
 
-JinjaChatTemplate::JinjaChatTemplate(const TokenizerArgs& args) {
+JinjaChatTemplate::JinjaChatTemplate(
+    const chat_template::TemplateConfig& config) {
   try {
     template_ = std::make_unique<minja::chat_template>(
-        normalize_minja_tests(args.chat_template()),
-        args.bos_token(),
-        args.eos_token());
+        normalize_minja_tests(config.source),
+        config.bos_token,
+        config.eos_token);
     // Same parse options minja::chat_template uses for its own root.
     template_root_ = minja::Parser::parse(template_->source(),
                                           {/*trim_blocks=*/true,
@@ -158,24 +159,8 @@ JinjaChatTemplate::JinjaChatTemplate(const TokenizerArgs& args) {
     LOG(INFO) << "Jinja chat template init succeed.";
 
   } catch (const std::exception& e) {
-    LOG(FATAL) << "Failed to parse jinja chat template, TokenizerArgs: " << args
-               << std::endl
-               << "Error message: " << e.what();
+    LOG(FATAL) << "Failed to parse jinja chat template: " << e.what();
   }
-}
-
-std::optional<std::string> JinjaChatTemplate::apply(
-    const ChatMessages& messages) const {
-  const std::vector<xllm::JsonTool> empty_tools;
-  const nlohmann::ordered_json chat_template_kwargs;
-  return apply(messages, empty_tools, chat_template_kwargs);
-}
-
-std::optional<std::string> JinjaChatTemplate::apply(
-    const ChatMessages& messages,
-    const nlohmann::ordered_json& chat_template_kwargs) const {
-  const std::vector<xllm::JsonTool> empty_tools;
-  return apply(messages, empty_tools, chat_template_kwargs);
 }
 
 std::optional<std::string> JinjaChatTemplate::apply(
@@ -187,9 +172,9 @@ std::optional<std::string> JinjaChatTemplate::apply(
                chat_template_kwargs);
 }
 
-std::optional<std::string> JinjaChatTemplate::apply(
-    const ChatMessages& messages,
-    const std::vector<xllm::JsonTool>& json_tools,
+std::optional<std::string> JinjaChatTemplate::render_prompt(
+    const std::vector<chat_template::MessageView>& messages,
+    const std::vector<chat_template::ToolView>& json_tools,
     const nlohmann::ordered_json& chat_template_kwargs) const {
   // convert the messages to json object
   nlohmann::ordered_json messages_json = nlohmann::json::array();
@@ -201,12 +186,15 @@ std::optional<std::string> JinjaChatTemplate::apply(
     message_json["role"] = message.role;
     features.has_tool_responses |= message.role == "tool";
 
-    if (std::holds_alternative<std::string>(message.content)) {
-      message_json["content"] = std::get<std::string>(message.content);
+    if (std::holds_alternative<std::string_view>(message.content)) {
+      message_json["content"] = std::get<std::string_view>(message.content);
       features.has_string_content = true;
-    } else if (std::holds_alternative<MMContentVec>(message.content)) {
+    } else if (std::holds_alternative<
+                   std::vector<chat_template::ContentPartView>>(
+                   message.content)) {
       message_json["content"] =
-          get_mm_content(std::get<MMContentVec>(message.content));
+          get_mm_content(std::get<std::vector<chat_template::ContentPartView>>(
+              message.content));
     }
 
     if (message.tool_call_id.has_value()) {
@@ -353,7 +341,7 @@ std::string JinjaChatTemplate::render_native(
 }
 
 nlohmann::ordered_json JinjaChatTemplate::get_mm_content(
-    const MMContentVec& vec) const {
+    const std::vector<chat_template::ContentPartView>& vec) const {
   nlohmann::ordered_json content_json = nlohmann::json::array();
   content_json.get_ref<nlohmann::ordered_json::array_t&>().reserve(vec.size());
 
@@ -362,13 +350,13 @@ nlohmann::ordered_json JinjaChatTemplate::get_mm_content(
     item_json["type"] = item.type;
     if (item.type == "text") {
       item_json["text"] = item.text;
-    } else if (auto it = kTypeToModality.find(item.type);
+    } else if (auto it = kTypeToModality.find(std::string(item.type));
                it != kTypeToModality.end()) {
       const std::string& modality = it->second;
       item_json[modality] = "mm place holder";
-      item_json[item.type] = "mm place holder";
+      item_json[std::string(item.type)] = "mm place holder";
     } else {
-      item_json[item.type] = "mm place holder";
+      item_json[std::string(item.type)] = "mm place holder";
     }
 
     content_json.emplace_back(std::move(item_json));

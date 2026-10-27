@@ -21,21 +21,17 @@ limitations under the License.
 #include <vector>
 
 #include "chat_template/chat_template.h"
-#include "core/common/message.h"
-#include "core/common/types.h"
-#include "framework/tokenizer/tokenizer_args.h"
 
 namespace xllm {
 
 class DeepseekV4CppTemplate final : public ChatTemplate {
  public:
-  explicit DeepseekV4CppTemplate(const TokenizerArgs& args);
+  explicit DeepseekV4CppTemplate(const chat_template::TemplateConfig& config);
 
-  std::optional<std::string> apply(const ChatMessages& messages) const override;
-
-  std::optional<std::string> apply(
-      const ChatMessages& messages,
-      const std::vector<xllm::JsonTool>& json_tools,
+ protected:
+  std::optional<std::string> render_prompt(
+      const std::vector<chat_template::MessageView>& messages,
+      const std::vector<chat_template::ToolView>& json_tools,
       const nlohmann::ordered_json& chat_template_kwargs) const override;
 
  private:

@@ -24,13 +24,16 @@ limitations under the License.
 #include <string>
 #include <vector>
 
+#include "tests/chat_template/chat_template_test_utils.h"
+
 namespace xllm {
 namespace {
 
 class TestableJinjaChatTemplate : public JinjaChatTemplate {
  public:
-  TestableJinjaChatTemplate(const TokenizerArgs& args)
-      : JinjaChatTemplate(args) {}
+  explicit TestableJinjaChatTemplate(
+      const chat_template::TemplateConfig& config)
+      : JinjaChatTemplate(config) {}
 
   using JinjaChatTemplate::apply;
   using JinjaChatTemplate::needs_polyfills;
@@ -131,16 +134,17 @@ void expect_both_paths_match_minja(const std::string& template_str,
                                    bool polyfills) {
   TokenizerArgs args;
   args.chat_template(template_str);
-  TestableJinjaChatTemplate chat_template(args);
+  TestableJinjaChatTemplate chat_template(make_template_config(args));
   EXPECT_EQ(chat_template.needs_polyfills(messages_json, tools_json),
             polyfills);
   const std::string expected =
       reference_render(template_str, "", messages_json, tools_json, kwargs);
-  const auto typed_result = chat_template.apply(messages, tools, kwargs);
+  const auto typed_result =
+      apply_template(chat_template, messages, tools, kwargs);
   ASSERT_TRUE(typed_result.has_value());
   EXPECT_EQ(*typed_result, expected);
   const auto json_result =
-      chat_template.apply(messages_json, tools_json, kwargs);
+      apply_template(chat_template, messages_json, tools_json, kwargs);
   ASSERT_TRUE(json_result.has_value());
   EXPECT_EQ(*json_result, expected);
 }
@@ -255,11 +259,12 @@ TEST(JinjaChatTemplate, EmptyAndNullToolCallsKeepPolyfillSemantics) {
 
   TokenizerArgs args;
   args.chat_template(template_str);
-  TestableJinjaChatTemplate chat_template(args);
+  TestableJinjaChatTemplate chat_template(make_template_config(args));
   const nlohmann::ordered_json null_calls = {
       {{"role", "assistant"}, {"content", ""}, {"tool_calls", nullptr}}};
   EXPECT_FALSE(chat_template.needs_polyfills(null_calls, tools_json));
-  const auto result = chat_template.apply(null_calls, tools_json, kwargs);
+  const auto result =
+      apply_template(chat_template, null_calls, tools_json, kwargs);
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(*result,
             reference_render(template_str, "", null_calls, tools_json, kwargs));
@@ -318,16 +323,17 @@ TEST(JinjaChatTemplate, RenderErrorsReturnNulloptForBothInputPaths) {
   args.chat_template(
       "{% for message in messages %}{{ message.content }}{% endfor %}"
       "{% if fail %}{{ raise_exception('request rejected') }}{% endif %}");
-  TestableJinjaChatTemplate chat_template(args);
+  TestableJinjaChatTemplate chat_template(make_template_config(args));
   const ChatMessages messages = {Message("user", "hello")};
   const nlohmann::ordered_json messages_json = {
       {{"role", "user"}, {"content", "hello"}}};
   const nlohmann::ordered_json kwargs = {{"fail", true}};
   const std::vector<JsonTool> tools;
   const nlohmann::ordered_json tools_json = nlohmann::ordered_json::array();
-  EXPECT_FALSE(chat_template.apply(messages, tools, kwargs).has_value());
   EXPECT_FALSE(
-      chat_template.apply(messages_json, tools_json, kwargs).has_value());
+      apply_template(chat_template, messages, tools, kwargs).has_value());
+  EXPECT_FALSE(apply_template(chat_template, messages_json, tools_json, kwargs)
+                   .has_value());
 }
 
 TEST(JinjaChatTemplate, NativeRenderMatchesMinja) {
@@ -342,14 +348,14 @@ TEST(JinjaChatTemplate, NativeRenderMatchesMinja) {
   args.chat_template(kQwen25ChatTemplate);
   args.bos_token("");
   args.eos_token("<|im_end|>");
-  TestableJinjaChatTemplate template_(args);
+  TestableJinjaChatTemplate template_(make_template_config(args));
 
   // A plain conversation and one carrying tool definitions both render
   // natively on this template.
   for (const nlohmann::ordered_json& tools :
        {nlohmann::ordered_json::array(), make_weather_tools()}) {
     EXPECT_FALSE(template_.needs_polyfills(messages, tools));
-    auto result = template_.apply(messages, tools, kwargs);
+    auto result = apply_template(template_, messages, tools, kwargs);
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result.value(),
               reference_render(
@@ -379,9 +385,9 @@ TEST(JinjaChatTemplate, PolyfilledInputsMatchMinja) {
   args.chat_template(kQwen25ChatTemplate);
   args.bos_token("");
   args.eos_token("<|im_end|>");
-  TestableJinjaChatTemplate template_(args);
+  TestableJinjaChatTemplate template_(make_template_config(args));
 
-  auto result = template_.apply(messages, tools, kwargs);
+  auto result = apply_template(template_, messages, tools, kwargs);
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(result.value(),
             reference_render(
@@ -407,10 +413,10 @@ TEST(JinjaChatTemplate, NativeRenderDefinesMinjaGlobals) {
   args.chat_template(template_str);
   args.bos_token("<s>");
   args.eos_token("</s>");
-  TestableJinjaChatTemplate template_(args);
+  TestableJinjaChatTemplate template_(make_template_config(args));
   ASSERT_FALSE(template_.needs_polyfills(messages, tools));
 
-  auto result = template_.apply(messages, tools, kwargs);
+  auto result = apply_template(template_, messages, tools, kwargs);
   ASSERT_TRUE(result.has_value());
 
   const std::time_t now = std::time(nullptr);
@@ -427,7 +433,7 @@ TEST(JinjaChatTemplate, ConcurrentRendersKeepRequestContextsIndependent) {
       "{{ strftime_now('%Y') }}|{{ mode }}|"
       "{% for message in messages %}{{ message['content'] }}{% endfor %}"
       "|{{ strftime_now('%Y') }}");
-  const TestableJinjaChatTemplate encoder(args);
+  const TestableJinjaChatTemplate encoder(make_template_config(args));
   const nlohmann::ordered_json native_messages = {
       {{"role", "system"}, {"content", "shared"}},
       {{"role", "user"}, {"content", "request"}}};
@@ -446,7 +452,7 @@ TEST(JinjaChatTemplate, ConcurrentRendersKeepRequestContextsIndependent) {
       messages.emplace_back("system", "shared");
       messages.emplace_back("user", request);
       for (int32_t iteration = 0; iteration < kRenderCount; ++iteration) {
-        const auto result = encoder.apply(messages, kwargs);
+        const auto result = apply_template(encoder, messages, kwargs);
         if (!result.has_value()) {
           return false;
         }
@@ -495,8 +501,8 @@ TEST(JinjaChatTemplate, OpenChatModel) {
   args.chat_template(template_str);
   args.bos_token("");
   args.eos_token("<|end_of_turn|>");
-  TestableJinjaChatTemplate template_(args);
-  auto result = template_.apply(messages);
+  TestableJinjaChatTemplate template_(make_template_config(args));
+  auto result = apply_template(template_, messages);
   ASSERT_TRUE(result.has_value());
 
   EXPECT_EQ(result.value(), expected);
@@ -518,9 +524,10 @@ TEST(JinjaChatTemplate, AppliesChatTemplateKwargs) {
   args.chat_template(template_str);
   args.bos_token("");
   args.eos_token("");
-  TestableJinjaChatTemplate template_(args);
+  TestableJinjaChatTemplate template_(make_template_config(args));
   const nlohmann::ordered_json tools = nlohmann::json::array();
-  auto result = template_.apply(messages, tools, chat_template_kwargs);
+  auto result =
+      apply_template(template_, messages, tools, chat_template_kwargs);
   ASSERT_TRUE(result.has_value());
 
   EXPECT_EQ(result.value(), "user: describe this image<no_think>");
@@ -535,34 +542,41 @@ TEST(JinjaChatTemplate, ReportsRenderedGenerationMode) {
   args.chat_template(template_str);
   args.bos_token("");
   args.eos_token("");
-  TestableJinjaChatTemplate template_(args);
+  TestableJinjaChatTemplate template_(make_template_config(args));
 
   const std::vector<JsonTool> tools;
-  auto reasoning = template_.render(
-      messages, tools, nlohmann::ordered_json{{"enable_thinking", true}});
+  auto reasoning =
+      render_template(template_,
+                      messages,
+                      tools,
+                      nlohmann::ordered_json{{"enable_thinking", true}});
   ASSERT_TRUE(reasoning.has_value());
-  EXPECT_EQ(reasoning->generation_mode, ChatGenerationMode::REASONING);
+  EXPECT_EQ(reasoning->generation_mode,
+            chat_template::GenerationMode::REASONING);
 
-  auto chat = template_.render(
-      messages, tools, nlohmann::ordered_json{{"enable_thinking", false}});
+  auto chat =
+      render_template(template_,
+                      messages,
+                      tools,
+                      nlohmann::ordered_json{{"enable_thinking", false}});
   ASSERT_TRUE(chat.has_value());
-  EXPECT_EQ(chat->generation_mode, ChatGenerationMode::CHAT);
+  EXPECT_EQ(chat->generation_mode, chat_template::GenerationMode::CHAT);
 
   args.chat_template("assistant:");
-  TestableJinjaChatTemplate unknown_template(args);
-  auto unknown = unknown_template.render(
-      messages, tools, nlohmann::ordered_json::object());
+  TestableJinjaChatTemplate unknown_template(make_template_config(args));
+  auto unknown = render_template(
+      unknown_template, messages, tools, nlohmann::ordered_json::object());
   ASSERT_TRUE(unknown.has_value());
-  EXPECT_EQ(unknown->generation_mode, ChatGenerationMode::UNKNOWN);
+  EXPECT_EQ(unknown->generation_mode, chat_template::GenerationMode::UNKNOWN);
 }
 
 TEST(ChatTemplate, ClassifiesTerminalGenerationMarkers) {
   EXPECT_EQ(ChatTemplate::generation_mode_from_prompt("prefix <think>\n"),
-            ChatGenerationMode::REASONING);
+            chat_template::GenerationMode::REASONING);
   EXPECT_EQ(ChatTemplate::generation_mode_from_prompt("prefix </think>\t"),
-            ChatGenerationMode::CHAT);
+            chat_template::GenerationMode::CHAT);
   EXPECT_EQ(ChatTemplate::generation_mode_from_prompt("prefix"),
-            ChatGenerationMode::UNKNOWN);
+            chat_template::GenerationMode::UNKNOWN);
 }
 
 TEST(JinjaChatTemplate, SupportsUndefinedTests) {
@@ -581,9 +595,9 @@ TEST(JinjaChatTemplate, SupportsUndefinedTests) {
   args.chat_template(template_str);
   args.bos_token("");
   args.eos_token("");
-  TestableJinjaChatTemplate template_(args);
+  TestableJinjaChatTemplate template_(make_template_config(args));
 
-  auto default_result = template_.apply(messages);
+  auto default_result = apply_template(template_, messages);
   ASSERT_TRUE(default_result.has_value());
   EXPECT_EQ(default_result.value(),
             "plain text: value is undefined|quoted value is undefined|default|"
@@ -591,7 +605,7 @@ TEST(JinjaChatTemplate, SupportsUndefinedTests) {
 
   const nlohmann::ordered_json tools = nlohmann::json::array();
   const nlohmann::ordered_json kwargs = {{"enable_thinking", false}};
-  auto configured_result = template_.apply(messages, tools, kwargs);
+  auto configured_result = apply_template(template_, messages, tools, kwargs);
   ASSERT_TRUE(configured_result.has_value());
   EXPECT_EQ(configured_result.value(),
             "plain text: value is undefined|quoted value is undefined|"
@@ -619,12 +633,12 @@ TEST(JinjaChatTemplate, PreservesGlmToolResponses) {
 )JINJA";
   TokenizerArgs args;
   args.chat_template(template_str);
-  TestableJinjaChatTemplate template_(args);
+  TestableJinjaChatTemplate template_(make_template_config(args));
   const nlohmann::ordered_json tools = nlohmann::ordered_json::array();
   const nlohmann::ordered_json string_messages = {
       {{"role", "tool"}, {"content", "Paris is sunny."}}};
   EXPECT_FALSE(template_.needs_polyfills(string_messages, tools));
-  auto string_result = template_.apply(string_messages);
+  auto string_result = apply_template(template_, string_messages);
   ASSERT_TRUE(string_result.has_value());
   EXPECT_EQ(*string_result,
             "<|observation|><tool_response>Paris is sunny.</tool_response>");
@@ -632,15 +646,15 @@ TEST(JinjaChatTemplate, PreservesGlmToolResponses) {
   const nlohmann::ordered_json list_messages = {
       {{"role", "tool"},
        {"content", {{{"output", "Paris "}}, {{"output", "is sunny."}}}}}};
-  auto list_result = template_.apply(list_messages);
+  auto list_result = apply_template(template_, list_messages);
   ASSERT_TRUE(list_result.has_value());
   EXPECT_EQ(*list_result, *string_result);
 
   args.chat_template(
       "m.content.0.output is defined|"
       "{{ 'm.content.0.output is defined' }}");
-  TestableJinjaChatTemplate literal_template(args);
-  auto literal_result = literal_template.apply(string_messages);
+  TestableJinjaChatTemplate literal_template(make_template_config(args));
+  auto literal_result = apply_template(literal_template, string_messages);
   ASSERT_TRUE(literal_result.has_value());
   EXPECT_EQ(*literal_result,
             "m.content.0.output is defined|m.content.0.output is defined");
@@ -649,15 +663,15 @@ TEST(JinjaChatTemplate, PreservesGlmToolResponses) {
 TEST(JinjaChatTemplate, PreservesDeferredToolMetadata) {
   TokenizerArgs args;
   args.chat_template(kQwen25ChatTemplate);
-  TestableJinjaChatTemplate chat_template(args);
+  TestableJinjaChatTemplate chat_template(make_template_config(args));
   const ChatMessages messages = {Message("user", "hello")};
   JsonTool tool;
   tool.function.name = "search";
   tool.function.parameters = {{"type", "object"}};
   tool.function.defer_loading = true;
   const std::vector<JsonTool> tools = {tool};
-  const auto prompt =
-      chat_template.apply(messages, tools, nlohmann::ordered_json::object());
+  const auto prompt = apply_template(
+      chat_template, messages, tools, nlohmann::ordered_json::object());
   ASSERT_TRUE(prompt.has_value());
   EXPECT_NE(prompt->find("\"defer_loading\": true"), std::string::npos);
 }

@@ -19,17 +19,13 @@ limitations under the License.
 #include <string>
 
 #include "chat_template/chat_template.h"
-#include "framework/tokenizer/tokenizer_args.h"
 
 namespace xllm {
 
 class ChatTemplateFactory final {
  public:
-  // Capture rendering policy by value for delayed initialization and LLM forks.
-  static ChatPromptRendererFactory renderer_factory(bool use_cpp_template);
-
   static std::unique_ptr<ChatTemplate> create(
-      const TokenizerArgs& tokenizer_args,
+      const chat_template::TemplateConfig& config,
       const std::string& model_type,
       bool use_cpp_template);
 };
