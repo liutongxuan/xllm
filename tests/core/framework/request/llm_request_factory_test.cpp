@@ -27,6 +27,7 @@ limitations under the License.
 #include <variant>
 #include <vector>
 
+#include "chat_template/chat_template.h"
 #include "common/options.h"
 #include "common/rate_limiter.h"
 #include "core/common/message.h"
@@ -34,7 +35,6 @@ limitations under the License.
 #include "core/common/types.h"
 #include "core/framework/config/execution_config.h"
 #include "core/framework/config/model_config.h"
-#include "framework/chat_template/chat_template.h"
 #include "framework/config/service_config.h"
 #include "framework/model/model_args.h"
 #include "framework/request/request_output.h"

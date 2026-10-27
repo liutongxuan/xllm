@@ -22,9 +22,9 @@ limitations under the License.
 #include <string>
 #include <vector>
 
+#include "chat_template/chat_template.h"
 #include "core/common/message.h"
 #include "core/common/types.h"
-#include "framework/chat_template/chat_template.h"
 #include "framework/tokenizer/tokenizer_args.h"
 
 namespace xllm {

@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "framework/chat_template/jinja_chat_template.h"
+#include "chat_template/jinja_chat_template.h"
 
 #include <gtest/gtest.h>
 

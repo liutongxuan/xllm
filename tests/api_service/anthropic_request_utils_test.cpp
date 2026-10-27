@@ -19,7 +19,7 @@ limitations under the License.
 #include <gtest/gtest.h>
 
 #include "api_service/chat_json_parser.h"
-#include "core/framework/chat_template/jinja_chat_template.h"
+#include "chat_template/jinja_chat_template.h"
 #include "core/framework/request/request_params.h"
 
 namespace xllm {

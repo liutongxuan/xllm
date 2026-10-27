@@ -60,7 +60,6 @@ entry is **`xllm/xllm.cpp`**, inside the source directory.
 │   │   │   ├── model_loader/              # Model configuration and checkpoint loading
 │   │   │   │   └── weight/                # Weight resources, allocation policy and transfer
 │   │   │   ├── tokenizer/                 # Text and token conversion
-│   │   │   ├── chat_template/             # Chat messages to model prompts
 │   │   │   ├── sampling/                  # Token sampling and constrained decoding
 │   │   │   ├── parallel_state/            # Parallel groups and communication state
 │   │   │   ├── eplb/                      # Expert parallel load balancing
@@ -89,6 +88,7 @@ entry is **`xllm/xllm.cpp`**, inside the source directory.
 │   │   ├── kernels_npu/                   # NPU operators, including TileLang/Triton sources
 │   │   └── distributed/                   # Model-side collectives
 │   ├── processors/                        # Multimodal input preprocessing
+│   ├── chat_template/                     # Chat messages to model prompts
 │   ├── parser/                            # Reasoning-output parsers
 │   ├── function_call/                     # Tool-call parsers
 │   ├── proto/                             # Service and internal RPC schemas

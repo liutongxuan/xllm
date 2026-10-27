@@ -24,10 +24,10 @@ limitations under the License.
 #include <string>
 #include <vector>
 
+#include "chat_template/chat_template.h"
 #include "common/message.h"
 #include "common/options.h"
 #include "common/rate_limiter.h"
-#include "core/framework/chat_template/chat_template.h"
 #include "core/framework/constrained/json_object_grammar.h"
 #include "core/framework/model/model_args.h"
 #include "core/framework/request/request.h"

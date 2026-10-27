@@ -58,7 +58,6 @@ title: "代码架构与请求流程"
 │   │   │   ├── model_loader/              # 模型配置与 checkpoint 加载
 │   │   │   │   └── weight/                # 权重资源、分配策略与传输
 │   │   │   ├── tokenizer/                 # 文本与 token 转换
-│   │   │   ├── chat_template/             # 聊天消息转换为模型提示词
 │   │   │   ├── sampling/                  # Token 采样与约束解码
 │   │   │   ├── parallel_state/            # 并行分组与通信状态
 │   │   │   ├── eplb/                      # 专家并行负载均衡
@@ -87,6 +86,7 @@ title: "代码架构与请求流程"
 │   │   ├── kernels_npu/                   # NPU 算子，含 TileLang/Triton 源码
 │   │   └── distributed/                   # 模型内部的集合通信
 │   ├── processors/                        # 多模态输入预处理
+│   ├── chat_template/                     # 聊天消息转换为模型提示词
 │   ├── parser/                            # 推理过程输出解析器
 │   ├── function_call/                     # 工具调用解析器
 │   ├── proto/                             # 服务与内部 RPC 协议定义

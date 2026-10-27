@@ -63,6 +63,7 @@ endif()
 option(GENERATE_SO "Enable compile to generate .so" OFF)
 
 add_subdirectory(api_service)
+add_subdirectory(chat_template)
 add_subdirectory(compiler)
 add_subdirectory(core)
 add_subdirectory(function_call)

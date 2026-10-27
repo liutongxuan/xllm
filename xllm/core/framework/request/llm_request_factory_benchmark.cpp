@@ -53,10 +53,10 @@ limitations under the License.
 #include <string_view>
 #include <vector>
 
+#include "chat_template/chat_template.h"
 #include "core/common/message.h"
 #include "core/common/options.h"
 #include "core/common/rate_limiter.h"
-#include "core/framework/chat_template/chat_template.h"
 #include "core/framework/model/model_args.h"
 #include "core/framework/request/llm_request_factory.h"
 #include "core/framework/request/request.h"

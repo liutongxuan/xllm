@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "framework/chat_template/chat_template.h"
+#include "chat_template/chat_template.h"
 
 #include <utility>
 

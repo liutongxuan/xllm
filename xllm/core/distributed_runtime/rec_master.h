@@ -20,7 +20,7 @@ limitations under the License.
 #include <optional>
 #include <thread>
 
-#include "framework/chat_template/jinja_chat_template.h"
+#include "chat_template/jinja_chat_template.h"
 #include "framework/model/model_args.h"
 #include "framework/request/rec_request_factory.h"
 #include "framework/request/rec_type.h"

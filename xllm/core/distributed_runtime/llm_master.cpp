@@ -29,6 +29,7 @@ limitations under the License.
 
 #include "api_service/call.h"
 #include "api_service/openai_json.h"
+#include "chat_template/chat_template_factory.h"
 #include "common/metrics.h"
 #include "core/distributed_runtime/disagg_pd_service_impl.h"
 #include "core/distributed_runtime/engine_dispatch.h"
@@ -40,7 +41,6 @@ limitations under the License.
 #include "core/framework/config/parallel_config_validation.h"
 #include "core/framework/config/speculative_config.h"
 #include "core/framework/model_loader/hf_model_config.h"
-#include "framework/chat_template/chat_template_factory.h"
 #include "framework/model/model_args.h"
 #include "framework/request/request.h"
 #if defined(USE_NPU)

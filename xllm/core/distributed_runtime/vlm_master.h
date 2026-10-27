@@ -22,10 +22,10 @@ limitations under the License.
 #include <thread>
 #include <vector>
 
+#include "chat_template/jinja_chat_template.h"
 #include "common/options.h"
 #include "common/types.h"
 #include "core/framework/multimodal/mm_input.h"
-#include "framework/chat_template/jinja_chat_template.h"
 #include "framework/request/request_output.h"
 #include "framework/request/request_params.h"
 #include "framework/request/vlm_request_factory.h"
