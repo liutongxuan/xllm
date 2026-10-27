@@ -121,8 +121,8 @@ prompt/generation mode; it does not construct Jinja or native templates.
 `application/master_factory.cpp` supplies a renderer factory when assembling a master.
 LLM masters retain that policy for forks, which build their own renderer from the
 new model's metadata. VLM and recommendation masters use Jinja rendering.
-The existing `model -> processors -> chat_template` CMake dependency remains;
-the processor boundary is separate from the request-rendering boundary above.
+Processors do not depend on chat templates; their directory structure and
+preprocessing responsibilities are unchanged.
 
 ## KV cache and virtual memory boundaries
 

@@ -115,8 +115,7 @@ title: "代码架构与请求流程"
 `ChatPromptRenderer` 接口及其返回的提示词和生成模式，不负责构造 Jinja 或原生模板。
 `application/master_factory.cpp` 在装配 master 时注入渲染器工厂。LLM master 在 fork 时
 保留渲染策略，并用新模型的元数据创建独立渲染器；VLM 和推荐 master 使用 Jinja。
-现有 `model -> processors -> chat_template` CMake 依赖仍然保留；processor 边界
-与上述请求渲染边界分别处理。
+Processor 不依赖聊天模板，其目录结构和预处理职责保持不变。
 
 ## KV cache 与虚拟内存的边界
 

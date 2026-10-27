@@ -22,7 +22,6 @@ set(BASE_DEPS
   :kv_cache
   :prefix_cache
   :block
-  :chat_template
   glog::glog
   torch
   torch_python
