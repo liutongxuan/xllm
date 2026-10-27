@@ -160,15 +160,15 @@ TEST(DeepseekV32CppTemplate, ReportsRenderedGenerationMode) {
   ChatMessages messages;
   messages.emplace_back("user", "hello");
 
-  auto chat = encoder.apply_with_generation_mode(
+  auto chat = encoder.render(
       messages, /*json_tools=*/{}, nlohmann::ordered_json::object());
   ASSERT_TRUE(chat.has_value());
-  EXPECT_EQ(chat->generation_mode, ChatTemplateGenerationMode::CHAT);
+  EXPECT_EQ(chat->generation_mode, ChatGenerationMode::CHAT);
 
-  auto reasoning = encoder.apply_with_generation_mode(
+  auto reasoning = encoder.render(
       messages, /*json_tools=*/{}, nlohmann::ordered_json{{"thinking", true}});
   ASSERT_TRUE(reasoning.has_value());
-  EXPECT_EQ(reasoning->generation_mode, ChatTemplateGenerationMode::REASONING);
+  EXPECT_EQ(reasoning->generation_mode, ChatGenerationMode::REASONING);
 }
 
 TEST(DeepseekV32CppTemplate, ToolsInjectionFormat) {

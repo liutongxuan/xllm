@@ -22,11 +22,11 @@ limitations under the License.
 #include <string>
 #include <vector>
 
-#include "chat_template/jinja_chat_template.h"
 #include "common/message.h"
 #include "common/options.h"
 #include "common/rate_limiter.h"
 #include "core/framework/multimodal/mm_data.h"
+#include "core/framework/request/chat_prompt_renderer.h"
 #include "framework/model/model_args.h"
 #include "framework/request/request.h"
 #include "framework/request/request_output.h"
@@ -47,12 +47,12 @@ class Tokenizer;
 // rendering, length validation, and sampling/stopping parameter assembly.
 //
 // The factory holds non-owning references to model configuration owned by
-// VLMMaster (processor, chat template, tokenizer, model args, options, rate
+// VLMMaster (processor, prompt renderer, tokenizer, model args, options, rate
 // limiter); the owner must outlive the factory.
 class VLMRequestFactory final {
  public:
   VLMRequestFactory(MultimodalProcessorBase* processor,
-                    JinjaChatTemplate* chat_template,
+                    const ChatPromptRenderer* prompt_renderer,
                     const Tokenizer* tokenizer,
                     const ModelArgs* model_args,
                     const Options* options,
@@ -97,7 +97,7 @@ class VLMRequestFactory final {
       const OutputCallback& callback);
 
   MultimodalProcessorBase* processor_ = nullptr;
-  JinjaChatTemplate* chat_template_ = nullptr;
+  const ChatPromptRenderer* prompt_renderer_ = nullptr;
   const Tokenizer* tokenizer_ = nullptr;
   const ModelArgs* model_args_ = nullptr;
   const Options* options_ = nullptr;

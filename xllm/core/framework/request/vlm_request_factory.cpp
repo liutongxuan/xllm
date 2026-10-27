@@ -92,19 +92,19 @@ std::optional<std::string> join_message_texts(
 }  // namespace
 
 VLMRequestFactory::VLMRequestFactory(MultimodalProcessorBase* processor,
-                                     JinjaChatTemplate* chat_template,
+                                     const ChatPromptRenderer* prompt_renderer,
                                      const Tokenizer* tokenizer,
                                      const ModelArgs* model_args,
                                      const Options* options,
                                      RateLimiter* rate_limiter)
     : processor_(processor),
-      chat_template_(chat_template),
+      prompt_renderer_(prompt_renderer),
       tokenizer_(tokenizer),
       model_args_(model_args),
       options_(options),
       rate_limiter_(rate_limiter) {
   CHECK(processor_ != nullptr);
-  CHECK(chat_template_ != nullptr);
+  CHECK(prompt_renderer_ != nullptr);
   CHECK(tokenizer_ != nullptr);
   CHECK(model_args_ != nullptr);
   CHECK(options_ != nullptr);
@@ -372,7 +372,11 @@ std::shared_ptr<Request> VLMRequestFactory::create(
     if (model_args_->audio_token_id() != 0) {
       chat_template_kwargs["use_ctc"] = ModelConfig::get_instance().use_ctc();
     }
-    prompt = chat_template_->apply(messages, sp.tools, chat_template_kwargs);
+    auto rendered =
+        prompt_renderer_->render(messages, sp.tools, chat_template_kwargs);
+    if (rendered.has_value()) {
+      prompt = std::move(rendered->prompt);
+    }
   }
   if (!prompt.has_value()) {
     std::string error_message = "Failed to construct prompt from messages";

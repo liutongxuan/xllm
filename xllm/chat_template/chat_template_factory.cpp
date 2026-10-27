@@ -20,14 +20,22 @@ limitations under the License.
 #include "chat_template/deepseek_v32_cpp_template.h"
 #include "chat_template/deepseek_v4_cpp_template.h"
 #include "chat_template/jinja_chat_template.h"
-#include "core/framework/config/model_config.h"
 
 namespace xllm {
 
+ChatPromptRendererFactory ChatTemplateFactory::renderer_factory(
+    bool use_cpp_template) {
+  return [use_cpp_template](const TokenizerArgs& args,
+                            const std::string& model_type) {
+    return create(args, model_type, use_cpp_template);
+  };
+}
+
 std::unique_ptr<ChatTemplate> ChatTemplateFactory::create(
     const TokenizerArgs& tokenizer_args,
-    const std::string& model_type) {
-  if (::xllm::ModelConfig::get_instance().use_cpp_chat_template()) {
+    const std::string& model_type,
+    bool use_cpp_template) {
+  if (use_cpp_template) {
     if (model_type == "deepseek_v32") {
       LOG(INFO) << "Using native C++ chat template for "
                 << "model_type: " << model_type;

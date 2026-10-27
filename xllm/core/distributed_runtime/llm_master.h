@@ -24,10 +24,10 @@ limitations under the License.
 #include <thread>
 #include <vector>
 
-#include "chat_template/chat_template.h"
 #include "common/options.h"
 #include "common/rate_limiter.h"
 #include "common/types.h"
+#include "core/framework/request/chat_prompt_renderer.h"
 #include "framework/request/llm_request_factory.h"
 #include "framework/request/request_output.h"
 #include "framework/request/request_params.h"
@@ -45,7 +45,7 @@ class KVCacheTransferCoordinator;
 
 class LLMMaster : public Master {
  public:
-  explicit LLMMaster(const Options& options);
+  LLMMaster(const Options& options, ChatPromptRendererFactory renderer_factory);
   ~LLMMaster() override;
 
   const ModelArgs* model_args() const override { return &model_args_; }
@@ -92,10 +92,14 @@ class LLMMaster : public Master {
     return *tokenizer_;
   }
 
-  const ChatTemplate& chat_template() const {
-    CHECK(chat_template_ != nullptr);
-    return *chat_template_;
+  const ChatPromptRenderer& prompt_renderer() const {
+    CHECK(prompt_renderer_ != nullptr);
+    return *prompt_renderer_;
   }
+
+  // Create a fresh master with the same rendering policy and fork-specific
+  // model/tokenizer metadata.
+  std::unique_ptr<LLMMaster> fork(const Options& options);
 
   // start running loop
   void run() override;
@@ -164,8 +168,10 @@ class LLMMaster : public Master {
   // for now
   std::unique_ptr<Tokenizer> tokenizer_;
 
-  // chat template instance
-  std::unique_ptr<ChatTemplate> chat_template_;
+  ChatPromptRendererFactory renderer_factory_;
+
+  // Prompt renderer owned by this master and borrowed by request_factory_.
+  std::unique_ptr<ChatPromptRenderer> prompt_renderer_;
 
   // builds Request aggregates from prompts/messages + RequestParams
   std::unique_ptr<LLMRequestFactory> request_factory_;

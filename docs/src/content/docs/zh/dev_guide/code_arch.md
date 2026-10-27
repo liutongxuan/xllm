@@ -105,6 +105,11 @@ title: "代码架构与请求流程"
 └── setup.py                               # Python 打包与构建入口
 ```
 
+聊天提示词渲染与输出解析器一样，属于独立模块。Core 请求准备只依赖
+`ChatPromptRenderer` 接口及其返回的提示词和生成模式，不负责构造 Jinja 或原生模板。
+`server/master_factory.cpp` 在装配 master 时注入渲染器工厂。LLM master 在 fork 时
+保留渲染策略，并用新模型的元数据创建独立渲染器；VLM 和推荐 master 使用 Jinja。
+
 ## KV cache 与虚拟内存的边界
 
 内存基础能力同时服务 KV cache 和权重。各类资源的映射与分配策略归各自模块管理，
@@ -293,7 +298,7 @@ heartbeat 消费方需要一起升级，不能混用重命名前后的 RPC 路�
 
 [`launch_server.py`](https://github.com/xLLM-AI/xllm/blob/main/xllm/launch_server.py)
 处理 `xllm serve` 启动命令。进入 C++ 可执行程序后，`main()` 初始化配置，`run()`
-通过 [`create_master()`](https://github.com/xLLM-AI/xllm/blob/main/xllm/core/distributed_runtime/master_factory.cpp)
+通过 [`create_master()`](https://github.com/xLLM-AI/xllm/blob/main/xllm/server/master_factory.cpp)
 创建 master。对于 `llm` 后端，`LLMMaster` 建立 engine、scheduler、tokenizer
 和 request factory。`master->run()` 启动循环，提供服务的 rank 通过
 [`server/xllm_server.cpp`](https://github.com/xLLM-AI/xllm/blob/main/xllm/server/xllm_server.cpp)

@@ -37,6 +37,7 @@ limitations under the License.
 #include "core/framework/model_loader/model_loader.h"
 #include "core/util/cpu_affinity.h"
 #include "helper.h"
+#include "server/master_factory.h"
 
 XLLM_CAPI_EXPORT XLLM_REC_Handler* xllm_rec_create(void) {
   XLLM_REC_Handler* handler = new XLLM_REC_Handler();
@@ -209,7 +210,7 @@ XLLM_CAPI_EXPORT bool xllm_rec_initialize(
         << ", max_decode_rounds="
         << ::xllm::RecConfig::get_instance().max_decode_rounds();
 
-    handler->master = std::make_unique<xllm::RecMaster>(options);
+    handler->master = xllm::create_rec_master(options);
     handler->master->run();
 
     size_t available_cpu_cores_count =

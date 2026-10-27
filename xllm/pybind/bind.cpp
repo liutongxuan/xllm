@@ -32,6 +32,7 @@ limitations under the License.
 #include "core/framework/request/sample_slot.h"
 #include "core/util/pybind_helper.h"
 #include "models/model_registry.h"
+#include "server/master_factory.h"
 
 namespace xllm {
 namespace py = pybind11;
@@ -114,7 +115,7 @@ PYBIND11_MODULE(xllm_export, m) {
 
   // 2. export LLMMaster
   py::class_<LLMMaster>(m, "LLMMaster")
-      .def(py::init<const Options&>(),
+      .def(py::init(&create_llm_master),
            py::arg("options"),
            py::call_guard<py::gil_scoped_release>())
       .def("handle_request",
@@ -358,7 +359,7 @@ PYBIND11_MODULE(xllm_export, m) {
 
   // 13. export VLMMaster
   py::class_<VLMMaster>(m, "VLMMaster")
-      .def(py::init<const Options&>(),
+      .def(py::init(&create_vlm_master),
            py::arg("options"),
            py::call_guard<py::gil_scoped_release>())
       .def("handle_batch_request",

@@ -23,11 +23,13 @@ limitations under the License.
 namespace xllm {
 
 class LLMMaster;
+class VLMMaster;
+class RecMaster;
 
 std::unique_ptr<Master> create_master(const std::string& backend,
                                       const Options& options);
-
-std::unique_ptr<LLMMaster> fork_llm_master(LLMMaster* master,
-                                           const Options& options);
+std::unique_ptr<LLMMaster> create_llm_master(const Options& options);
+std::unique_ptr<VLMMaster> create_vlm_master(const Options& options);
+std::unique_ptr<RecMaster> create_rec_master(const Options& options);
 
 }  // namespace xllm

@@ -27,7 +27,6 @@ limitations under the License.
 #include <variant>
 #include <vector>
 
-#include "chat_template/chat_template.h"
 #include "common/options.h"
 #include "common/rate_limiter.h"
 #include "core/common/message.h"
@@ -35,6 +34,7 @@ limitations under the License.
 #include "core/common/types.h"
 #include "core/framework/config/execution_config.h"
 #include "core/framework/config/model_config.h"
+#include "core/framework/request/chat_prompt_renderer.h"
 #include "framework/config/service_config.h"
 #include "framework/model/model_args.h"
 #include "framework/request/request_output.h"
@@ -199,14 +199,9 @@ class StopSequenceTokenizer final : public Tokenizer {
 // Chat template that renders to a fixed prompt, or reports failure when
 // configured to, so the message overload's error path can be tested without a
 // real Jinja template.
-class FakeChatTemplate final : public ChatTemplate {
+class FakeChatPromptRenderer final : public ChatPromptRenderer {
  public:
-  std::optional<std::string> apply(
-      const ChatMessages& messages) const override {
-    return apply(messages, {}, nlohmann::ordered_json::object());
-  }
-
-  std::optional<std::string> apply(
+  std::optional<RenderedChatPrompt> render(
       const ChatMessages& messages,
       const std::vector<xllm::JsonTool>& json_tools,
       const nlohmann::ordered_json& chat_template_kwargs) const override {
@@ -226,21 +221,30 @@ class FakeChatTemplate final : public ChatTemplate {
   }
 
   void set_succeed(bool succeed) { succeed_ = succeed; }
-  void set_rendered_prompt(std::string prompt) {
-    rendered_prompt_ = std::move(prompt);
+  void set_rendered_prompt(
+      std::string prompt,
+      ChatGenerationMode generation_mode = ChatGenerationMode::UNKNOWN) {
+    rendered_prompt_ = {std::move(prompt), generation_mode};
   }
 
-  void set_rendered_prompt_for_message(std::string message,
-                                       std::optional<std::string> prompt) {
-    rendered_prompts_[std::move(message)] = std::move(prompt);
+  void set_rendered_prompt_for_message(
+      std::string message,
+      std::optional<std::string> prompt,
+      ChatGenerationMode generation_mode = ChatGenerationMode::UNKNOWN) {
+    std::optional<RenderedChatPrompt> rendered;
+    if (prompt.has_value()) {
+      rendered = RenderedChatPrompt{std::move(prompt.value()), generation_mode};
+    }
+    rendered_prompts_[std::move(message)] = std::move(rendered);
   }
 
   const std::vector<ChatTemplateCall>& calls() const { return calls_; }
 
  private:
   bool succeed_ = true;
-  std::string rendered_prompt_ = "rendered prompt";
-  std::unordered_map<std::string, std::optional<std::string>> rendered_prompts_;
+  RenderedChatPrompt rendered_prompt_{"rendered prompt"};
+  std::unordered_map<std::string, std::optional<RenderedChatPrompt>>
+      rendered_prompts_;
   mutable std::vector<ChatTemplateCall> calls_;
 };
 
@@ -269,7 +273,7 @@ class LLMRequestFactoryTest : public ::testing::Test {
       int32_t max_position = 2048,
       std::string task = "generate") {
     tokenizer_ = std::make_unique<StopSequenceTokenizer>(vocab_size);
-    chat_template_ = std::make_unique<FakeChatTemplate>();
+    chat_template_ = std::make_unique<FakeChatPromptRenderer>();
     model_args_.vocab_size(vocab_size)
         .max_position_embeddings(max_position)
         .eos_token_id(-1);
@@ -293,7 +297,7 @@ class LLMRequestFactoryTest : public ::testing::Test {
   }
 
   std::unique_ptr<StopSequenceTokenizer> tokenizer_;
-  std::unique_ptr<FakeChatTemplate> chat_template_;
+  std::unique_ptr<FakeChatPromptRenderer> chat_template_;
   ModelArgs model_args_;
   Options options_;
   RateLimiter rate_limiter_;
@@ -692,7 +696,7 @@ TEST_F(LLMRequestFactoryTest, TaskPipelineRejectsJsonObjectBeforeGrammarSetup) {
       sp,
       /*call=*/std::nullopt,
       make_capture_callback(&capture),
-      ChatTemplateGenerationMode::UNKNOWN);
+      ChatGenerationMode::UNKNOWN);
 
   EXPECT_EQ(request, nullptr);
   ASSERT_TRUE(capture.status.has_value());
@@ -718,7 +722,8 @@ TEST_F(LLMRequestFactoryTest,
   sp.response_format = ResponseFormatType::JSON_OBJECT;
   const std::vector<Message> messages = {Message("user", std::string("hi"))};
 
-  chat_template_->set_rendered_prompt("rendered prompt </think>");
+  chat_template_->set_rendered_prompt("rendered prompt </think>",
+                                      ChatGenerationMode::CHAT);
   auto request = factory->create(messages,
                                  /*prompt_tokens=*/std::nullopt,
                                  sp,
@@ -750,7 +755,7 @@ TEST_F(LLMRequestFactoryTest, DisabledUnifiedTaskMtpRejectsJsonObject) {
       sp,
       /*call=*/std::nullopt,
       make_capture_callback(&capture),
-      ChatTemplateGenerationMode::UNKNOWN);
+      ChatGenerationMode::UNKNOWN);
 
   EXPECT_EQ(request, nullptr);
   ASSERT_TRUE(capture.status.has_value());
@@ -792,7 +797,7 @@ TEST_F(LLMRequestFactoryTest, LegacyJsonObjectReachesGrammarValidation) {
       sp,
       /*call=*/std::nullopt,
       make_capture_callback(&capture),
-      ChatTemplateGenerationMode::UNKNOWN);
+      ChatGenerationMode::UNKNOWN);
 
   EXPECT_EQ(request, nullptr);
   ASSERT_TRUE(capture.status.has_value());
@@ -1268,16 +1273,17 @@ TEST_F(LLMRequestFactoryTest,
       {Message("user", std::string("thinking"))},
       {Message("user", std::string("chat"))},
       {Message("user", std::string("unknown"))}};
-  chat_template_->set_rendered_prompt_for_message("thinking",
-                                                  "prompt <think>\n");
-  chat_template_->set_rendered_prompt_for_message("chat", "prompt </think>\n");
+  chat_template_->set_rendered_prompt_for_message(
+      "thinking", "reasoning prompt", ChatGenerationMode::REASONING);
+  chat_template_->set_rendered_prompt_for_message(
+      "chat", "chat prompt", ChatGenerationMode::CHAT);
   chat_template_->set_rendered_prompt_for_message("unknown", "plain prompt");
   acquire_batch_slots(conversations.size());
   std::vector<RequestParams> params(conversations.size());
   for (RequestParams& param : params) {
     param.response_format = ResponseFormatType::JSON_OBJECT;
   }
-  // The mode inferred from the rendered prompt overrides template kwargs.
+  // The mode supplied by the renderer overrides template kwargs.
   params[0].chat_template_kwargs = {{"enable_thinking", false}};
   params[1].chat_template_kwargs = {{"enable_thinking", true}};
   BatchCallbackCapture capture(conversations.size());

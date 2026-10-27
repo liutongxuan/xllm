@@ -14,6 +14,7 @@ pybind_extension(
   DEPS
     :config
     :master
+    :master_factory
     :request
     :util
     absl::strings

@@ -25,9 +25,13 @@ namespace xllm {
 
 class ChatTemplateFactory final {
  public:
+  // Capture rendering policy by value for delayed initialization and LLM forks.
+  static ChatPromptRendererFactory renderer_factory(bool use_cpp_template);
+
   static std::unique_ptr<ChatTemplate> create(
       const TokenizerArgs& tokenizer_args,
-      const std::string& model_type);
+      const std::string& model_type,
+      bool use_cpp_template);
 };
 
 }  // namespace xllm

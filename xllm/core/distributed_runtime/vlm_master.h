@@ -22,10 +22,10 @@ limitations under the License.
 #include <thread>
 #include <vector>
 
-#include "chat_template/jinja_chat_template.h"
 #include "common/options.h"
 #include "common/types.h"
 #include "core/framework/multimodal/mm_input.h"
+#include "core/framework/request/chat_prompt_renderer.h"
 #include "framework/request/request_output.h"
 #include "framework/request/request_params.h"
 #include "framework/request/vlm_request_factory.h"
@@ -42,7 +42,7 @@ class KVCacheTransferCoordinator;
 
 class VLMMaster : public Master {
  public:
-  explicit VLMMaster(const Options& options);
+  VLMMaster(const Options& options, ChatPromptRendererFactory renderer_factory);
   ~VLMMaster() override;
 
   const ModelArgs* model_args() const override { return &model_args_; }
@@ -111,7 +111,7 @@ class VLMMaster : public Master {
   // (drained/joined) in ~VLMMaster before those members are destroyed.
   std::unique_ptr<ThreadPool> threadpool_;
 
-  std::unique_ptr<JinjaChatTemplate> chat_template_;
+  std::unique_ptr<ChatPromptRenderer> prompt_renderer_;
   std::unique_ptr<MultimodalProcessorBase> processor_;
   std::shared_ptr<Tokenizer> tokenizer_;
 

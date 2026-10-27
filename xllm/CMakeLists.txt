@@ -93,6 +93,7 @@ if(GENERATE_SO)
     DEPS
       :config
       :master
+      :master_factory
       absl::strings
       Boost::serialization
       gflags::gflags
@@ -115,6 +116,7 @@ else()
       :config
       :xllm_server
       :master
+      :master_factory
       :model_loader
       :kv_cache_store_config_validation
       :util

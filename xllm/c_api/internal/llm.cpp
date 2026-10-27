@@ -30,6 +30,7 @@ limitations under the License.
 #include "core/framework/config/beam_search_config.h"
 #include "core/framework/config/execution_config.h"
 #include "helper.h"
+#include "server/master_factory.h"
 
 XLLM_CAPI_EXPORT XLLM_LLM_Handler* xllm_llm_create(void) {
   XLLM_LLM_Handler* handler = new XLLM_LLM_Handler();
@@ -122,7 +123,7 @@ XLLM_CAPI_EXPORT bool xllm_llm_initialize(
 #if !defined(USE_NPU) && !defined(USE_CUDA) && !defined(USE_MUSA)
     xllm::BeamSearchConfig::get_instance().enable_block_copy_kernel(false);
 #endif
-    handler->master = std::make_unique<xllm::LLMMaster>(options);
+    handler->master = xllm::create_llm_master(options);
     handler->master->run();
 
     size_t cpu_cores = std::thread::hardware_concurrency();

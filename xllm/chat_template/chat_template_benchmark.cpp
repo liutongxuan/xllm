@@ -310,24 +310,22 @@ uint32_t prompt_fingerprint(const std::string& prompt) {
 }
 
 template <typename Template>
-void run_deepseek_benchmark(benchmark::State& state,
-                            const ChatMessages& messages,
-                            const std::vector<JsonTool>& tools,
-                            bool thinking,
-                            std::optional<ChatTemplateGenerationMode>
-                                expected_generation_mode = std::nullopt) {
+void run_deepseek_benchmark(
+    benchmark::State& state,
+    const ChatMessages& messages,
+    const std::vector<JsonTool>& tools,
+    bool thinking,
+    std::optional<ChatGenerationMode> expected_generation_mode = std::nullopt) {
   const TokenizerArgs tokenizer_args;
   const Template chat_template(tokenizer_args);
   const nlohmann::ordered_json kwargs = {{"thinking", thinking},
                                          {"reasoning_effort", "low"}};
-  const std::optional<ChatTemplateRenderResult> expected =
-      chat_template.apply_with_generation_mode(messages, tools, kwargs);
-  const std::optional<ChatTemplateRenderResult> repeated =
-      chat_template.apply_with_generation_mode(messages, tools, kwargs);
-  const ChatTemplateGenerationMode expected_mode =
-      expected_generation_mode.value_or(
-          thinking ? ChatTemplateGenerationMode::REASONING
-                   : ChatTemplateGenerationMode::CHAT);
+  const std::optional<RenderedChatPrompt> expected =
+      chat_template.render(messages, tools, kwargs);
+  const std::optional<RenderedChatPrompt> repeated =
+      chat_template.render(messages, tools, kwargs);
+  const ChatGenerationMode expected_mode = expected_generation_mode.value_or(
+      thinking ? ChatGenerationMode::REASONING : ChatGenerationMode::CHAT);
   if (!expected.has_value() || expected->prompt.empty() ||
       !repeated.has_value() || repeated->prompt != expected->prompt ||
       expected->generation_mode != expected_mode ||
@@ -338,8 +336,8 @@ void run_deepseek_benchmark(benchmark::State& state,
   }
 
   for (auto _ : state) {
-    std::optional<ChatTemplateRenderResult> rendered =
-        chat_template.apply_with_generation_mode(messages, tools, kwargs);
+    std::optional<RenderedChatPrompt> rendered =
+        chat_template.render(messages, tools, kwargs);
     if (!rendered.has_value()) {
       state.SkipWithError("DeepSeek render failed");
       break;
@@ -397,7 +395,7 @@ void BM_ChatTemplate_DeepseekPayload(benchmark::State& state) {
                                    messages,
                                    no_tools,
                                    state.range(1) != 0,
-                                   ChatTemplateGenerationMode::UNKNOWN);
+                                   ChatGenerationMode::UNKNOWN);
   state.counters["payload_bytes"] = static_cast<double>(payload_bytes);
 }
 
@@ -409,8 +407,8 @@ void BM_ChatTemplate_JinjaRender(benchmark::State& state) {
   const nlohmann::ordered_json kwargs = nlohmann::ordered_json::object();
 
   for (auto _ : state) {
-    std::optional<ChatTemplateRenderResult> rendered =
-        chat_template.apply_with_generation_mode(messages, no_tools, kwargs);
+    std::optional<RenderedChatPrompt> rendered =
+        chat_template.render(messages, no_tools, kwargs);
     if (!rendered.has_value()) {
       state.SkipWithError("chat template render failed");
       break;
@@ -429,8 +427,8 @@ void BM_ChatTemplate_JinjaRenderWithTools(benchmark::State& state) {
   const nlohmann::ordered_json kwargs = nlohmann::ordered_json::object();
 
   for (auto _ : state) {
-    std::optional<ChatTemplateRenderResult> rendered =
-        chat_template.apply_with_generation_mode(messages, tools, kwargs);
+    std::optional<RenderedChatPrompt> rendered =
+        chat_template.render(messages, tools, kwargs);
     if (!rendered.has_value()) {
       state.SkipWithError("chat template render failed");
       break;

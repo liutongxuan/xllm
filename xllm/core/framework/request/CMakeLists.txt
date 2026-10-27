@@ -1,6 +1,19 @@
 include(cc_library)
 include(cc_binary)
 
+# The request-side rendering contract is independent of template engines.
+cc_library(
+  NAME
+    chat_prompt_renderer
+  HDRS
+    chat_prompt_renderer.h
+  DEPS
+    glog::glog
+    nlohmann_json::nlohmann_json
+    proto::xllm_proto
+    torch
+)
+
 cc_library(
   NAME 
     request
@@ -65,13 +78,12 @@ cc_library(
     priority_comparator.cpp
   DEPS
     :config
+    :chat_prompt_renderer
     :kv_cache
     :block_hasher
     :encoder_cache
     :kv_cache_block_types
     :tokenizer
-    :chat_template
-    :jinja_chat_template
     :multimodal
     :json_object_grammar
     glog::glog

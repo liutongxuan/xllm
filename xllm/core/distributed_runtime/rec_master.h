@@ -20,7 +20,7 @@ limitations under the License.
 #include <optional>
 #include <thread>
 
-#include "chat_template/jinja_chat_template.h"
+#include "core/framework/request/chat_prompt_renderer.h"
 #include "framework/model/model_args.h"
 #include "framework/request/rec_request_factory.h"
 #include "framework/request/rec_type.h"
@@ -34,7 +34,7 @@ namespace xllm {
 
 class RecMaster : public Master {
  public:
-  explicit RecMaster(const Options& options);
+  RecMaster(const Options& options, ChatPromptRendererFactory renderer_factory);
   ~RecMaster();
 
   const ModelArgs* model_args() const override { return &model_args_; }
@@ -88,7 +88,7 @@ class RecMaster : public Master {
   std::unique_ptr<ThreadPool> threadpool_;
   std::unique_ptr<Tokenizer> tokenizer_;
   // chat template instance
-  std::unique_ptr<JinjaChatTemplate> chat_template_;
+  std::unique_ptr<ChatPromptRenderer> prompt_renderer_;
 
   // builds Request aggregates from prompts/tokens/tensors + multimodal data;
   // holds non-owning pointers to model_args_/tokenizer_, so declare it after

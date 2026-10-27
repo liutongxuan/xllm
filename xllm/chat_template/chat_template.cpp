@@ -19,8 +19,7 @@ limitations under the License.
 
 namespace xllm {
 
-std::optional<ChatTemplateRenderResult>
-ChatTemplate::apply_with_generation_mode(
+std::optional<RenderedChatPrompt> ChatTemplate::render(
     const ChatMessages& messages,
     const std::vector<xllm::JsonTool>& json_tools,
     const nlohmann::ordered_json& chat_template_kwargs) const {
@@ -29,12 +28,12 @@ ChatTemplate::apply_with_generation_mode(
   if (!prompt.has_value()) {
     return std::nullopt;
   }
-  const ChatTemplateGenerationMode generation_mode =
+  const ChatGenerationMode generation_mode =
       generation_mode_from_prompt(prompt.value());
-  return ChatTemplateRenderResult{std::move(prompt.value()), generation_mode};
+  return RenderedChatPrompt{std::move(prompt.value()), generation_mode};
 }
 
-ChatTemplateGenerationMode ChatTemplate::generation_mode_from_prompt(
+ChatGenerationMode ChatTemplate::generation_mode_from_prompt(
     std::string_view prompt) {
   constexpr std::string_view kJsonWhitespace = " \t\n\r";
   while (!prompt.empty() &&
@@ -44,12 +43,12 @@ ChatTemplateGenerationMode ChatTemplate::generation_mode_from_prompt(
   constexpr std::string_view kThinkingMarker = "<think>";
   constexpr std::string_view kChatMarker = "</think>";
   if (prompt.ends_with(kThinkingMarker)) {
-    return ChatTemplateGenerationMode::REASONING;
+    return ChatGenerationMode::REASONING;
   }
   if (prompt.ends_with(kChatMarker)) {
-    return ChatTemplateGenerationMode::CHAT;
+    return ChatGenerationMode::CHAT;
   }
-  return ChatTemplateGenerationMode::UNKNOWN;
+  return ChatGenerationMode::UNKNOWN;
 }
 
 }  // namespace xllm

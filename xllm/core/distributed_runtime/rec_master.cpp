@@ -62,7 +62,10 @@ RecType get_rec_type(const ModelArgs& model_args) {
 
 }  // namespace
 
-RecMaster::RecMaster(const Options& options) : Master(options) {
+RecMaster::RecMaster(const Options& options,
+                     ChatPromptRendererFactory renderer_factory)
+    : Master(options) {
+  CHECK(renderer_factory);
   options_.enable_mla(should_enable_mla(
       std::filesystem::path(options_.model_path()), options_.backend()));
 #if defined(USE_NPU)
@@ -171,11 +174,12 @@ RecMaster::RecMaster(const Options& options) : Master(options) {
   scheduler_ =
       create_fixed_steps_scheduler(rec_engine_.get(), scheduler_options);
 
-  chat_template_ = nullptr;
+  prompt_renderer_ = nullptr;
   // Initialize chat template and tokenizer for LlmRec (Qwen3).
   if (rec_type_ == RecType::kLlmRec) {
-    chat_template_ =
-        std::make_unique<JinjaChatTemplate>(rec_engine_->tokenizer_args());
+    prompt_renderer_ = renderer_factory(rec_engine_->tokenizer_args(),
+                                        model_args_.model_type());
+    CHECK(prompt_renderer_ != nullptr);
     tokenizer_ = rec_engine_->tokenizer()->clone();
   } else {
     tokenizer_ = nullptr;
@@ -281,7 +285,7 @@ void RecMaster::handle_request(
     return;
   }
 
-  if (!chat_template_) {
+  if (!prompt_renderer_) {
     CALLBACK_WITH_ERROR(StatusCode::INVALID_ARGUMENT,
                         "Chat template is not initialized");
     return;
@@ -289,8 +293,8 @@ void RecMaster::handle_request(
 
   Timer timer;
 
-  std::optional<std::string> prompt;
-  prompt = chat_template_->apply(messages, sp.tools, sp.chat_template_kwargs);
+  std::optional<RenderedChatPrompt> prompt =
+      prompt_renderer_->render(messages, sp.tools, sp.chat_template_kwargs);
 
   if (!prompt.has_value()) {
     CALLBACK_WITH_ERROR(StatusCode::INVALID_ARGUMENT,
@@ -304,7 +308,7 @@ void RecMaster::handle_request(
   schedule_request(std::move(sp),
                    std::move(callback),
                    [this,
-                    prompt = std::move(prompt.value()),
+                    prompt = std::move(prompt->prompt),
                     prompt_tokens = std::move(prompt_tokens),
                     input_tensors = std::move(input_tensors)](
                        const RequestParams& params, OutputCallback cb) mutable {

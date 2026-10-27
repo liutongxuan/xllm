@@ -16,3 +16,18 @@ cc_library(
     glog::glog
     proto::xllm_proto
 )
+
+# Application assembly supplies concrete renderers to the core masters.
+cc_library(
+  NAME
+    master_factory
+  HDRS
+    master_factory.h
+  SRCS
+    master_factory.cpp
+  DEPS
+    :master
+    :chat_template_factory
+    :config
+    glog::glog
+)

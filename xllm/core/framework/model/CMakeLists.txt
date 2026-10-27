@@ -27,7 +27,6 @@ cc_library(
     :parallel_state
     :quantization
     :processors
-    :chat_template
     :util
     glog::glog
     torch

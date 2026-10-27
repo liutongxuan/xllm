@@ -15,7 +15,6 @@ limitations under the License.
 
 #pragma once
 
-#include <cstdint>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
@@ -24,24 +23,13 @@ limitations under the License.
 
 #include "core/common/message.h"
 #include "core/common/types.h"
+#include "core/framework/request/chat_prompt_renderer.h"
 
 namespace xllm {
 
-enum class ChatTemplateGenerationMode : uint8_t {
-  CHAT = 0,
-  REASONING = 1,
-  UNKNOWN = 2,
-};
-
-struct ChatTemplateRenderResult final {
-  std::string prompt;
-  ChatTemplateGenerationMode generation_mode =
-      ChatTemplateGenerationMode::UNKNOWN;
-};
-
-class ChatTemplate {
+class ChatTemplate : public ChatPromptRenderer {
  public:
-  virtual ~ChatTemplate() = default;
+  ~ChatTemplate() override = default;
 
   virtual std::optional<std::string> apply(
       const ChatMessages& messages) const = 0;
@@ -51,12 +39,12 @@ class ChatTemplate {
       const std::vector<xllm::JsonTool>& json_tools,
       const nlohmann::ordered_json& chat_template_kwargs) const = 0;
 
-  std::optional<ChatTemplateRenderResult> apply_with_generation_mode(
+  std::optional<RenderedChatPrompt> render(
       const ChatMessages& messages,
       const std::vector<xllm::JsonTool>& json_tools,
-      const nlohmann::ordered_json& chat_template_kwargs) const;
+      const nlohmann::ordered_json& chat_template_kwargs) const override final;
 
-  static ChatTemplateGenerationMode generation_mode_from_prompt(
+  static ChatGenerationMode generation_mode_from_prompt(
       std::string_view prompt);
 };
 

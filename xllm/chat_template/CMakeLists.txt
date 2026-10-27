@@ -10,7 +10,7 @@ cc_library (
   SRCS
     chat_template.cpp
   DEPS
-    :common
+    :chat_prompt_renderer
     nlohmann_json::nlohmann_json
 )
 
@@ -24,7 +24,7 @@ cc_library (
   DEPS
     :chat_template
     :minja
-    :tokenizer
+    absl::strings
     nlohmann_json::nlohmann_json
     glog::glog
 )
@@ -38,7 +38,6 @@ cc_library (
     deepseek_v32_cpp_template.cpp
   DEPS
     :chat_template
-    :tokenizer
     nlohmann_json::nlohmann_json
     glog::glog
     absl::strings
@@ -53,7 +52,6 @@ cc_library (
     deepseek_v4_cpp_template.cpp
   DEPS
     :chat_template
-    :tokenizer
     nlohmann_json::nlohmann_json
     glog::glog
     absl::strings
@@ -69,7 +67,6 @@ cc_library (
     chat_template_factory.cpp
   DEPS
     :chat_template
-    :config
     :jinja_chat_template
     :deepseek_v32_cpp_template
     :deepseek_v4_cpp_template

@@ -22,7 +22,6 @@ limitations under the License.
 
 #include "core/distributed_runtime/llm_master.h"
 #include "core/distributed_runtime/master.h"
-#include "core/distributed_runtime/master_factory.h"
 #include "core/distributed_runtime/vlm_master.h"
 
 namespace xllm {
@@ -163,7 +162,7 @@ bool MasterManager::fork_master(const Options& options,
     }
   }
 
-  auto master = fork_llm_master(llm_master, options);
+  auto master = llm_master->fork(options);
   if (master == nullptr) {
     if (error_message != nullptr) {
       *error_message = "Failed to fork master: " + options.model_id();

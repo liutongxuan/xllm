@@ -32,7 +32,6 @@ cc_library(
   HDRS
     engine.h
     master.h
-    master_factory.h
     dit_engine.h
     dit_master.h
     llm_engine.h
@@ -61,7 +60,6 @@ cc_library(
     model_residency_coordinator.h
   SRCS
     master.cpp
-    master_factory.cpp
     dit_engine.cpp
     dit_master.cpp
     llm_engine.cpp
@@ -87,9 +85,8 @@ cc_library(
     model_residency_coordinator.cpp
   DEPS
     :api_response
+    :chat_prompt_renderer
     :worker_model_codec
-    :chat_template_factory
-    :jinja_chat_template
     :models
     :model_loader
     :speculative
@@ -152,18 +149,17 @@ cc_library(
     llm_master.h
     master.h
     master_manager.h
-    master_factory.h
     vlm_master.h
     dit_master.h
   SRCS
     llm_master.cpp
     master.cpp
     master_manager.cpp
-    master_factory.cpp
     vlm_master.cpp
     dit_master.cpp
   DEPS
     :api_response
+    :chat_prompt_renderer
     :common
     :distributed_runtime
     :scheduler
@@ -174,8 +170,6 @@ cc_library(
     :models
     :parallel_config_validation
     $<$<BOOL:${USE_NPU}>:npu_layers>
-    :chat_template_factory
-    :jinja_chat_template
     glog::glog
     $<$<BOOL:${USE_MLU}>:torch_mlu>
 )

@@ -26,7 +26,6 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
-#include "chat_template/jinja_chat_template.h"
 #include "common/metrics.h"
 #include "core/common/message.h"
 #include "core/distributed_runtime/engine_dispatch.h"
@@ -39,6 +38,7 @@ limitations under the License.
 #include "core/framework/config/speculative_config.h"
 #include "core/framework/model_loader/hf_model_config.h"
 #include "core/framework/multimodal/mm_data.h"
+#include "core/framework/request/chat_prompt_renderer.h"
 #include "framework/model/model_args.h"
 #include "framework/request/request.h"
 #if defined(USE_NPU)
@@ -132,7 +132,10 @@ std::optional<std::string> join_message_texts(
 
 }  // namespace
 
-VLMMaster::VLMMaster(const Options& options) : Master(options) {
+VLMMaster::VLMMaster(const Options& options,
+                     ChatPromptRendererFactory renderer_factory)
+    : Master(options) {
+  CHECK(renderer_factory);
   options_.enable_mla(should_enable_mla(
       std::filesystem::path(options_.model_path()), options_.backend()));
 #if defined(USE_NPU)
@@ -361,9 +364,10 @@ VLMMaster::VLMMaster(const Options& options) : Master(options) {
   }
 
   dispatch_engine(
-      [this](auto* engine) {
-        chat_template_ =
-            std::make_unique<JinjaChatTemplate>(engine->tokenizer_args());
+      [this, &renderer_factory](auto* engine) {
+        prompt_renderer_ = renderer_factory(engine->tokenizer_args(),
+                                            model_args_.model_type());
+        CHECK(prompt_renderer_ != nullptr);
         tokenizer_ = engine->tokenizer()->clone();
         processor_ =
             create_multimodal_processor(model_args_,
@@ -375,7 +379,7 @@ VLMMaster::VLMMaster(const Options& options) : Master(options) {
       speculative_engine_.get());
 
   request_factory_ = std::make_unique<VLMRequestFactory>(processor_.get(),
-                                                         chat_template_.get(),
+                                                         prompt_renderer_.get(),
                                                          tokenizer_.get(),
                                                          &model_args_,
                                                          &options_,

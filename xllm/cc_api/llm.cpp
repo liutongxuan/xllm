@@ -27,6 +27,7 @@ limitations under the License.
 #include "core/common/native_library.h"
 #include "core/framework/config/beam_search_config.h"
 #include "internal.h"
+#include "server/master_factory.h"
 
 namespace xllm {
 namespace {
@@ -114,7 +115,7 @@ bool LLM::Initialize(const std::string& model_path,
     BeamSearchConfig::get_instance().enable_block_copy_kernel(false);
 #endif
     llm_core_ = new LLMCore();
-    llm_core_->master = std::make_unique<LLMMaster>(options);
+    llm_core_->master = create_llm_master(options);
     llm_core_->master->run();
 
     size_t cpu_cores = std::thread::hardware_concurrency();

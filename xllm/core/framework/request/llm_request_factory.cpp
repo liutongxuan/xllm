@@ -99,19 +99,19 @@ void append_stop_sequence_variant(const Tokenizer& tokenizer,
 }  // namespace
 
 LLMRequestFactory::LLMRequestFactory(const Tokenizer* tokenizer,
-                                     const ChatTemplate* chat_template,
+                                     const ChatPromptRenderer* prompt_renderer,
                                      const ModelArgs* model_args,
                                      const Options* options,
                                      RateLimiter* rate_limiter,
                                      const std::string& task_type,
                                      RpcResponseHandler rpc_response_handler)
     : tokenizer_(tokenizer),
-      chat_template_(chat_template),
+      prompt_renderer_(prompt_renderer),
       model_args_(model_args),
       options_(options),
       rate_limiter_(rate_limiter) {
   CHECK(tokenizer_ != nullptr);
-  CHECK(chat_template_ != nullptr);
+  CHECK(prompt_renderer_ != nullptr);
   CHECK(model_args_ != nullptr);
   CHECK(options_ != nullptr);
   CHECK(rate_limiter_ != nullptr);
@@ -311,12 +311,12 @@ bool LLMRequestFactory::validate_prompt_not_finished(
 bool LLMRequestFactory::apply_json_object_grammar(
     RequestState& req_state,
     const RequestParams& sp,
-    std::optional<ChatTemplateGenerationMode> generation_mode,
+    std::optional<ChatGenerationMode> generation_mode,
     const OutputCallback& callback) {
   std::string grammar_error;
   bool reasoning_enabled = false;
   if (generation_mode.has_value()) {
-    if (generation_mode == ChatTemplateGenerationMode::UNKNOWN) {
+    if (generation_mode == ChatGenerationMode::UNKNOWN) {
       CALLBACK_WITH_ERROR(
           StatusCode::INVALID_ARGUMENT,
           "JSON object constraint requires a recognizable chat generation "
@@ -325,8 +325,7 @@ bool LLMRequestFactory::apply_json_object_grammar(
           sp.source_xservice_addr);
       return false;
     }
-    reasoning_enabled =
-        generation_mode == ChatTemplateGenerationMode::REASONING;
+    reasoning_enabled = generation_mode == ChatGenerationMode::REASONING;
   } else {
     reasoning_enabled = get_enable_thinking(sp.chat_template_kwargs);
   }
@@ -350,7 +349,7 @@ std::shared_ptr<Request> LLMRequestFactory::create(
     const RequestParams& sp,
     std::optional<Call*> call,
     OutputCallback callback,
-    std::optional<ChatTemplateGenerationMode> generation_mode,
+    std::optional<ChatGenerationMode> generation_mode,
     std::chrono::steady_clock::time_point arrival_time) {
   // The caller (service_impl) has already incremented the rate limiter's
   // slot via is_limited() returning false. This guard releases it on any
@@ -556,9 +555,8 @@ std::shared_ptr<Request> LLMRequestFactory::create(
 
   Timer timer;
 
-  std::optional<ChatTemplateRenderResult> render_result =
-      chat_template_->apply_with_generation_mode(
-          messages, sp.tools, sp.chat_template_kwargs);
+  std::optional<RenderedChatPrompt> render_result =
+      prompt_renderer_->render(messages, sp.tools, sp.chat_template_kwargs);
   if (!render_result.has_value()) {
     CALLBACK_WITH_ERROR(StatusCode::INVALID_ARGUMENT,
                         "Failed to construct prompt from messages",
@@ -607,7 +605,7 @@ std::vector<std::shared_ptr<Request>> LLMRequestFactory::create_batch(
       [this, &conversations, &params](size_t i) -> std::optional<BatchPrompt> {
         const RequestParams& sp = params[params.size() == 1 ? 0 : i];
         Timer timer;
-        auto rendered = chat_template_->apply_with_generation_mode(
+        auto rendered = prompt_renderer_->render(
             conversations[i], sp.tools, sp.chat_template_kwargs);
         if (!rendered.has_value()) {
           return std::nullopt;
@@ -629,7 +627,7 @@ std::vector<std::shared_ptr<Request>> LLMRequestFactory::create_batch(
   std::vector<std::shared_ptr<Request>> requests(num_requests);
   std::vector<OutputCallback> callbacks;
   callbacks.reserve(num_requests);
-  std::vector<std::optional<ChatTemplateGenerationMode>> modes(num_requests);
+  std::vector<std::optional<ChatGenerationMode>> modes(num_requests);
   std::array<std::vector<std::string>, 2> prompts;
   std::array<std::vector<size_t>, 2> indices;
   for (size_t group = 0; group < prompts.size(); ++group) {

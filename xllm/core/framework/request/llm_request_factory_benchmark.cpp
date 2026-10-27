@@ -53,11 +53,11 @@ limitations under the License.
 #include <string_view>
 #include <vector>
 
-#include "chat_template/chat_template.h"
 #include "core/common/message.h"
 #include "core/common/options.h"
 #include "core/common/rate_limiter.h"
 #include "core/framework/model/model_args.h"
+#include "core/framework/request/chat_prompt_renderer.h"
 #include "core/framework/request/llm_request_factory.h"
 #include "core/framework/request/request.h"
 #include "core/framework/request/request_output.h"
@@ -108,18 +108,13 @@ class FakeTokenizer final : public Tokenizer {
 
 // Renders every conversation to the same fixed prompt so the chat benchmark
 // measures the messages path without a Jinja engine in the loop.
-class FakeChatTemplate final : public ChatTemplate {
+class FakeChatPromptRenderer final : public ChatPromptRenderer {
  public:
-  std::optional<std::string> apply(
-      const ChatMessages& messages) const override {
-    return apply(messages, {}, nlohmann::ordered_json::object());
-  }
-
-  std::optional<std::string> apply(
+  std::optional<RenderedChatPrompt> render(
       const ChatMessages& /*messages*/,
       const std::vector<xllm::JsonTool>& /*json_tools*/,
       const nlohmann::ordered_json& /*chat_template_kwargs*/) const override {
-    return rendered_prompt_;
+    return RenderedChatPrompt{rendered_prompt_};
   }
 
  private:
@@ -154,7 +149,7 @@ class FactoryFixture final {
 
  private:
   FakeTokenizer tokenizer_;
-  FakeChatTemplate chat_template_;
+  FakeChatPromptRenderer chat_template_;
   ModelArgs model_args_;
   Options options_;
   RateLimiter rate_limiter_;

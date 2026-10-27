@@ -538,31 +538,31 @@ TEST(JinjaChatTemplate, ReportsRenderedGenerationMode) {
   TestableJinjaChatTemplate template_(args);
 
   const std::vector<JsonTool> tools;
-  auto reasoning = template_.apply_with_generation_mode(
+  auto reasoning = template_.render(
       messages, tools, nlohmann::ordered_json{{"enable_thinking", true}});
   ASSERT_TRUE(reasoning.has_value());
-  EXPECT_EQ(reasoning->generation_mode, ChatTemplateGenerationMode::REASONING);
+  EXPECT_EQ(reasoning->generation_mode, ChatGenerationMode::REASONING);
 
-  auto chat = template_.apply_with_generation_mode(
+  auto chat = template_.render(
       messages, tools, nlohmann::ordered_json{{"enable_thinking", false}});
   ASSERT_TRUE(chat.has_value());
-  EXPECT_EQ(chat->generation_mode, ChatTemplateGenerationMode::CHAT);
+  EXPECT_EQ(chat->generation_mode, ChatGenerationMode::CHAT);
 
   args.chat_template("assistant:");
   TestableJinjaChatTemplate unknown_template(args);
-  auto unknown = unknown_template.apply_with_generation_mode(
+  auto unknown = unknown_template.render(
       messages, tools, nlohmann::ordered_json::object());
   ASSERT_TRUE(unknown.has_value());
-  EXPECT_EQ(unknown->generation_mode, ChatTemplateGenerationMode::UNKNOWN);
+  EXPECT_EQ(unknown->generation_mode, ChatGenerationMode::UNKNOWN);
 }
 
 TEST(ChatTemplate, ClassifiesTerminalGenerationMarkers) {
   EXPECT_EQ(ChatTemplate::generation_mode_from_prompt("prefix <think>\n"),
-            ChatTemplateGenerationMode::REASONING);
+            ChatGenerationMode::REASONING);
   EXPECT_EQ(ChatTemplate::generation_mode_from_prompt("prefix </think>\t"),
-            ChatTemplateGenerationMode::CHAT);
+            ChatGenerationMode::CHAT);
   EXPECT_EQ(ChatTemplate::generation_mode_from_prompt("prefix"),
-            ChatTemplateGenerationMode::UNKNOWN);
+            ChatGenerationMode::UNKNOWN);
 }
 
 TEST(JinjaChatTemplate, SupportsUndefinedTests) {

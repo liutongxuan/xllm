@@ -10,7 +10,6 @@ cc_test(
     :config
     :request
     :processors
-    :jinja_chat_template
     $<$<BOOL:${USE_MLU}>:torch_mlu>
     $<$<BOOL:${USE_NPU}>:torch_npu>
     GTest::gtest_main

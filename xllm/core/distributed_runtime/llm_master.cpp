@@ -29,7 +29,6 @@ limitations under the License.
 
 #include "api_service/call.h"
 #include "api_service/openai_json.h"
-#include "chat_template/chat_template_factory.h"
 #include "common/metrics.h"
 #include "core/distributed_runtime/disagg_pd_service_impl.h"
 #include "core/distributed_runtime/engine_dispatch.h"
@@ -58,8 +57,12 @@ limitations under the License.
 
 namespace xllm {
 
-LLMMaster::LLMMaster(const Options& options)
-    : Master(options), master_status_(options.master_status()) {
+LLMMaster::LLMMaster(const Options& options,
+                     ChatPromptRendererFactory renderer_factory)
+    : Master(options),
+      master_status_(options.master_status()),
+      renderer_factory_(std::move(renderer_factory)) {
+  CHECK(renderer_factory_);
   options_.enable_mla(should_enable_mla(
       std::filesystem::path(options_.model_path()), options_.backend()));
 #if defined(USE_NPU)
@@ -370,8 +373,9 @@ LLMMaster::LLMMaster(const Options& options)
   }
 
   auto initialize_tokenizer = [this](auto* engine) {
-    chat_template_ = ChatTemplateFactory::create(engine->tokenizer_args(),
-                                                 model_args_.model_type());
+    prompt_renderer_ =
+        renderer_factory_(engine->tokenizer_args(), model_args_.model_type());
+    CHECK(prompt_renderer_ != nullptr);
     tokenizer_ = engine->tokenizer()->clone();
   };
   dispatch_engine(initialize_tokenizer,
@@ -387,7 +391,7 @@ LLMMaster::LLMMaster(const Options& options)
 
   request_factory_ = std::make_unique<LLMRequestFactory>(
       tokenizer_.get(),
-      chat_template_.get(),
+      prompt_renderer_.get(),
       &model_args_,
       &options_,
       get_rate_limiter(),
@@ -430,7 +434,7 @@ void LLMMaster::count_chat_tokens(
                          callback = std::move(callback)]() {
     xllm::ScopeGuard rate_limit_guard(
         [this] { get_rate_limiter()->decrease_one_request(); });
-    std::optional<std::string> prompt = chat_template_->apply(
+    std::optional<RenderedChatPrompt> prompt = prompt_renderer_->render(
         messages, params.tools, params.chat_template_kwargs);
     if (!prompt.has_value()) {
       callback(Status(StatusCode::INVALID_ARGUMENT,
@@ -440,7 +444,7 @@ void LLMMaster::count_chat_tokens(
     }
     std::vector<int32_t> tokens;
     if (!tokenizer_->encode(
-            prompt.value(), &tokens, params.add_special_tokens)) {
+            prompt->prompt, &tokens, params.add_special_tokens)) {
       callback(Status(StatusCode::INVALID_ARGUMENT, "Failed to encode prompt"),
                0);
       return;
@@ -727,6 +731,37 @@ bool LLMMaster::stop_profile() {
                          llm_engine_.get(),
                          suffix_engine_.get(),
                          speculative_engine_.get());
+}
+
+std::unique_ptr<LLMMaster> LLMMaster::fork(const Options& options) {
+  // sleep/wakeup/fork_master requires --enable_virtual_memory=true
+  if (!KVCacheConfig::get_instance().enable_virtual_memory()) {
+    LOG(WARNING) << "fork_master requires virtual memory to be enabled";
+    return nullptr;
+  }
+
+  static std::atomic<int64_t> server_idx{1};
+  Options new_options = this->options();
+
+  if (!options.model_id().empty()) {
+    new_options.model_id() = options.model_id();
+  }
+  if (!options.model_path().empty()) {
+    new_options.model_path() = options.model_path();
+  }
+  new_options.master_node_addr() = options.master_node_addr();
+  new_options.server_idx() = server_idx.fetch_add(1, std::memory_order_relaxed);
+  new_options.master_status() = options.master_status();
+  // Set nnodes and dp_size from fork request (tp_size * dp_size = nnodes)
+  if (options.nnodes() > 0 && new_options.nnodes() >= options.nnodes()) {
+    new_options.nnodes() = options.nnodes();
+  }
+  if (options.dp_size() > 0 && new_options.dp_size() >= options.dp_size()) {
+    new_options.dp_size() = options.dp_size();
+  }
+  auto new_master = std::make_unique<LLMMaster>(new_options, renderer_factory_);
+  new_master->run();
+  return new_master;
 }
 
 }  // namespace xllm

@@ -24,12 +24,12 @@ limitations under the License.
 #include <string>
 #include <vector>
 
-#include "chat_template/chat_template.h"
 #include "common/message.h"
 #include "common/options.h"
 #include "common/rate_limiter.h"
 #include "core/framework/constrained/json_object_grammar.h"
 #include "core/framework/model/model_args.h"
+#include "core/framework/request/chat_prompt_renderer.h"
 #include "core/framework/request/request.h"
 #include "core/framework/request/request_output.h"
 #include "core/framework/request/request_params.h"
@@ -47,8 +47,8 @@ class Tokenizer;
 // assembly, and optional JSON-object grammar construction.
 //
 // The factory holds non-owning references to model configuration owned by
-// LLMMaster (tokenizer, chat template, model args, options, rate limiter); the
-// owner must outlive the factory. Option-dependent limits and the service-
+// LLMMaster (tokenizer, prompt renderer, model args, options, rate limiter);
+// the owner must outlive the factory. Option-dependent limits and the service-
 // routing callback are derived once in the constructor so create() does not
 // re-branch on process-start flags. Only the JSON-object grammar cache is
 // owned here since it is built lazily and used solely during request creation.
@@ -61,7 +61,7 @@ class LLMRequestFactory final {
       std::function<std::vector<bool>(const std::vector<RequestOutput>&)>;
 
   LLMRequestFactory(const Tokenizer* tokenizer,
-                    const ChatTemplate* chat_template,
+                    const ChatPromptRenderer* prompt_renderer,
                     const ModelArgs* model_args,
                     const Options* options,
                     RateLimiter* rate_limiter,
@@ -75,7 +75,7 @@ class LLMRequestFactory final {
       const RequestParams& sp,
       std::optional<Call*> call,
       OutputCallback callback,
-      std::optional<ChatTemplateGenerationMode> generation_mode = std::nullopt,
+      std::optional<ChatGenerationMode> generation_mode = std::nullopt,
       std::chrono::steady_clock::time_point arrival_time =
           std::chrono::steady_clock::now());
 
@@ -110,7 +110,7 @@ class LLMRequestFactory final {
  private:
   struct BatchPrompt {
     std::string text;
-    std::optional<ChatTemplateGenerationMode> generation_mode;
+    std::optional<ChatGenerationMode> generation_mode;
   };
 
   std::vector<std::shared_ptr<Request>> create_batch(
@@ -152,7 +152,7 @@ class LLMRequestFactory final {
   bool apply_json_object_grammar(
       RequestState& req_state,
       const RequestParams& sp,
-      std::optional<ChatTemplateGenerationMode> generation_mode,
+      std::optional<ChatGenerationMode> generation_mode,
       const OutputCallback& callback);
 
   std::shared_ptr<const JsonObjectGrammar> get_json_object_grammar(
@@ -160,7 +160,7 @@ class LLMRequestFactory final {
       std::string* error);
 
   const Tokenizer* tokenizer_ = nullptr;
-  const ChatTemplate* chat_template_ = nullptr;
+  const ChatPromptRenderer* prompt_renderer_ = nullptr;
   const ModelArgs* model_args_ = nullptr;
   const Options* options_ = nullptr;
   RateLimiter* rate_limiter_ = nullptr;

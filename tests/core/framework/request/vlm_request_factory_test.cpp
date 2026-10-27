@@ -25,12 +25,12 @@ limitations under the License.
 #include <string>
 #include <vector>
 
-#include "chat_template/jinja_chat_template.h"
 #include "common/options.h"
 #include "common/rate_limiter.h"
 #include "core/common/message.h"
 #include "core/common/types.h"
 #include "core/framework/multimodal/mm_data.h"
+#include "core/framework/request/chat_prompt_renderer.h"
 #include "framework/model/model_args.h"
 #include "framework/request/request_params.h"
 #include "framework/tokenizer/tokenizer_args.h"
@@ -79,34 +79,23 @@ class FakeProcessor final : public MultimodalProcessorBase {
   std::vector<int32_t> prompt_tokens_{1, 2, 3};
 };
 
-// Jinja chat template stub. The base constructor parses a trivial literal
-// template (no Jinja tags, so it never fails to parse), while apply is
-// overridden to return a fixed prompt or report failure on demand.
-class FakeJinjaChatTemplate final : public JinjaChatTemplate {
+// A request-side renderer fake needs no template parser or tokenizer metadata.
+class FakeChatPromptRenderer final : public ChatPromptRenderer {
  public:
-  FakeJinjaChatTemplate() : JinjaChatTemplate(make_template_args()) {}
-
-  std::optional<std::string> apply(
+  std::optional<RenderedChatPrompt> render(
       const ChatMessages& /*messages*/,
       const std::vector<xllm::JsonTool>& /*json_tools*/,
       const nlohmann::ordered_json& /*chat_template_kwargs*/) const override {
     if (!succeed_) {
       return std::nullopt;
     }
-    return rendered_prompt_;
+    return RenderedChatPrompt{"rendered prompt"};
   }
 
   void set_succeed(bool succeed) { succeed_ = succeed; }
 
  private:
-  static TokenizerArgs make_template_args() {
-    TokenizerArgs args;
-    args.chat_template("hello");
-    return args;
-  }
-
   bool succeed_ = true;
-  std::string rendered_prompt_ = "rendered prompt";
 };
 
 class VLMRequestFactoryTest : public ::testing::Test {
@@ -120,7 +109,7 @@ class VLMRequestFactoryTest : public ::testing::Test {
   std::unique_ptr<VLMRequestFactory> make_factory(int32_t vocab_size = 1000,
                                                   int32_t max_position = 2048) {
     processor_ = std::make_unique<FakeProcessor>();
-    chat_template_ = std::make_unique<FakeJinjaChatTemplate>();
+    chat_template_ = std::make_unique<FakeChatPromptRenderer>();
     tokenizer_ = std::make_unique<FakeTokenizer>(vocab_size);
     model_args_.vocab_size(vocab_size)
         .max_position_embeddings(max_position)
@@ -137,7 +126,7 @@ class VLMRequestFactoryTest : public ::testing::Test {
   }
 
   std::unique_ptr<FakeProcessor> processor_;
-  std::unique_ptr<FakeJinjaChatTemplate> chat_template_;
+  std::unique_ptr<FakeChatPromptRenderer> chat_template_;
   std::unique_ptr<FakeTokenizer> tokenizer_;
   ModelArgs model_args_;
   Options options_;

@@ -100,7 +100,7 @@ cc_library(
   DEPS
     :api_response
     :master
-    :chat_template
+    :chat_prompt_renderer
     :util
     glog::glog
     proto::xllm_proto

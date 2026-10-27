@@ -567,16 +567,15 @@ void AnthropicServiceImpl::process_async_impl(
   std::vector<Message> messages =
       api_service::build_anthropic_messages(rpc_request);
 
-  const auto rendered =
-      model_master->chat_template().apply_with_generation_mode(
-          messages, request_params.tools, request_params.chat_template_kwargs);
+  const auto rendered = model_master->prompt_renderer().render(
+      messages, request_params.tools, request_params.chat_template_kwargs);
   if (!rendered.has_value()) {
     call->finish_with_error(StatusCode::INVALID_ARGUMENT,
                             "Failed to construct prompt from messages");
     return;
   }
   const bool force_reasoning =
-      rendered->generation_mode == ChatTemplateGenerationMode::REASONING;
+      rendered->generation_mode == ChatGenerationMode::REASONING;
   // vLLM disables reasoning extraction even when the model's template still
   // ends in <think>, as GLM-5.3's template does.
   const bool reasoning_disabled =

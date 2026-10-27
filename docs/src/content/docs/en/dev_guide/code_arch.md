@@ -107,6 +107,13 @@ entry is **`xllm/xllm.cpp`**, inside the source directory.
 └── setup.py                               # Python packaging and build entry
 ```
 
+Chat prompt rendering is a separate module beside the output parsers. Core
+request preparation consumes the `ChatPromptRenderer` interface and its rendered
+prompt/generation mode; it does not construct Jinja or native templates.
+`server/master_factory.cpp` supplies a renderer factory when assembling a master.
+LLM masters retain that policy for forks, which build their own renderer from the
+new model's metadata. VLM and recommendation masters use Jinja rendering.
+
 ## KV cache and virtual memory boundaries
 
 The memory facilities serve both KV cache and weights. Resource-specific
@@ -342,7 +349,7 @@ interfaces; `scheduler/` decides what runs next; `distributed_runtime/` and
 [`launch_server.py`](https://github.com/xLLM-AI/xllm/blob/main/xllm/launch_server.py)
 handles the `xllm serve` launch command. In the C++ executable,
 `main()` initializes configuration, then `run()` creates the master through
-[`create_master()`](https://github.com/xLLM-AI/xllm/blob/main/xllm/core/distributed_runtime/master_factory.cpp).
+[`create_master()`](https://github.com/xLLM-AI/xllm/blob/main/xllm/server/master_factory.cpp).
 For the `llm` backend, `LLMMaster` sets up the engine, scheduler, tokenizer,
 and request factory. `master->run()` starts its loop, and the serving rank
 starts `APIService` through
