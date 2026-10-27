@@ -225,3 +225,17 @@ cc_library(
     glog::glog
     torch
 )
+
+# Select a master backend while accepting externally supplied rendering policy.
+cc_library(
+  NAME
+    master_factory
+  HDRS
+    master_factory.h
+  SRCS
+    master_factory.cpp
+  DEPS
+    :master
+    :chat_prompt_renderer
+    glog::glog
+)

@@ -63,7 +63,6 @@ endif()
 option(GENERATE_SO "Enable compile to generate .so" OFF)
 
 add_subdirectory(api_service)
-add_subdirectory(application)
 add_subdirectory(chat_template)
 add_subdirectory(compiler)
 add_subdirectory(core)
@@ -95,6 +94,7 @@ if(GENERATE_SO)
       :config
       :master
       :master_factory
+      :chat_template_renderer
       absl::strings
       Boost::serialization
       gflags::gflags
@@ -118,6 +118,7 @@ else()
       :xllm_server
       :master
       :master_factory
+      :chat_template_renderer
       :model_loader
       :kv_cache_store_config_validation
       :util

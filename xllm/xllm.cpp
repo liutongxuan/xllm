@@ -31,7 +31,7 @@ namespace py = pybind11;
 #include <vector>
 
 #include "api_service/api_service.h"
-#include "application/master_factory.h"
+#include "chat_template/chat_template_renderer.h"
 #include "core/common/global_flags.h"
 #include "core/common/instance_name.h"
 #include "core/common/metrics.h"
@@ -40,6 +40,7 @@ namespace py = pybind11;
 #include "core/common/types.h"
 #include "core/distributed_runtime/distributed_virtual_memory_coordinator.h"
 #include "core/distributed_runtime/master.h"
+#include "core/distributed_runtime/master_factory.h"
 #include "core/distributed_runtime/worker_memory_rpc_options.h"
 #include "core/framework/allocator/global_virtual_memory_region.h"
 #include "core/framework/config/beam_search_config.h"
@@ -504,7 +505,11 @@ int run() {
   }
 
   std::unique_ptr<Master> master =
-      create_master(model_config.backend(), options);
+      create_master(model_config.backend(),
+                    options,
+                    create_chat_prompt_renderer_factory(
+                        model_config.backend() == "llm" &&
+                        model_config.use_cpp_chat_template()));
   master->run();
 
   // supported models

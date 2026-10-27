@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "application/chat_template_renderer.h"
+#include "chat_template/chat_template_renderer.h"
 
 #include <glog/logging.h>
 

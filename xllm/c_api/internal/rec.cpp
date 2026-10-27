@@ -27,8 +27,9 @@ limitations under the License.
 #include <limits>
 #include <stdexcept>
 
-#include "application/master_factory.h"
+#include "chat_template/chat_template_renderer.h"
 #include "core/common/native_library.h"
+#include "core/distributed_runtime/master_factory.h"
 #include "core/framework/config/beam_search_config.h"
 #include "core/framework/config/execution_config.h"
 #include "core/framework/config/kv_cache_config.h"
@@ -210,7 +211,9 @@ XLLM_CAPI_EXPORT bool xllm_rec_initialize(
         << ", max_decode_rounds="
         << ::xllm::RecConfig::get_instance().max_decode_rounds();
 
-    handler->master = xllm::create_rec_master(options);
+    handler->master = xllm::create_rec_master(
+        options,
+        xllm::create_chat_prompt_renderer_factory(/*use_cpp_template=*/false));
     handler->master->run();
 
     size_t available_cpu_cores_count =

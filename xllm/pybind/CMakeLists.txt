@@ -15,6 +15,7 @@ pybind_extension(
     :config
     :master
     :master_factory
+    :chat_template_renderer
     :request
     :util
     absl::strings

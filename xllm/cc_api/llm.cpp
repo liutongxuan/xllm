@@ -24,9 +24,11 @@ limitations under the License.
 #include <atomic>
 #include <exception>
 
-#include "application/master_factory.h"
+#include "chat_template/chat_template_renderer.h"
 #include "core/common/native_library.h"
+#include "core/distributed_runtime/master_factory.h"
 #include "core/framework/config/beam_search_config.h"
+#include "core/framework/config/model_config.h"
 #include "internal.h"
 
 namespace xllm {
@@ -115,7 +117,10 @@ bool LLM::Initialize(const std::string& model_path,
     BeamSearchConfig::get_instance().enable_block_copy_kernel(false);
 #endif
     llm_core_ = new LLMCore();
-    llm_core_->master = create_llm_master(options);
+    llm_core_->master = create_llm_master(
+        options,
+        create_chat_prompt_renderer_factory(
+            ModelConfig::get_instance().use_cpp_chat_template()));
     llm_core_->master->run();
 
     size_t cpu_cores = std::thread::hardware_concurrency();

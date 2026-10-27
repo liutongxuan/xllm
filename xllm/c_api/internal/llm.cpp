@@ -26,10 +26,12 @@ limitations under the License.
 #include <exception>
 #include <stdexcept>
 
-#include "application/master_factory.h"
+#include "chat_template/chat_template_renderer.h"
 #include "core/common/native_library.h"
+#include "core/distributed_runtime/master_factory.h"
 #include "core/framework/config/beam_search_config.h"
 #include "core/framework/config/execution_config.h"
+#include "core/framework/config/model_config.h"
 #include "helper.h"
 
 XLLM_CAPI_EXPORT XLLM_LLM_Handler* xllm_llm_create(void) {
@@ -123,7 +125,10 @@ XLLM_CAPI_EXPORT bool xllm_llm_initialize(
 #if !defined(USE_NPU) && !defined(USE_CUDA) && !defined(USE_MUSA)
     xllm::BeamSearchConfig::get_instance().enable_block_copy_kernel(false);
 #endif
-    handler->master = xllm::create_llm_master(options);
+    handler->master = xllm::create_llm_master(
+        options,
+        xllm::create_chat_prompt_renderer_factory(
+            xllm::ModelConfig::get_instance().use_cpp_chat_template()));
     handler->master->run();
 
     size_t cpu_cores = std::thread::hardware_concurrency();

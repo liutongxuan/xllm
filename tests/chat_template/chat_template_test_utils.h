@@ -17,7 +17,7 @@ limitations under the License.
 
 #include <utility>
 
-#include "application/chat_template_renderer.h"
+#include "chat_template/chat_template_renderer.h"
 #include "core/framework/tokenizer/tokenizer_args.h"
 
 namespace xllm {

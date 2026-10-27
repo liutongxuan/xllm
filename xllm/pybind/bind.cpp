@@ -20,11 +20,12 @@ limitations under the License.
 #include <torch/python.h>
 
 #include "api_service/call.h"
-#include "application/master_factory.h"
+#include "chat_template/chat_template_renderer.h"
 #include "core/common/native_library.h"
 #include "core/common/options.h"
 #include "core/common/types.h"
 #include "core/distributed_runtime/llm_master.h"
+#include "core/distributed_runtime/master_factory.h"
 #include "core/distributed_runtime/vlm_master.h"
 #include "core/framework/config/model_config.h"
 #include "core/framework/multimodal/mm_data.h"
@@ -115,7 +116,12 @@ PYBIND11_MODULE(xllm_export, m) {
 
   // 2. export LLMMaster
   py::class_<LLMMaster>(m, "LLMMaster")
-      .def(py::init(&create_llm_master),
+      .def(py::init([](const Options& options) {
+             return create_llm_master(
+                 options,
+                 create_chat_prompt_renderer_factory(
+                     ModelConfig::get_instance().use_cpp_chat_template()));
+           }),
            py::arg("options"),
            py::call_guard<py::gil_scoped_release>())
       .def("handle_request",
@@ -359,7 +365,11 @@ PYBIND11_MODULE(xllm_export, m) {
 
   // 13. export VLMMaster
   py::class_<VLMMaster>(m, "VLMMaster")
-      .def(py::init(&create_vlm_master),
+      .def(py::init([](const Options& options) {
+             return create_vlm_master(options,
+                                      create_chat_prompt_renderer_factory(
+                                          /*use_cpp_template=*/false));
+           }),
            py::arg("options"),
            py::call_guard<py::gil_scoped_release>())
       .def("handle_batch_request",

@@ -13,46 +13,48 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "application/master_factory.h"
+#include "core/distributed_runtime/master_factory.h"
 
 #include <glog/logging.h>
 
 #include <memory>
 #include <string>
+#include <utility>
 
-#include "application/chat_template_renderer.h"
 #include "core/distributed_runtime/dit_master.h"
 #include "core/distributed_runtime/llm_master.h"
 #include "core/distributed_runtime/rec_master.h"
 #include "core/distributed_runtime/vlm_master.h"
-#include "core/framework/config/model_config.h"
 
 namespace xllm {
 
-std::unique_ptr<LLMMaster> create_llm_master(const Options& options) {
-  return std::make_unique<LLMMaster>(
-      options,
-      create_chat_prompt_renderer_factory(
-          ModelConfig::get_instance().use_cpp_chat_template()));
+std::unique_ptr<LLMMaster> create_llm_master(
+    const Options& options,
+    ChatPromptRendererFactory renderer_factory) {
+  return std::make_unique<LLMMaster>(options, std::move(renderer_factory));
 }
 
-std::unique_ptr<VLMMaster> create_vlm_master(const Options& options) {
-  return std::make_unique<VLMMaster>(
-      options, create_chat_prompt_renderer_factory(/*use_cpp_template=*/false));
+std::unique_ptr<VLMMaster> create_vlm_master(
+    const Options& options,
+    ChatPromptRendererFactory renderer_factory) {
+  return std::make_unique<VLMMaster>(options, std::move(renderer_factory));
 }
 
-std::unique_ptr<RecMaster> create_rec_master(const Options& options) {
-  return std::make_unique<RecMaster>(
-      options, create_chat_prompt_renderer_factory(/*use_cpp_template=*/false));
+std::unique_ptr<RecMaster> create_rec_master(
+    const Options& options,
+    ChatPromptRendererFactory renderer_factory) {
+  return std::make_unique<RecMaster>(options, std::move(renderer_factory));
 }
 
-std::unique_ptr<Master> create_master(const std::string& backend,
-                                      const Options& options) {
+std::unique_ptr<Master> create_master(
+    const std::string& backend,
+    const Options& options,
+    ChatPromptRendererFactory renderer_factory) {
   if (backend == "llm") {
-    return create_llm_master(options);
+    return create_llm_master(options, std::move(renderer_factory));
   }
   if (backend == "vlm") {
-    return create_vlm_master(options);
+    return create_vlm_master(options, std::move(renderer_factory));
   }
   if (backend == "dit") {
     LOG(INFO) << "creating dit master";
@@ -60,7 +62,7 @@ std::unique_ptr<Master> create_master(const std::string& backend,
   }
   if (backend == "rec") {
     LOG(INFO) << "creating rec master";
-    return create_rec_master(options);
+    return create_rec_master(options, std::move(renderer_factory));
   }
 
   LOG(FATAL) << "Failed to create master, backend is " << backend;

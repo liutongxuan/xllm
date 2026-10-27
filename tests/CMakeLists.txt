@@ -28,7 +28,6 @@ if(USE_NPU)
 endif()
 
 add_subdirectory(api_service)
-add_subdirectory(application)
 add_subdirectory(chat_template)
 add_subdirectory(core)
 add_subdirectory(function_call)

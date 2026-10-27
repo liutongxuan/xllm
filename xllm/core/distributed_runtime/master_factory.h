@@ -19,6 +19,7 @@ limitations under the License.
 #include <string>
 
 #include "core/distributed_runtime/master.h"
+#include "core/framework/request/chat_prompt_renderer.h"
 
 namespace xllm {
 
@@ -26,10 +27,20 @@ class LLMMaster;
 class VLMMaster;
 class RecMaster;
 
-std::unique_ptr<Master> create_master(const std::string& backend,
-                                      const Options& options);
-std::unique_ptr<LLMMaster> create_llm_master(const Options& options);
-std::unique_ptr<VLMMaster> create_vlm_master(const Options& options);
-std::unique_ptr<RecMaster> create_rec_master(const Options& options);
+// Entry points supply rendering policy; the runtime only selects and constructs
+// the master. DiT does not use the renderer factory.
+std::unique_ptr<Master> create_master(
+    const std::string& backend,
+    const Options& options,
+    ChatPromptRendererFactory renderer_factory);
+std::unique_ptr<LLMMaster> create_llm_master(
+    const Options& options,
+    ChatPromptRendererFactory renderer_factory);
+std::unique_ptr<VLMMaster> create_vlm_master(
+    const Options& options,
+    ChatPromptRendererFactory renderer_factory);
+std::unique_ptr<RecMaster> create_rec_master(
+    const Options& options,
+    ChatPromptRendererFactory renderer_factory);
 
 }  // namespace xllm

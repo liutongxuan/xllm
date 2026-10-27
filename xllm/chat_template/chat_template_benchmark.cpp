@@ -76,8 +76,8 @@ limitations under the License.
 #include <variant>
 #include <vector>
 
-#include "application/chat_template_renderer.h"
 #include "chat_template/chat_template.h"
+#include "chat_template/chat_template_renderer.h"
 #include "chat_template/deepseek_v32_cpp_template.h"
 #include "chat_template/deepseek_v4_cpp_template.h"
 #include "chat_template/jinja_chat_template.h"

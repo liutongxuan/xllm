@@ -86,7 +86,6 @@ title: "代码架构与请求流程"
 │   │   ├── kernels_npu/                   # NPU 算子，含 TileLang/Triton 源码
 │   │   └── distributed/                   # 模型内部的集合通信
 │   ├── processors/                        # 多模态输入预处理
-│   ├── application/                       # 共享模板适配和 master 装配
 │   ├── chat_template/                     # 聊天消息转换为模型提示词
 │   ├── parser/                            # 推理过程输出解析器
 │   ├── function_call/                     # 工具调用解析器
@@ -110,10 +109,12 @@ title: "代码架构与请求流程"
 不依赖 core、Torch、protobuf 或 tokenizer。视图只包含文本和模态类型，不携带媒体数据；
 同步渲染返回拥有独立存储的提示词和生成模式，无法识别的后缀保持未知。
 
-`application/chat_template_renderer.cpp` 负责将 core 消息及 tokenizer 元数据适配到
+`chat_template/chat_template_renderer.cpp` 负责将 core 消息及 tokenizer 元数据适配到
 模板契约，转换过程不复制对话正文或工具 schema。Core 请求准备只依赖
 `ChatPromptRenderer` 接口及其返回的提示词和生成模式，不负责构造 Jinja 或原生模板。
-`application/master_factory.cpp` 在装配 master 时注入渲染器工厂。LLM master 在 fork 时
+适配器使用独立构建目标，模板库本身不依赖 core。CLI、C、C++ 和 Python 入口选择渲染策略，
+并向 `core/distributed_runtime/master_factory.cpp` 传入渲染器工厂；后者只负责选择和创建
+master，不依赖模板实现。LLM master 在 fork 时
 保留渲染策略，并用新模型的元数据创建独立渲染器；VLM 和推荐 master 使用 Jinja。
 Processor 不依赖聊天模板，其目录结构和预处理职责保持不变。
 
@@ -305,7 +306,7 @@ heartbeat 消费方需要一起升级，不能混用重命名前后的 RPC 路�
 
 [`launch_server.py`](https://github.com/xLLM-AI/xllm/blob/main/xllm/launch_server.py)
 处理 `xllm serve` 启动命令。进入 C++ 可执行程序后，`main()` 初始化配置，`run()`
-通过 [`create_master()`](https://github.com/xLLM-AI/xllm/blob/main/xllm/application/master_factory.cpp)
+通过 [`create_master()`](https://github.com/xLLM-AI/xllm/blob/main/xllm/core/distributed_runtime/master_factory.cpp)
 创建 master。对于 `llm` 后端，`LLMMaster` 建立 engine、scheduler、tokenizer
 和 request factory。`master->run()` 启动循环，提供服务的 rank 通过
 [`server/xllm_server.cpp`](https://github.com/xLLM-AI/xllm/blob/main/xllm/server/xllm_server.cpp)

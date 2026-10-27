@@ -19,7 +19,7 @@ limitations under the License.
 #include <gtest/gtest.h>
 
 #include "api_service/chat_json_parser.h"
-#include "application/chat_template_renderer.h"
+#include "chat_template/chat_template_renderer.h"
 #include "core/framework/request/request_params.h"
 #include "core/framework/tokenizer/tokenizer_args.h"
 
