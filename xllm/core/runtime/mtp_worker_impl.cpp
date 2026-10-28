@@ -1194,7 +1194,7 @@ std::optional<ForwardOutput> MTPWorkerImpl<TargetInput>::step_empty(
     }
     clear_all_output_embeddings(*output);
     finalize_output_on_stream(
-        *output, *compute_stream_, enable_schedule_overlap());
+        *output, *compute_stream_, schedule_overlap_enabled());
     return output;
   } else {
     LlmForwardInput draft_extend_prepared;
@@ -1238,7 +1238,7 @@ std::optional<ForwardOutput> MTPWorkerImpl<TargetInput>::step_empty(
     }
     clear_all_output_embeddings(output);
     finalize_output_on_stream(
-        output, *compute_stream_, enable_schedule_overlap());
+        output, *compute_stream_, schedule_overlap_enabled());
     if (can_prelaunch_next_first_draft(input)) {
       LlmForwardInput next_first_draft_input = make_llm_draft_input(input);
       scale_parallel_token_counts(next_first_draft_input.input_params.parallel,
@@ -1323,9 +1323,9 @@ std::optional<ForwardOutput> MTPWorkerImpl<TargetInput>::step_prefill(
 
   transfer_retained_inputs(output, draft_output);
   finalize_output_on_stream(
-      output, *compute_stream_, enable_schedule_overlap());
+      output, *compute_stream_, schedule_overlap_enabled());
 
-  if (!enable_schedule_overlap() && !this->is_driver() &&
+  if (!schedule_overlap_enabled() && !this->is_driver() &&
       !::xllm::EPLBConfig::get_instance().enable_eplb()) {
     return std::nullopt;
   }
@@ -1498,7 +1498,7 @@ std::optional<ForwardOutput> MTPWorkerImpl<TargetInput>::step_decode(
           last_states,
           input.input_params.embedding.request_ids,
           input.token_ids_host,
-          enable_schedule_overlap());
+          schedule_overlap_enabled());
     }
     update_decode_step_input(input, last_states);
     metadata_template = input.clone();
@@ -1969,7 +1969,7 @@ std::optional<ForwardOutput> MTPWorkerImpl<TargetInput>::run_validate(
     val_output.next_tokens = val_output.next_tokens.to(torch::kCPU);
     write_target_context_to_cache(input, val_output, num_speculative_tokens);
 
-    if (!enable_schedule_overlap() && !this->is_driver() &&
+    if (!schedule_overlap_enabled() && !this->is_driver() &&
         !::xllm::EPLBConfig::get_instance().enable_eplb()) {
       return std::nullopt;
     }
@@ -2102,7 +2102,7 @@ std::optional<ForwardOutput> MTPWorkerImpl<TargetInput>::run_validate(
   // Overlap mode hands the verify tokens back still on device (the device copy
   // feeds the next step's input update); expose the staged host snapshot so
   // metrics and serialization reuse it instead of issuing a second D2H.
-  if (enable_schedule_overlap()) {
+  if (schedule_overlap_enabled()) {
     target_output.next_tokens_host = accepted_tokens_host;
   }
   stage_target_context_write(input,
@@ -2132,14 +2132,14 @@ std::optional<ForwardOutput> MTPWorkerImpl<TargetInput>::run_validate(
     copy_retained_inputs(target_output, draft_output);
   }
 
-  if (!enable_schedule_overlap()) {
+  if (!schedule_overlap_enabled()) {
     flush_pending_target_context();
     target_output.retained_inputs.clear();
     target_output.ready_event.reset();
     val_output.next_tokens = std::move(accepted_tokens_cpu_result);
   }
 
-  if (!enable_schedule_overlap() && !this->is_driver() &&
+  if (!schedule_overlap_enabled() && !this->is_driver() &&
       !::xllm::EPLBConfig::get_instance().enable_eplb()) {
     return std::nullopt;
   }
@@ -2187,7 +2187,7 @@ torch::Tensor MTPWorkerImpl<TargetInput>::acquire_accepted_tokens_host_buffer(
   const int64_t configured_capacity =
       static_cast<int64_t>(options_.max_seqs_per_batch()) *
       (static_cast<int64_t>(options_.num_speculative_tokens()) + 1);
-  if (enable_schedule_overlap()) {
+  if (schedule_overlap_enabled()) {
     return acquire_pinned_output_buffer(accepted_tokens,
                                         accepted_tokens_host_pool_);
   }
@@ -2606,7 +2606,8 @@ bool MTPWorkerImpl<TargetInput>::supports_combined_first_draft_execution()
 
 template <typename TargetInput>
 bool MTPWorkerImpl<TargetInput>::can_use_combined_first_draft() const {
-  return enable_schedule_overlap() && supports_combined_first_draft_execution();
+  return schedule_overlap_enabled() &&
+         supports_combined_first_draft_execution();
 }
 
 template <typename TargetInput>
@@ -2786,7 +2787,7 @@ void MTPWorkerImpl<TargetInput>::update_decode_step_input(
   const int32_t num_sequences = input.input_params.meta.num_sequences;
   CHECK_EQ(last_states.size(), static_cast<size_t>(num_sequences))
       << "decode context state count mismatch";
-  const bool enable_cache_correction = enable_schedule_overlap();
+  const bool enable_cache_correction = schedule_overlap_enabled();
   const bool positions_decoupled = positions_are_decoupled_from_kv_length();
 
   std::vector<int32_t> token_ids_vec;

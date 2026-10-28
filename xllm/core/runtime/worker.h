@@ -91,6 +91,7 @@ class Worker {
   bool unlink_p2p(const std::string& remote_addr);
 
   const bool is_driver();
+  bool schedule_overlap_enabled() const;
   bool task_pipeline_uses_worker_prepare() const;
 
   std::optional<ForwardOutput> step(const RecForwardInput& inputs);

@@ -476,7 +476,7 @@ void WorkerService::collect_llm_output(const ForwardOutput& output,
                   /*non_blocking=*/true);
     }
   };
-  const bool use_default_stream = !options_.enable_schedule_overlap();
+  const bool use_default_stream = !worker_->schedule_overlap_enabled();
   if (cpu_ready_result) {
     copy_output_to_host();
   } else if (use_default_stream) {
@@ -514,14 +514,14 @@ void WorkerService::step_llm_model(
       input.runtime.input_host_buffer.is_contiguous() &&
       input.runtime.input_host_buffer.numel() > 0 &&
       !input.runtime.device_tensors_ready;
-  if (options_.enable_schedule_overlap() && !worker_rebuilds_host_views &&
+  if (worker_->schedule_overlap_enabled() && !worker_rebuilds_host_views &&
       (!task_pipeline || worker_prepare)) {
     // Packed preparation rebuilds views from its retained owner. Device-ready
     // inputs reuse their existing views, which can still borrow shared memory.
     stabilize_host_views(input);
   }
   auto future = worker_->step_async(input);
-  if (!options_.enable_schedule_overlap()) {
+  if (!worker_->schedule_overlap_enabled()) {
     auto output = std::move(future).get();
     if (!output.has_value()) {
       return;
@@ -559,7 +559,7 @@ void WorkerService::poll_llm_shm(
   // Graph updates and task preparation must stay on the ordered worker stream.
   const InputDeviceMaterializationPolicy policy =
       options_.enable_task_pipeline() ||
-              (options_.enable_schedule_overlap() && options_.enable_graph())
+              (worker_->schedule_overlap_enabled() && options_.enable_graph())
           ? InputDeviceMaterializationPolicy::DEFER_TO_WORKER_PREPARE
           : InputDeviceMaterializationPolicy::MATERIALIZE_ON_READ;
   while (true) {
@@ -626,7 +626,7 @@ void WorkerService::GetLastLLMStepResult(
       controller->SetFailed("Worker is not initialized");
       return;
     }
-    if (options_.backend() != "llm" || !options_.enable_schedule_overlap()) {
+    if (options_.backend() != "llm" || !worker_->schedule_overlap_enabled()) {
       controller->SetFailed(
           "LLM last-step results require the matching overlap backend");
       return;
@@ -715,7 +715,7 @@ void WorkerService::collect_vlm_output(const ForwardOutput& output,
   copy_output_to_host();
   stream_->synchronize();
 #if defined(USE_NPU)
-  if (options_.enable_schedule_overlap()) {
+  if (worker_->schedule_overlap_enabled()) {
     DeviceMonitor::get_instance().update_active_activation_memory(
         device_.index());
   }
@@ -736,12 +736,12 @@ void WorkerService::step_vlm_model(
       input.runtime.input_host_buffer.is_contiguous() &&
       input.runtime.input_host_buffer.numel() > 0 &&
       !input.runtime.device_tensors_ready;
-  if (options_.enable_schedule_overlap() && !worker_rebuilds_host_views) {
+  if (worker_->schedule_overlap_enabled() && !worker_rebuilds_host_views) {
     // Device-ready inputs can still borrow host views from shared memory.
     stabilize_host_views(input);
   }
   auto future = worker_->step_async(input);
-  if (!options_.enable_schedule_overlap()) {
+  if (!worker_->schedule_overlap_enabled()) {
     auto output = std::move(future).get();
     if (output.has_value()) {
       collect_vlm_output(*output, cpu_output);
@@ -767,7 +767,7 @@ void WorkerService::poll_vlm_shm(
     std::unique_ptr<ForwardSharedMemoryManager> output_shm_manager) {
   device_.set_device();
   const InputDeviceMaterializationPolicy policy =
-      options_.enable_schedule_overlap() && options_.enable_graph()
+      worker_->schedule_overlap_enabled() && options_.enable_graph()
           ? InputDeviceMaterializationPolicy::DEFER_TO_WORKER_PREPARE
           : InputDeviceMaterializationPolicy::MATERIALIZE_ON_READ;
   while (true) {
@@ -834,7 +834,7 @@ void WorkerService::GetLastVLMStepResult(
       controller->SetFailed("Worker is not initialized");
       return;
     }
-    if (options_.backend() != "vlm" || !options_.enable_schedule_overlap()) {
+    if (options_.backend() != "vlm" || !worker_->schedule_overlap_enabled()) {
       controller->SetFailed(
           "VLM last-step results require the matching overlap backend");
       return;
@@ -863,7 +863,7 @@ void WorkerService::step_rec_model(
   speculative_token_stats.clear();
   CHECK(!options_.enable_task_pipeline())
       << "REC does not support task pipeline";
-  CHECK(!options_.enable_schedule_overlap())
+  CHECK(!worker_->schedule_overlap_enabled())
       << "REC does not support schedule overlap";
   // RecWorkerImpl captures input by reference. Wait before releasing this
   // owner.

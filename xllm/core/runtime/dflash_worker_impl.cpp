@@ -476,7 +476,7 @@ DFlashWorkerImpl::~DFlashWorkerImpl() {
   capacity.startup_calibration = capacity.adaptive_target_verify;
   capacity.calibration_leader = parallel_args_.rank() == 0;
   if (capacity.startup_calibration &&
-      (!options_.enable_graph() || !options_.enable_schedule_overlap() ||
+      (!options_.enable_graph() || !schedule_overlap_enabled() ||
        ExecutionConfig::get_instance().disable_graph_warmup() ||
        (!options_.adaptive_target_verify_calibration().empty() &&
         !options_.adaptive_target_verify_cost_table().empty()))) {
@@ -753,7 +753,7 @@ std::optional<ForwardOutput> DFlashWorkerImpl::step_prefill(
     clear_all_output_embeddings(output);
   }
 
-  if (!enable_schedule_overlap() && !driver_ && !dp_driver_) {
+  if (!schedule_overlap_enabled() && !driver_ && !dp_driver_) {
     return std::nullopt;
   }
   return output;
@@ -893,7 +893,7 @@ std::optional<ForwardOutput> DFlashWorkerImpl::run_validate(
   val_output.next_tokens = to_cpu_contiguous(val_output.next_tokens);
   write_target_context_to_cache(input, val_output);
 
-  if (!enable_schedule_overlap() && !driver_ && !dp_driver_) {
+  if (!schedule_overlap_enabled() && !driver_ && !dp_driver_) {
     return std::nullopt;
   }
   return finalize_verify_output(std::move(target_output),
@@ -924,7 +924,7 @@ void DFlashWorkerImpl::update_decode_step_input(
   const int32_t num_sequences = input.input_params.meta.num_sequences;
   CHECK_EQ(last_states.size(), static_cast<size_t>(num_sequences))
       << "DFlash decode context state count mismatch";
-  const bool enable_cache_correction = enable_schedule_overlap();
+  const bool enable_cache_correction = schedule_overlap_enabled();
 
   std::vector<int32_t> token_ids_vec;
   std::vector<int32_t> positions_vec;
@@ -1247,7 +1247,7 @@ void DFlashWorkerImpl::prepare_task_pipeline_input(const LlmForwardInput& input,
 std::optional<ForwardOutput> DFlashWorkerImpl::execute_task_pipeline(
     const LlmForwardInput& prepared) {
   // A worker-owned queue must not use the driver's legacy last-step slot.
-  if (!enable_schedule_overlap() || prepared.json_object_states.empty()) {
+  if (!schedule_overlap_enabled() || prepared.json_object_states.empty()) {
     task_json_output_ = ForwardOutput();
     task_json_sample_sequence_ids_.clear();
     return step(prepared);

@@ -66,7 +66,7 @@ bool VLMWorkerImpl::init_model(ModelContext& context) {
 std::optional<ForwardOutput> VLMWorkerImpl::step(const VlmForwardInput& input) {
   if (::xllm::LoadConfig::get_instance().enable_manual_loader()) {
 #if defined(USE_NPU)
-    if (!enable_schedule_overlap()) {
+    if (!schedule_overlap_enabled()) {
       aclrtStream current_stream =
           c10_npu::getCurrentNPUStream(device_.index()).stream();
       atb::Context* atb_context =
@@ -106,7 +106,7 @@ std::optional<ForwardOutput> VLMWorkerImpl::execute_no_sync_on_stream(
   c10::StreamGuard stream_guard = compute_stream.set_stream_guard();
   if (::xllm::LoadConfig::get_instance().enable_manual_loader()) {
 #if defined(USE_NPU)
-    if (!enable_schedule_overlap()) {
+    if (!schedule_overlap_enabled()) {
       aclrtStream current_acl_stream =
           c10_npu::getCurrentNPUStream(device_.index()).stream();
       atb::Context* atb_context =
@@ -170,7 +170,7 @@ std::optional<ForwardOutput> VLMWorkerImpl::step_internal(
 
   COUNTER_ADD(execution_latency_seconds_model, timer.elapsed_seconds());
 
-  if (!enable_schedule_overlap() && !driver_ && !dp_driver_ &&
+  if (!schedule_overlap_enabled() && !driver_ && !dp_driver_ &&
       !options_.enable_speculative_decode()) {
     if (sync_policy == ForwardSyncPolicy::LEGACY) {
       auto ret = device_.synchronize_default_stream();

@@ -436,11 +436,13 @@ WorkerImpl::WorkerImpl(const ParallelArgs& parallel_args,
     : options_(options),
       driver_(parallel_args.rank() == 0),
       dp_driver_(is_dp_driver(parallel_args)),
-      schedule_overlap_(
-          is_driver(),
-          EPLBConfig::get_instance().enable_eplb(),
-          /*retire_unconsumed_inputs=*/
-          options.enable_speculative_decode() && parallel_args.dp_size() > 1),
+      schedule_overlap_(ScheduleOverlap::Config{
+          .enabled = options.enable_schedule_overlap(),
+          .publish_to_host =
+              is_driver() || EPLBConfig::get_instance().enable_eplb(),
+          .retain_tokenless_output = EPLBConfig::get_instance().enable_eplb(),
+          .retire_unconsumed_inputs = options.enable_speculative_decode() &&
+                                      parallel_args.dp_size() > 1}),
       device_(device),
       parallel_args_(parallel_args) {
   if (options_.enable_speculative_decode() &&
@@ -840,7 +842,7 @@ bool WorkerImpl::can_prepare_npu_graph_decode_input_impl(
   return !options_.enable_speculative_decode() &&
          ::xllm::ExecutionConfig::get_instance().enable_graph() &&
          ::xllm::ExecutionConfig::get_instance().enable_graph_double_buffer() &&
-         enable_schedule_overlap() &&
+         schedule_overlap_enabled() &&
          (options_.backend() == "llm" || options_.backend() == "vlm") &&
          input_params.meta.batch_forward_type.has_decode();
 #else
@@ -1304,7 +1306,7 @@ void WorkerImpl::prepare_work_before_execute_on_stream_impl(
   }
 #endif
   c10::StreamGuard stream_guard = prepare_stream.set_stream_guard();
-  if (enable_schedule_overlap() && wait_for_compute_stream &&
+  if (schedule_overlap_enabled() && wait_for_compute_stream &&
       !can_prepare_without_compute_stream_wait(input.input_params) &&
       compute_stream_) {
     // MTP updates reuse shared prepare/compute streams and need this ordering;
@@ -1394,7 +1396,7 @@ void WorkerImpl::prepare_work_before_execute_on_stream_impl(
       prepare_input_params_for_linear_attention(input_params);
       // Overlap restores in the worker thread on compute_stream_, after the
       // preceding chunk finishes writing its live slots.
-      if (restore_linear_state && !enable_schedule_overlap()) {
+      if (restore_linear_state && !schedule_overlap_enabled()) {
         try_restore_linear_state_slots(ModelParamsView(input_params));
       }
     }
@@ -1691,7 +1693,7 @@ folly::SemiFuture<std::optional<ForwardOutput>> WorkerImpl::step_async_impl(
       set_hierarchy_layer_synchronizer(input.input_params);
     }
 
-    if (enable_schedule_overlap()) {
+    if (schedule_overlap_enabled()) {
       promise.setValue(schedule_overlap_.execute(*this, input));
       return;
     }

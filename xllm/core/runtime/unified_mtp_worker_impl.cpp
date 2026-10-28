@@ -165,7 +165,7 @@ std::optional<ForwardOutput> UnifiedMtpWorkerImpl::execute_task_pipeline(
     const LlmForwardInput& prepared) {
   // The queue owns execution and results. JSON needs the preceding accepted
   // tokens as well, but must not use the driver's legacy last-step slot.
-  if (!enable_schedule_overlap() || prepared.json_object_states.empty()) {
+  if (!schedule_overlap_enabled() || prepared.json_object_states.empty()) {
     task_json_output_ = ForwardOutput();
     task_json_sample_sequence_ids_.clear();
     return step(prepared);
@@ -262,7 +262,7 @@ bool UnifiedMtpWorkerImpl::supports_unified_configuration() const {
             << ", attention_topology_valid=" << attention_topology_valid
             << ", moe_topology_valid=" << moe_topology_valid
             << ", moe_tp=" << moe_tp_size
-            << ", overlap=" << enable_schedule_overlap()
+            << ", overlap=" << schedule_overlap_enabled()
             << ", model_impl=" << context_.get_model_impl()
             << ", draft_model_impl="
             << (draft_impl_ == nullptr
@@ -363,7 +363,7 @@ std::optional<ForwardOutput> UnifiedMtpWorkerImpl::run_unified_python_mtp_graph(
     const int32_t ret = compute_stream_->synchronize();
     CHECK_EQ(ret, 0) << "failed to synchronize unified MTP graph output";
   }
-  if (enable_schedule_overlap()) {
+  if (schedule_overlap_enabled()) {
     target_output.next_tokens_host = accepted_tokens_host;
   }
   stage_target_context_write(input,
@@ -377,7 +377,7 @@ std::optional<ForwardOutput> UnifiedMtpWorkerImpl::run_unified_python_mtp_graph(
                              /*allow_immutable_compact_view=*/true);
   target_output.ready_event = ready_event;
 
-  if (!enable_schedule_overlap()) {
+  if (!schedule_overlap_enabled()) {
     torch::Tensor accepted_tokens_cpu_result = snapshot_pending_target_tokens();
     target_output.ready_event.reset();
     target_output.sample_output.next_tokens =
@@ -386,7 +386,7 @@ std::optional<ForwardOutput> UnifiedMtpWorkerImpl::run_unified_python_mtp_graph(
         std::move(accepted_tokens_cpu_result);
   }
   target_output.sample_output.embeddings = torch::Tensor();
-  if (!enable_schedule_overlap() && !driver_ && !dp_driver_) {
+  if (!schedule_overlap_enabled() && !driver_ && !dp_driver_) {
     return std::nullopt;
   }
   target_output.spec_verify_layouts =
@@ -453,7 +453,7 @@ std::optional<ForwardOutput> UnifiedMtpWorkerImpl::step_unified(
     check_mtp_decode_states(states,
                             input.input_params.embedding.request_ids,
                             input.token_ids_host,
-                            enable_schedule_overlap());
+                            schedule_overlap_enabled());
   }
   update_decode_step_input(corrected, states);
   LlmForwardInput prepared;

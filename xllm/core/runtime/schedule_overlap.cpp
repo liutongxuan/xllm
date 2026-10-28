@@ -29,12 +29,11 @@ limitations under the License.
 
 namespace xllm {
 
-ScheduleOverlap::ScheduleOverlap(bool is_driver,
-                                 bool enable_eplb,
-                                 bool retire_unconsumed_inputs)
-    : state_(/*publish_to_host=*/is_driver || enable_eplb,
-             /*retain_tokenless_output=*/enable_eplb,
-             retire_unconsumed_inputs) {}
+ScheduleOverlap::ScheduleOverlap(Config config)
+    : config_(config),
+      state_(config.publish_to_host,
+             config.retain_tokenless_output,
+             config.retire_unconsumed_inputs) {}
 
 template <typename Input>
 std::optional<ForwardOutput> ScheduleOverlap::execute_impl(WorkerImpl& worker,

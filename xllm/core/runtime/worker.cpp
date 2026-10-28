@@ -363,6 +363,10 @@ folly::SemiFuture<std::optional<ForwardOutput>> Worker::step_async(
 
 const bool Worker::is_driver() { return impl_->is_driver(); }
 
+bool Worker::schedule_overlap_enabled() const {
+  return impl_->schedule_overlap_enabled();
+}
+
 bool Worker::task_pipeline_uses_worker_prepare() const {
   return impl_->uses_worker_task_pipeline();
 }
@@ -378,7 +382,7 @@ folly::SemiFuture<std::optional<ForwardOutput>> Worker::step_async(
     CHECK(task_pipeline_ != nullptr);
     const TaskSubmission submission = task_pipeline_->submit(inputs);
     CHECK(submission.status.ok()) << submission.status.message();
-    if (impl_->enable_schedule_overlap()) {
+    if (schedule_overlap_enabled()) {
       // PrepareAck releases all caller views. GetLast consumes the FIFO later.
       return folly::makeSemiFuture(std::optional<ForwardOutput>{});
     }
@@ -472,7 +476,7 @@ const torch::Device& Worker::device() const { return impl_->device(); }
 folly::SemiFuture<std::optional<ForwardOutput>>
 Worker::get_last_step_result_async() {
   if (enable_task_pipeline_) {
-    CHECK(impl_->enable_schedule_overlap())
+    CHECK(schedule_overlap_enabled())
         << "Task results without scheduler overlap are returned by step_async.";
     CHECK(task_pipeline_ != nullptr);
     auto result = task_pipeline_->take_result_async();

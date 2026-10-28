@@ -357,9 +357,7 @@ class WorkerImpl {
     return model_->share_weights_from(*source.model_);
   }
 
-  bool enable_schedule_overlap() const {
-    return options_.enable_schedule_overlap_;
-  }
+  bool schedule_overlap_enabled() const { return schedule_overlap_.enabled(); }
 
   virtual ForwardOutput get_last_step_result();
 

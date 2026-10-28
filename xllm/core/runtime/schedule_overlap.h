@@ -32,9 +32,16 @@ class VlmForwardInput;
 // worker supplies model execution capabilities.
 class ScheduleOverlap final {
  public:
-  ScheduleOverlap(bool is_driver,
-                  bool enable_eplb,
-                  bool retire_unconsumed_inputs);
+  struct Config {
+    bool enabled = false;
+    bool publish_to_host = false;
+    bool retain_tokenless_output = false;
+    bool retire_unconsumed_inputs = false;
+  };
+
+  explicit ScheduleOverlap(Config config);
+
+  bool enabled() const { return config_.enabled; }
 
   // Runs the complete overlap protocol using the worker's current execution
   // resources and model-specific hooks.
@@ -66,6 +73,7 @@ class ScheduleOverlap final {
                      const std::vector<std::string>& request_ids,
                      const std::vector<std::string>& sample_sequence_ids);
 
+  Config config_;
   ScheduleOverlapState state_;
 };
 

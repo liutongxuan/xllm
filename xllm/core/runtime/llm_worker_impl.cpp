@@ -179,7 +179,7 @@ std::optional<ForwardOutput> LLMWorkerImpl::execute_no_sync_on_stream(
   c10::StreamGuard stream_guard = compute_stream.set_stream_guard();
   if (::xllm::LoadConfig::get_instance().enable_manual_loader()) {
 #if defined(USE_NPU)
-    if (!enable_schedule_overlap() && options_.backend() == "llm") {
+    if (!schedule_overlap_enabled() && options_.backend() == "llm") {
       aclrtStream current_acl_stream =
           c10_npu::getCurrentNPUStream(device_.index()).stream();
       atb::Context* atb_context =
@@ -204,7 +204,7 @@ std::optional<ForwardOutput> LLMWorkerImpl::execute_no_sync_on_stream(
 std::optional<ForwardOutput> LLMWorkerImpl::step(const LlmForwardInput& input) {
 #if defined(USE_NPU)
   if (::xllm::LoadConfig::get_instance().enable_manual_loader()) {
-    if (!enable_schedule_overlap() && options_.backend() == "llm") {
+    if (!schedule_overlap_enabled() && options_.backend() == "llm") {
       aclrtStream current_stream =
           c10_npu::getCurrentNPUStream(device_.index()).stream();
       atb::Context* atb_context =
@@ -337,7 +337,7 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_internal(
     output.prepared_token = eplb_executor_->consume_ready_prepare_token();
   }
 
-  if (!enable_schedule_overlap() && !driver_ && !dp_driver_ &&
+  if (!schedule_overlap_enabled() && !driver_ && !dp_driver_ &&
       !options_.enable_speculative_decode()) {
     MULTI_MODEL_STEP_UNLOCK();
     if (sync_policy == ForwardSyncPolicy::NO_SYNC) {
