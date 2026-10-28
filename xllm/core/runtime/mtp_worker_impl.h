@@ -87,7 +87,7 @@ class MTPWorkerImpl : public DraftModelSpecWorkerImpl<TargetInput> {
   using DraftModelSpecWorkerImpl<TargetInput>::prepare_stream_;
   using DraftModelSpecWorkerImpl<TargetInput>::threadpool_;
   using DraftModelSpecWorkerImpl<TargetInput>::build_draft_kv_cache_shape;
-  using DraftModelSpecWorkerImpl<TargetInput>::enable_schedule_overlap;
+  using DraftModelSpecWorkerImpl<TargetInput>::schedule_overlap_enabled;
   using DraftModelSpecWorkerImpl<
       TargetInput>::estimate_kv_cache_capacity_with_draft;
   using DraftModelSpecWorkerImpl<TargetInput>::get_optimization_config;

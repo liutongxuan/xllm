@@ -2039,7 +2039,9 @@ bool WorkerImpl::wakeup_from_remote_weights(const WakeupOptions& options) {
                           "Invalid fixed task pipeline capacity.");
   }
   LlmTaskCapacity capacity;
-  capacity.slot_count = options.enable_schedule_overlap() ? 2U : 1U;
+  // Capacity follows the worker's resolved overlap state. The remaining
+  // options still describe the requested task-pipeline model shape.
+  capacity.slot_count = schedule_overlap_enabled() ? 2U : 1U;
   capacity.model = {static_cast<uint32_t>(options.max_tokens_per_batch()),
                     static_cast<uint32_t>(options.max_seqs_per_batch()),
                     static_cast<uint32_t>((positions + logical_block_size - 1) /
