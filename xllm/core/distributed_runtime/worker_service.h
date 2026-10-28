@@ -206,6 +206,8 @@ class WorkerService : public proto::DistributeWorker {
   void poll_dit_shm(
       std::unique_ptr<ForwardSharedMemoryManager> output_shm_manager);
 
+  bool schedule_overlap_enabled() const;
+
   DISALLOW_COPY_AND_ASSIGN(WorkerService);
 
  private:
