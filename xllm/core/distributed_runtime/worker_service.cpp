@@ -476,10 +476,9 @@ void WorkerService::collect_llm_output(const ForwardOutput& output,
                   /*non_blocking=*/true);
     }
   };
-  const bool use_default_stream = !worker_->schedule_overlap_enabled();
   if (cpu_ready_result) {
     copy_output_to_host();
-  } else if (use_default_stream) {
+  } else if (!worker_->schedule_overlap_enabled()) {
     copy_output_to_host();
     device_.synchronize_default_stream();
   } else {
@@ -492,7 +491,7 @@ void WorkerService::collect_llm_output(const ForwardOutput& output,
     stream_->synchronize();
   }
 #if defined(USE_NPU)
-  if (!use_default_stream) {
+  if (!cpu_ready_result && worker_->schedule_overlap_enabled()) {
     DeviceMonitor::get_instance().update_active_activation_memory(
         device_.index());
   }
