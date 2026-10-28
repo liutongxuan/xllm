@@ -625,7 +625,8 @@ void WorkerService::GetLastLLMStepResult(
       controller->SetFailed("Worker is not initialized");
       return;
     }
-    if (options_.backend() != "llm" || !worker_->schedule_overlap_enabled()) {
+    if (options_.backend() != "llm" || worker_ == nullptr ||
+        !worker_->schedule_overlap_enabled()) {
       controller->SetFailed(
           "LLM last-step results require the matching overlap backend");
       return;
@@ -833,7 +834,8 @@ void WorkerService::GetLastVLMStepResult(
       controller->SetFailed("Worker is not initialized");
       return;
     }
-    if (options_.backend() != "vlm" || !worker_->schedule_overlap_enabled()) {
+    if (options_.backend() != "vlm" || worker_ == nullptr ||
+        !worker_->schedule_overlap_enabled()) {
       controller->SetFailed(
           "VLM last-step results require the matching overlap backend");
       return;
