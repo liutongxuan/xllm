@@ -577,11 +577,14 @@ void ContinuousSchedulerBase::step_with_schedule_overlap(
     const absl::Duration& timeout) {
   // get a new batch of requests
   BatchGroup batch = schedule_request(timeout);
-  bool cur_batch_all_empty =
+  const bool cur_batch_all_empty =
       std::all_of(batch.begin(), batch.end(), [](const Batch& one_batch) {
         return one_batch.empty();
       });
-  if (cur_batch_all_empty && !pending_step_.has_value()) {
+  if (cur_batch_all_empty) {
+    // Drain the previous step without submitting work for an empty batch.
+    complete_pending_step();
+    pending_step_.reset();
     return;
   }
 
@@ -600,39 +603,45 @@ void ContinuousSchedulerBase::step_with_schedule_overlap(
       }
     }
   }
-  const bool consumed_before_step =
-      pending_step_.has_value() && needs_prefill_state;
-  if (consumed_before_step) {
-    result_callback_(pending_step_->batches);
+  if (pending_step_.has_value() && needs_prefill_state) {
+    pending_step_->collect_outputs(result_callback_);
   }
-  if (!cur_batch_all_empty) {
-    step_callback_(batch);
-  }
+  step_callback_(batch);
 
   // producer-consumer mode, make sure only one step is scheduled in advance
-  if (pending_step_.has_value()) {
-    complete_pending_step(consumed_before_step);
-  }
-  if (cur_batch_all_empty) {
-    // An empty current batch drains the previous step without submitting work.
-    pending_step_.reset();
-    return;
-  }
+  complete_pending_step();
 
   if (!pending_step_.has_value()) {
     pending_step_.emplace();
   }
-  // Reuse the retired request vector's capacity across steady-state steps.
-  pending_step_->batches = std::move(batch);
-  pending_step_->requests = running_requests_;
+  pending_step_->reset(std::move(batch), running_requests_);
 }
 
-void ContinuousSchedulerBase::complete_pending_step(bool outputs_collected) {
-  CHECK(pending_step_.has_value());
-  if (!outputs_collected) {
-    result_callback_(pending_step_->batches);
+void ContinuousSchedulerBase::PendingStep::reset(
+    BatchGroup batches,
+    const std::vector<std::shared_ptr<Request>>& requests) {
+  // Destroy the retired views before releasing their request owners.
+  batches_ = std::move(batches);
+  // The scheduler retains its running set; reuse storage for our owner copy.
+  requests_.assign(requests.begin(), requests.end());
+  outputs_collected_ = false;
+}
+
+void ContinuousSchedulerBase::PendingStep::collect_outputs(
+    const ResultCallback& result_callback) {
+  if (outputs_collected_) {
+    return;
   }
-  process_batch_output(pending_step_->requests);
+  result_callback(batches_);
+  outputs_collected_ = true;
+}
+
+void ContinuousSchedulerBase::complete_pending_step() {
+  if (!pending_step_.has_value()) {
+    return;
+  }
+  pending_step_->collect_outputs(result_callback_);
+  process_batch_output(pending_step_->requests());
 }
 
 void ContinuousSchedulerBase::generate() {

@@ -260,10 +260,22 @@ class ContinuousSchedulerBase : public Scheduler {
   XServiceClient::HeartbeatCallbackRegistration
       heartbeat_callback_registration_ = 0;
 
-  struct PendingStep {
+  class PendingStep final {
+   public:
+    void reset(BatchGroup batches,
+               const std::vector<std::shared_ptr<Request>>& requests);
+
+    void collect_outputs(const ResultCallback& result_callback);
+
+    const std::vector<std::shared_ptr<Request>>& requests() const {
+      return requests_;
+    }
+
+   private:
     // Keep requests alive until their non-owning Batch views are destroyed.
-    std::vector<std::shared_ptr<Request>> requests;
-    BatchGroup batches;
+    std::vector<std::shared_ptr<Request>> requests_;
+    BatchGroup batches_;
+    bool outputs_collected_ = false;
   };
 
   std::optional<PendingStep> pending_step_;
@@ -286,7 +298,7 @@ class ContinuousSchedulerBase : public Scheduler {
 
   void step_with_schedule_overlap(const absl::Duration& timeout);
 
-  void complete_pending_step(bool outputs_collected);
+  void complete_pending_step();
 
   void refresh_sequences_from_requests(
       const std::vector<std::shared_ptr<Request>>& requests,
