@@ -106,11 +106,13 @@ class HeapQueue final : public RequestPriorityQueue {
   using QueueType = std::priority_queue<std::shared_ptr<Request>,
                                         std::vector<std::shared_ptr<Request>>,
                                         Comparator>;
+  Comparator comparator_;
   QueueType queue_;
 
  public:
   explicit HeapQueue(Comparator lower_priority_comparator)
-      : queue_(lower_priority_comparator) {}
+      : comparator_(std::move(lower_priority_comparator)),
+        queue_(comparator_) {}
 
   void push(std::shared_ptr<Request> req) override { queue_.push(req); }
   void push(std::shared_ptr<Request> req, bool if_back) override {
@@ -119,7 +121,7 @@ class HeapQueue final : public RequestPriorityQueue {
     queue_.push(req);
   }
   bool erase_request(const Request* request) override {
-    QueueType retained(queue_.value_comp());
+    QueueType retained(comparator_);
     bool erased = false;
     while (!queue_.empty()) {
       const std::shared_ptr<Request> current = queue_.top();
