@@ -618,6 +618,7 @@ void VLMMaster::run() {
     while (!stoped_.load(std::memory_order_relaxed)) {
       scheduler_->step(timeout);
     }
+    scheduler_->flush();
     running_.store(false, std::memory_order_relaxed);
   });
 }

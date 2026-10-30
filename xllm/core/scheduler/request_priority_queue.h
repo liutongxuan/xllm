@@ -83,6 +83,7 @@ class RequestPriorityQueue {
   };
   virtual void push(std::shared_ptr<Request> req) = 0;
   virtual void push(std::shared_ptr<Request> req, bool if_back) = 0;
+  virtual bool erase_request(const Request* request) = 0;
   virtual void pop_top() = 0;
   virtual void pop_back() = 0;
   virtual std::shared_ptr<Request> top() const = 0;
@@ -116,6 +117,21 @@ class HeapQueue final : public RequestPriorityQueue {
     // Heap queue has no front/back insertion semantics.
     UNUSED_PARAMETER(if_back);
     queue_.push(req);
+  }
+  bool erase_request(const Request* request) override {
+    QueueType retained(queue_.value_comp());
+    bool erased = false;
+    while (!queue_.empty()) {
+      const std::shared_ptr<Request> current = queue_.top();
+      queue_.pop();
+      if (current.get() == request) {
+        erased = true;
+      } else {
+        retained.push(current);
+      }
+    }
+    queue_.swap(retained);
+    return erased;
   }
   void pop_top() override { queue_.pop(); }
   void pop_back() override { NOT_IMPLEMENTED(); }
@@ -170,6 +186,18 @@ class SetQueue final : public RequestPriorityQueue {
     UNUSED_PARAMETER(if_back);
     NOT_IMPLEMENTED();
   }
+  bool erase_request(const Request* request) override {
+    bool erased = false;
+    for (auto it = queue_.begin(); it != queue_.end();) {
+      if (it->get() == request) {
+        it = queue_.erase(it);
+        erased = true;
+      } else {
+        ++it;
+      }
+    }
+    return erased;
+  }
   void pop_top() override { queue_.erase(queue_.begin()); }
   void pop_back() override { queue_.erase(std::prev(queue_.end())); }
   std::shared_ptr<Request> top() const override { return *queue_.begin(); }
@@ -221,6 +249,16 @@ class DequeQueue final : public RequestPriorityQueue {
     } else {
       queue_.push_front(req);
     }
+  }
+
+  bool erase_request(const Request* request) override {
+    const size_t original_size = queue_.size();
+    auto new_end = std::remove_if(
+        queue_.begin(), queue_.end(), [request](const auto& queued) {
+          return queued.get() == request;
+        });
+    queue_.erase(new_end, queue_.end());
+    return queue_.size() != original_size;
   }
 
   void pop_top() override { queue_.pop_front(); }

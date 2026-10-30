@@ -98,6 +98,8 @@ class ContinuousSchedulerBase : public Scheduler {
 
   void step(const absl::Duration& timeout) override;
 
+  void flush() override;
+
   void generate() override;
 
   // inc/dec pending requests
@@ -293,6 +295,9 @@ class ContinuousSchedulerBase : public Scheduler {
 
   void drain_decode_restore_waiting(
       std::vector<std::shared_ptr<Request>>& finished);
+
+  void remove_from_waiting_queues(
+      const std::vector<std::shared_ptr<Request>>& requests);
 
   BatchGroup schedule_request(const absl::Duration& timeout);
 

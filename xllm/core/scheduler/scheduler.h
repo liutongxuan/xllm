@@ -172,6 +172,11 @@ class Scheduler : public SchedulerBase {
 
   virtual uint32_t get_waiting_requests_num() const = 0;
 
+  // Collect and process submitted work without scheduling another step.
+  // Response delivery remains asynchronous; queued requests are not drained.
+  // Call on the scheduler thread; repeated calls with no new work are safe.
+  virtual void flush() {}
+
   // Shutdown must keep advancing callbacks that still own scheduler state.
   virtual bool has_pending_prefetch() const { return false; }
 

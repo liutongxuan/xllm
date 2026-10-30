@@ -4,6 +4,7 @@
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -296,6 +297,8 @@ class TestableContinuousScheduler final : public ContinuousScheduler<> {
     return SchedulerNotifierTestPeer::wait_until_armed(*notifier_);
   }
 
+  void request_stop_for_test() { notifier_->request_stop(); }
+
   void notify_after_next_prepare_batch(std::promise<void>& notification) {
     prepared_notification_ = &notification;
   }
@@ -331,6 +334,21 @@ class TestableContinuousScheduler final : public ContinuousScheduler<> {
     batch.front().add(sequence);
     pending_step_.emplace();
     pending_step_->reset(std::move(batch), {request});
+  }
+
+  void queue_in_all_policy_queues_for_test(
+      const std::shared_ptr<Request>& request) {
+    prefill_queue_->push(request);
+    chunk_queue_->push(request);
+    decode_queue_->push(request);
+    unified_queue_.push_back(request);
+    decode_restore_waiting_.push_back({request, absl::Now()});
+  }
+
+  size_t policy_waiting_entries_for_test() const {
+    return prefill_queue_->size() + chunk_queue_->size() +
+           decode_queue_->size() + unified_queue_.size() +
+           decode_restore_waiting_.size();
   }
 
   void schedule_batch_for_test(std::vector<std::shared_ptr<Request>> requests) {
@@ -813,6 +831,274 @@ TEST(ContinuousSchedulerTest, OverlapRetainsRequestsUntilPendingStepCompletes) {
   EXPECT_TRUE(alive_at_collection);
   EXPECT_TRUE(weak_request.expired());
   EXPECT_EQ(engine.calls, (std::vector<std::string>{"step", "consume"}));
+}
+
+TEST(ContinuousSchedulerTest,
+     OverlapDrainsPendingWithoutWaitingForRunnableWork) {
+  for (bool enable_task_pipeline : {false, true}) {
+    for (bool queued_work : {false, true}) {
+      SCOPED_TRACE(enable_task_pipeline);
+      SCOPED_TRACE(queued_work);
+      // Exhaust the TTFT budget so queued work remains pending without a batch.
+      SchedulerOptions options = create_scheduler_options(
+          64, 4, 0, 64, 1, "fcfs", true, false, /*max_global_ttft_ms=*/0);
+      options.enable_schedule_overlap(true)
+          .enable_task_pipeline(enable_task_pipeline)
+          .disable_log_stats(true);
+      PipelinePhaseEngine engine;
+      engine.set_storage_prefetch_enabled(false);
+      TestableContinuousScheduler scheduler(&engine, options);
+      auto pending = generate_request_with_prompt_tokens({1, 2}, 16, 256);
+      scheduler.seed_pending_batch(pending);
+      if (queued_work) {
+        auto queued = generate_request_with_prompt_tokens({3, 4}, 16, 256);
+        ASSERT_TRUE(scheduler.add_request(queued));
+      }
+
+      auto stepped = std::async(std::launch::async, [&scheduler] {
+        scheduler.step(absl::Seconds(5));
+      });
+      const std::future_status status =
+          stepped.wait_for(std::chrono::seconds(1));
+      EXPECT_EQ(status, std::future_status::ready);
+      // Also release a regressed busy loop with unschedulable queued work.
+      scheduler.request_stop_for_test();
+      stepped.get();
+
+      EXPECT_EQ(engine.calls, (std::vector<std::string>{"consume"}));
+      EXPECT_EQ(scheduler.get_waiting_requests_num(), queued_work ? 1u : 0u);
+      scheduler.flush();
+      EXPECT_EQ(engine.calls.size(), 1u);
+    }
+  }
+}
+
+TEST(ContinuousSchedulerTest, OverlapWaitsForRequestsOnlyWithoutPendingStep) {
+  for (bool enable_task_pipeline : {false, true}) {
+    SCOPED_TRACE(enable_task_pipeline);
+    SchedulerOptions options = create_scheduler_options(64, 4, 0, 64, 1);
+    options.enable_schedule_overlap(true)
+        .enable_task_pipeline(enable_task_pipeline)
+        .disable_log_stats(true);
+    PipelinePhaseEngine engine;
+    engine.set_storage_prefetch_enabled(false);
+    TestableContinuousScheduler scheduler(&engine, options);
+
+    auto stepped = std::async(
+        std::launch::async, [&scheduler] { scheduler.step(absl::Seconds(5)); });
+    EXPECT_TRUE(scheduler.wait_until_armed());
+    auto request = generate_request_with_prompt_tokens({1, 2}, 16, 256);
+    EXPECT_TRUE(scheduler.add_request(request));
+    const std::future_status status = stepped.wait_for(std::chrono::seconds(1));
+    EXPECT_EQ(status, std::future_status::ready);
+    scheduler.request_stop_for_test();
+    stepped.get();
+
+    EXPECT_EQ(engine.calls, (std::vector<std::string>{"step"}));
+    scheduler.flush();
+    EXPECT_EQ(engine.calls, (std::vector<std::string>{"step", "consume"}));
+  }
+}
+
+TEST(ContinuousSchedulerTest,
+     OverlapFlushProcessesOutputOnceWithoutSchedulingQueuedWork) {
+  for (bool enable_task_pipeline : {false, true}) {
+    SCOPED_TRACE(enable_task_pipeline);
+    SchedulerOptions options = create_scheduler_options(64, 4, 0, 64, 1);
+    options.enable_schedule_overlap(true)
+        .enable_task_pipeline(enable_task_pipeline)
+        .disable_log_stats(true);
+    PipelinePhaseEngine engine;
+    engine.set_storage_prefetch_enabled(false);
+    TestableContinuousScheduler scheduler(&engine, options);
+    // Exercise flush through the interface used by LLM and VLM masters.
+    Scheduler& scheduler_interface = scheduler;
+    scheduler_interface.flush();
+    EXPECT_TRUE(engine.calls.empty());
+
+    auto queued = generate_request_with_prompt_tokens({3, 4}, 16, 256);
+    ASSERT_TRUE(scheduler.add_request(queued));
+    auto pending = generate_request_with_prompt_tokens({1, 2}, 16, 256);
+    pending->state().stream = true;
+    std::atomic<int32_t> responses{0};
+    pending->state().output_func = [&](const RequestOutput&) {
+      responses.fetch_add(1, std::memory_order_relaxed);
+      return true;
+    };
+    scheduler.seed_pending_batch(pending);
+    engine.on_collect = [&](const BatchGroup& batches) {
+      EXPECT_EQ(batches.front()[0], pending->sequences().front().get());
+      make_request_decode_ready(pending);
+    };
+
+    scheduler_interface.flush();
+    scheduler.wait_for_responses();
+    EXPECT_EQ(responses.load(std::memory_order_relaxed), 1);
+    scheduler_interface.flush();
+    scheduler.wait_for_responses();
+    EXPECT_EQ(responses.load(std::memory_order_relaxed), 1);
+    EXPECT_EQ(engine.calls, (std::vector<std::string>{"consume"}));
+    EXPECT_EQ(scheduler.scheduler_queue_size(), 1u);
+
+    // A flushed scheduler can submit new work as a fresh first step.
+    scheduler.step(absl::ZeroDuration());
+    EXPECT_EQ(engine.calls, (std::vector<std::string>{"consume", "step"}));
+    engine.on_collect = {};
+    scheduler_interface.flush();
+    EXPECT_EQ(engine.calls,
+              (std::vector<std::string>{"consume", "step", "consume"}));
+  }
+}
+
+TEST(ContinuousSchedulerTest,
+     OverlapFlushRetiresCompletedRequestWithoutAnotherStep) {
+  for (bool enable_task_pipeline : {false, true}) {
+    SCOPED_TRACE(enable_task_pipeline);
+    SchedulerOptions options = create_scheduler_options(64, 4, 0, 64, 1);
+    options.enable_schedule_overlap(true)
+        .enable_task_pipeline(enable_task_pipeline)
+        .disable_log_stats(true);
+    PipelinePhaseEngine engine;
+    engine.set_storage_prefetch_enabled(false);
+    TestableContinuousScheduler scheduler(&engine, options);
+    const std::vector<size_t> initial_free_blocks =
+        engine.block_manager_pool()->num_free_blocks();
+    auto request = generate_request_with_prompt_tokens({1, 2}, 1, 256);
+    std::atomic<int32_t> responses{0};
+    request->state().output_func = [&](const RequestOutput&) {
+      responses.fetch_add(1, std::memory_order_relaxed);
+      return true;
+    };
+    engine.on_collect = [&](const BatchGroup& batches) {
+      EXPECT_EQ(batches.front()[0], request->sequences().front().get());
+      make_request_decode_ready(request);
+    };
+    ASSERT_TRUE(scheduler.add_request(request));
+    scheduler.step(absl::ZeroDuration());
+    EXPECT_NE(engine.block_manager_pool()->num_free_blocks(),
+              initial_free_blocks);
+    EXPECT_FALSE(request->finished());
+
+    scheduler.flush();
+    scheduler.wait_for_responses();
+    EXPECT_TRUE(request->finished());
+    EXPECT_TRUE(request->last_token_handled());
+    EXPECT_EQ(responses.load(std::memory_order_relaxed), 1);
+    EXPECT_EQ(engine.block_manager_pool()->num_free_blocks(),
+              initial_free_blocks);
+    scheduler.flush();
+    scheduler.wait_for_responses();
+    EXPECT_EQ(responses.load(std::memory_order_relaxed), 1);
+    EXPECT_EQ(engine.calls, (std::vector<std::string>{"step", "consume"}));
+  }
+}
+
+TEST(ContinuousSchedulerTest,
+     OverlapFlushRemovesCompletedPendingOwnerFromWaitingQueues) {
+  SchedulerOptions options =
+      create_scheduler_options(64, 4, 0, 64, 1, "priority");
+  options.enable_schedule_overlap(true).disable_log_stats(true);
+  PipelinePhaseEngine engine;
+  engine.set_storage_prefetch_enabled(false);
+  TestableContinuousScheduler scheduler(&engine, options);
+  auto request = generate_request_with_prompt_tokens({1, 2}, 1, 256);
+  std::atomic<int32_t> responses{0};
+  request->state().output_func = [&](const RequestOutput& output) {
+    EXPECT_TRUE(output.finished);
+    responses.fetch_add(1, std::memory_order_relaxed);
+    return true;
+  };
+  scheduler.seed_pending_batch(request);
+  scheduler.queue_in_all_policy_queues_for_test(request);
+  engine.on_collect = [&](const BatchGroup& batches) {
+    EXPECT_EQ(batches.front()[0], request->sequences().front().get());
+    make_request_decode_ready(request);
+  };
+
+  EXPECT_EQ(scheduler.policy_waiting_entries_for_test(), 5u);
+  scheduler.flush();
+  scheduler.wait_for_responses();
+  EXPECT_TRUE(request->finished());
+  EXPECT_EQ(responses.load(std::memory_order_relaxed), 1);
+  EXPECT_EQ(scheduler.policy_waiting_entries_for_test(), 0u);
+
+  scheduler.flush();
+  scheduler.wait_for_responses();
+  EXPECT_EQ(responses.load(std::memory_order_relaxed), 1);
+  EXPECT_EQ(scheduler.policy_waiting_entries_for_test(), 0u);
+  EXPECT_EQ(engine.calls, (std::vector<std::string>{"consume"}));
+}
+
+TEST(ContinuousSchedulerTest,
+     OverlapFlushAppliesQueuedCancellationAfterTheLastStep) {
+  SchedulerOptions options = create_scheduler_options(64, 4, 0, 64, 1);
+  options.enable_schedule_overlap(true).disable_log_stats(true);
+  PipelinePhaseEngine engine;
+  engine.set_storage_prefetch_enabled(false);
+  TestableContinuousScheduler scheduler(&engine, options);
+  const std::vector<size_t> initial_free_blocks =
+      engine.block_manager_pool()->num_free_blocks();
+  auto request = generate_request_with_prompt_tokens({1, 2}, 16, 256);
+  request->state().stream = true;
+  request->state().output_func = [](const RequestOutput&) { return false; };
+  engine.on_step = [&](BatchGroup& batches) {
+    EXPECT_EQ(batches.front()[0], request->sequences().front().get());
+    make_request_decode_ready(request);
+  };
+
+  ASSERT_TRUE(scheduler.add_request(request));
+  scheduler.step(absl::ZeroDuration());
+  EXPECT_EQ(engine.calls, (std::vector<std::string>{"step"}));
+  EXPECT_NE(engine.block_manager_pool()->num_free_blocks(),
+            initial_free_blocks);
+
+  scheduler.reject_stream(request);
+  EXPECT_FALSE(request->cancelled());
+
+  scheduler.flush();
+  scheduler.wait_for_responses();
+  EXPECT_TRUE(request->cancelled());
+  EXPECT_TRUE(scheduler.get_running_requests().empty());
+  EXPECT_EQ(engine.block_manager_pool()->num_free_blocks(),
+            initial_free_blocks);
+  EXPECT_EQ(engine.calls, (std::vector<std::string>{"step"}));
+}
+
+TEST(ContinuousSchedulerTest,
+     SynchronousFlushRetiresCompletedRequestWithoutAnotherStep) {
+  SchedulerOptions options = create_scheduler_options(64, 4, 0, 64, 1);
+  options.enable_schedule_overlap(false).disable_log_stats(true);
+  PipelinePhaseEngine engine;
+  engine.set_storage_prefetch_enabled(false);
+  TestableContinuousScheduler scheduler(&engine, options);
+  const std::vector<size_t> initial_free_blocks =
+      engine.block_manager_pool()->num_free_blocks();
+  auto request = generate_request_with_prompt_tokens({1, 2}, 1, 256);
+  std::atomic<int32_t> responses{0};
+  request->state().output_func = [&](const RequestOutput&) {
+    responses.fetch_add(1, std::memory_order_relaxed);
+    return true;
+  };
+  engine.on_step = [&](BatchGroup& batches) {
+    EXPECT_EQ(batches.front()[0], request->sequences().front().get());
+    make_request_decode_ready(request);
+  };
+  ASSERT_TRUE(scheduler.add_request(request));
+  scheduler.step(absl::ZeroDuration());
+  EXPECT_TRUE(request->finished());
+  EXPECT_NE(engine.block_manager_pool()->num_free_blocks(),
+            initial_free_blocks);
+  EXPECT_EQ(responses.load(std::memory_order_relaxed), 0);
+
+  scheduler.flush();
+  scheduler.wait_for_responses();
+  EXPECT_EQ(responses.load(std::memory_order_relaxed), 1);
+  EXPECT_EQ(engine.block_manager_pool()->num_free_blocks(),
+            initial_free_blocks);
+  scheduler.flush();
+  scheduler.wait_for_responses();
+  EXPECT_EQ(responses.load(std::memory_order_relaxed), 1);
+  EXPECT_EQ(engine.calls, (std::vector<std::string>{"step"}));
 }
 
 TEST(ContinuousSchedulerTest,

@@ -646,6 +646,7 @@ void LLMMaster::run() {
            scheduler_->has_pending_prefetch()) {
       scheduler_->step(timeout);
     }
+    scheduler_->flush();
     running_.store(false, std::memory_order_relaxed);
   });
 }

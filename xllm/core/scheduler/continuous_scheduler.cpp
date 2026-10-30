@@ -26,6 +26,7 @@ limitations under the License.
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <unordered_set>
 #include <vector>
 
 #include "core/distributed_runtime/distributed_worker_manager.h"
@@ -388,6 +389,35 @@ void ContinuousSchedulerBase::drain_decode_restore_waiting(
   }
 }
 
+void ContinuousSchedulerBase::remove_from_waiting_queues(
+    const std::vector<std::shared_ptr<Request>>& requests) {
+  for (const std::shared_ptr<Request>& request : requests) {
+    if (request == nullptr) {
+      continue;
+    }
+    prefill_queue_->erase_request(request.get());
+    chunk_queue_->erase_request(request.get());
+    decode_queue_->erase_request(request.get());
+
+    for (auto it = unified_queue_.begin(); it != unified_queue_.end();) {
+      if (it->get() == request.get()) {
+        it = unified_queue_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+
+    for (auto it = decode_restore_waiting_.begin();
+         it != decode_restore_waiting_.end();) {
+      if (it->request.get() == request.get()) {
+        it = decode_restore_waiting_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+}
+
 void ContinuousSchedulerBase::drain_prefetch_pipeline() {
   kv_cache_manager_->drain_prefetch_completions();
   drain_prefetch_admissions();
@@ -521,6 +551,11 @@ BatchGroup ContinuousSchedulerBase::schedule_request(
       return batch;
     }
 
+    // A nonblocking attempt must return even if queued work is not runnable.
+    if (timeout <= absl::ZeroDuration()) {
+      return batch;
+    }
+
     if (if_queue_not_empty()) {
       continue;
     }
@@ -575,16 +610,16 @@ void ContinuousSchedulerBase::step(const absl::Duration& timeout) {
 
 void ContinuousSchedulerBase::step_with_schedule_overlap(
     const absl::Duration& timeout) {
-  // get a new batch of requests
-  BatchGroup batch = schedule_request(timeout);
+  // Retire pending output before waiting for requests that may never arrive.
+  BatchGroup batch = schedule_request(
+      pending_step_.has_value() ? absl::ZeroDuration() : timeout);
   const bool cur_batch_all_empty =
       std::all_of(batch.begin(), batch.end(), [](const Batch& one_batch) {
         return one_batch.empty();
       });
   if (cur_batch_all_empty) {
     // Drain the previous step without submitting work for an empty batch.
-    complete_pending_step();
-    pending_step_.reset();
+    flush();
     return;
   }
 
@@ -642,6 +677,42 @@ void ContinuousSchedulerBase::complete_pending_step() {
   }
   pending_step_->collect_outputs(result_callback_);
   process_batch_output(pending_step_->requests());
+}
+
+void ContinuousSchedulerBase::flush() {
+  apply_cancel_requests();
+
+  std::vector<std::shared_ptr<Request>> pending_owners;
+  if (pending_step_.has_value()) {
+    complete_pending_step();
+    pending_owners = pending_step_->requests();
+    pending_step_.reset();
+  }
+
+  // A final result can finish a request without another scheduling round to
+  // release its KV cache and dispatch its terminal response. The pending step
+  // may have been requeued during its nonblocking scheduling attempt.
+  const size_t running_request_count = running_requests_.size();
+  std::unordered_set<Request*> candidates;
+  for (const std::shared_ptr<Request>& request : running_requests_) {
+    if (request != nullptr) {
+      candidates.insert(request.get());
+    }
+  }
+  for (const std::shared_ptr<Request>& request : pending_owners) {
+    if (request != nullptr && (request->finished() || request->cancelled()) &&
+        candidates.insert(request.get()).second) {
+      running_requests_.emplace_back(request);
+    }
+  }
+
+  auto state = make_state();
+  auto finished = policy_->collect_finished(state);
+  running_requests_.resize(running_request_count);
+  if (!finished.empty()) {
+    remove_from_waiting_queues(finished);
+    output_dispatcher_->process_completed_requests(finished);
+  }
 }
 
 void ContinuousSchedulerBase::generate() {
