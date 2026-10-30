@@ -677,9 +677,11 @@ void SchedulerPolicy::schedule_decode_restore(SchedulerState& state,
 // Decode scheduling
 // =============================================================================
 
-void SchedulerPolicy::schedule_decode_from_queue(RequestPriorityQueue* queue,
-                                                 SchedulerState& state,
-                                                 ScheduleBudget& budget) {
+void SchedulerPolicy::schedule_decode_from_queue(
+    RequestPriorityQueue* queue,
+    SchedulerState& state,
+    ScheduleBudget& budget,
+    std::vector<std::shared_ptr<Request>>& finished) {
   if (queue == nullptr || queue->empty()) {
     return;
   }
@@ -694,6 +696,10 @@ void SchedulerPolicy::schedule_decode_from_queue(RequestPriorityQueue* queue,
          budget.latency_budget > budget.estimate_latency &&
          budget.remaining_seq_budget > 0) {
     std::shared_ptr<Request> request = queue->top();
+    if (collect_terminal(request, state, finished)) {
+      queue->pop_top();
+      continue;
+    }
 
     const size_t num_sequences = request->sequences().size();
     candidate_sequences.clear();

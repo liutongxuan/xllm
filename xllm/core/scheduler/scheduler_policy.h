@@ -181,9 +181,11 @@ class SchedulerPolicy {
   bool has_pending_block_release(const SchedulerState& state) const;
 
   // ===== Decode scheduling =====
-  void schedule_decode_from_queue(RequestPriorityQueue* queue,
-                                  SchedulerState& state,
-                                  ScheduleBudget& budget);
+  void schedule_decode_from_queue(
+      RequestPriorityQueue* queue,
+      SchedulerState& state,
+      ScheduleBudget& budget,
+      std::vector<std::shared_ptr<Request>>& finished);
 
   // ===== Preemption and error handling =====
   void handle_unschedulable_head(
