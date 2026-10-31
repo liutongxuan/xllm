@@ -2527,8 +2527,8 @@ TEST(SchedulerPolicyTest,
           {7, 7},
           {8, 8},
           std::nullopt,
-          std::vector<int32_t>{static_cast<int32_t>(RequestPriority::HIGH),
-                               static_cast<int32_t>(RequestPriority::LOW)},
+          std::vector<int32_t>{static_cast<int32_t>(RequestPriority::LOW),
+                               static_cast<int32_t>(RequestPriority::HIGH)},
           /*max_context_len=*/64);
       const std::shared_ptr<Request>& cancelled = requests[0];
       const std::shared_ptr<Request>& live = requests[1];
@@ -2553,7 +2553,7 @@ TEST(SchedulerPolicyTest,
       SetQueue decode_queue(create_comparator("priority", /*reverse=*/true));
       decode_queue.push(live);
       decode_queue.push(cancelled);
-      ASSERT_EQ(decode_queue.top(), cancelled);
+      ASSERT_EQ(decode_queue.top(), live);
       cancelled->set_cancel();
       std::list<std::shared_ptr<Request>> unified_queue;
       std::deque<DecodeRestoreEntry> decode_restore_waiting;
@@ -2596,13 +2596,12 @@ TEST(SchedulerPolicyTest,
           .num_preempted_requests = 0,
       };
 
-      // Priority decode waiters are not scanned by collect_finished(). The
-      // cancelled head must be retired when the decode policy reaches it.
+      // The cancelled waiter is below the live higher-priority request. It
+      // must be retired before admission consumes the only sequence slot.
       std::vector<std::shared_ptr<Request>> finished =
           policy->collect_finished(state);
-      ASSERT_TRUE(finished.empty());
-      ASSERT_EQ(decode_queue.size(), 2u);
-      finished.reserve(1);
+      EXPECT_EQ(finished, (std::vector<std::shared_ptr<Request>>{cancelled}));
+      ASSERT_EQ(decode_queue.size(), 1u);
       policy->schedule(state, budget, finished);
 
       EXPECT_EQ(finished, (std::vector<std::shared_ptr<Request>>{cancelled}));

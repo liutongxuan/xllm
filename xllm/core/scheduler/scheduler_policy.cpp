@@ -244,23 +244,10 @@ std::vector<std::shared_ptr<Request>> SchedulerPolicy::collect_finished(
     collect_terminal(*it, state, finished_requests);
   }
 
-  // FCFS decode waiters can terminate before any budget admits them; rotate
-  // once, bounded by the current waiter count, and re-append live waiters to
-  // keep their order. Other strategies lack order-preserving back insertion.
-  if (batch_mode_.priority_strategy != "fcfs") {
-    return finished_requests;
-  }
-  bool has_terminal_waiter = false;
-  for (const auto& request : state.decode_queue) {
-    request->update_connection_status();
-    if (request->finished() || request->cancelled()) {
-      has_terminal_waiter = true;
-      break;
-    }
-  }
-  if (!has_terminal_waiter) {
-    return finished_requests;
-  }
+  // Decode waiters can terminate before any budget admits them. Rotate once,
+  // bounded by the current waiter count, and re-append live waiters so every
+  // queue implementation keeps its ordering while terminal waiters are
+  // retired independently of decode admission.
   const size_t num_decode_waiters = state.decode_queue.size();
   for (size_t i = 0; i < num_decode_waiters; ++i) {
     std::shared_ptr<Request> request = state.decode_queue.top();
@@ -269,7 +256,12 @@ std::vector<std::shared_ptr<Request>> SchedulerPolicy::collect_finished(
         collect_terminal(request, state, finished_requests)) {
       continue;
     }
-    state.decode_queue.push(std::move(request), /*if_back=*/true);
+    if (batch_mode_.priority_strategy == "fcfs" ||
+        batch_mode_.priority_strategy == "multi_slo_and_prio") {
+      state.decode_queue.push(std::move(request), /*if_back=*/true);
+    } else {
+      state.decode_queue.push(std::move(request));
+    }
   }
   return finished_requests;
 }
