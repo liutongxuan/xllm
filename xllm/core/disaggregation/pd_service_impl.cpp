@@ -23,10 +23,10 @@ limitations under the License.
 #include <vector>
 
 #include "common/types.h"
+#include "core/disaggregation/pd_kv_response.h"
 #include "core/disaggregation/pd_request_converter.h"
 #include "core/disaggregation/pd_response.h"
 #include "core/disaggregation/pd_scheduler.h"
-#include "core/distributed_runtime/disagg_pd_kv_response.h"
 #include "core/distributed_runtime/distributed_vmm_coordinator.h"
 #include "core/distributed_runtime/engine.h"
 #include "core/framework/block/block_manager_pool.h"
@@ -267,7 +267,7 @@ void PDServiceImpl::decode_recv_new_requests(
 
     resp->set_dp_rank(sequence->dp_rank());
     std::vector<int32_t> virtual_memory_block_ids;
-    append_disagg_kv_transfer_groups(
+    append_pd_kv_transfer_groups(
         sequence->kv_state(),
         has_linear_attention_layers(engine_->model_args()),
         resp,

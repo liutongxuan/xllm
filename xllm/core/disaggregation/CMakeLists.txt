@@ -9,12 +9,14 @@ cc_library(
     pd_service_impl.h
     pd_request_converter.h
     pd_response.h
+    pd_kv_response.h
   SRCS
     pd_scheduler.cpp
     pd_service.cpp
     pd_service_impl.cpp
     pd_request_converter.cpp
     pd_response.cpp
+    pd_kv_response.cpp
   DEPS
     :scheduler
     :distributed_runtime

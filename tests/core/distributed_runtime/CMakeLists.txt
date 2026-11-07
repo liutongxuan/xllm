@@ -181,11 +181,11 @@ cc_test(
 cc_test(
   NO_NPU_RUNTIME
   NAME
-    disagg_pd_kv_response_test
+    pd_kv_response_test
   SRCS
-    disagg_pd_kv_response_test.cpp
+    pd_kv_response_test.cpp
   DEPS
-    :distributed_runtime
+    :disaggregation
     GTest::gtest_main
 )
 
