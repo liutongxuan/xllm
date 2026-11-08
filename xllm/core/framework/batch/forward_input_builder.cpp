@@ -735,6 +735,9 @@ void ForwardInputBuilder::process_sequences_multithreaded() {
     state_.full_block_slot_rows.insert(state_.full_block_slot_rows.end(),
                                        state.full_block_slot_rows.begin(),
                                        state.full_block_slot_rows.end());
+    state_.full_block_lease_epochs.insert(state_.full_block_lease_epochs.end(),
+                                          state.full_block_lease_epochs.begin(),
+                                          state.full_block_lease_epochs.end());
     state_.request_ids.insert(state_.request_ids.end(),
                               state.request_ids.begin(),
                               state.request_ids.end());
@@ -1087,7 +1090,8 @@ void ForwardInputBuilder::setup_kv_cache_info(Sequence* sequence,
         }
         state.full_block_slot_rows.emplace_back(block.id());
         shared_pool->append_full_block_rows(block.id(),
-                                            &state.full_block_slot_rows);
+                                            &state.full_block_slot_rows,
+                                            &state.full_block_lease_epochs);
       }
     }
   }
@@ -1358,6 +1362,8 @@ Input ForwardInputBuilder::state_to_forward_input() {
         std::move(state_.linear_state_slot_rows);
     input_params.embedding.full_block_slot_rows =
         std::move(state_.full_block_slot_rows);
+    input_params.embedding.full_block_lease_epochs =
+        std::move(state_.full_block_lease_epochs);
     input_params.embedding.extra_token_ids = std::move(state_.extra_token_ids);
     if (!state_.mtp_shifted_token_ids.empty()) {
       // Write both the upstream "root" path (consumed by non-CP MTP code paths

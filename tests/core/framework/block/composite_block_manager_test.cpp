@@ -3303,11 +3303,10 @@ class SharedSlabKVCacheBlockTest : public SharedKVCacheBlockTest {
     manager.deallocate(second_full);
   }
 
-  BlockManager::Options slab_options(size_t num_slabs,
+  BlockManager::Options slab_options(size_t num_allocatable_slabs,
                                      bool enable_prefix_cache = false) {
     StaticKVCacheLayoutSpec spec;
     spec.num_slots = 64;
-    spec.num_slabs = num_slabs;
     spec.full_row_bytes = 16;
     spec.conv_row_bytes = 8;
     spec.ssm_row_bytes = 32;
@@ -3316,6 +3315,8 @@ class SharedSlabKVCacheBlockTest : public SharedKVCacheBlockTest {
     spec.ssm_dtype = torch::kFloat32;
     spec.full_layer_ids = {0, 3};
     spec.linear_layer_ids = {1, 2};
+    const StaticKVCacheLayout layout(spec);
+    spec.num_slabs = layout.num_reserved_slabs() + num_allocatable_slabs;
     BlockManager::Options options =
         shared_options(/*num_slots=*/64, enable_prefix_cache);
     options.shared_layout(
@@ -3325,7 +3326,8 @@ class SharedSlabKVCacheBlockTest : public SharedKVCacheBlockTest {
 };
 
 TEST_F(SharedSlabKVCacheBlockTest, ReportsSharedPayloadBytesAndTypedCapacity) {
-  const BlockManager::Options options = slab_options(/*num_slabs=*/9);
+  const BlockManager::Options options =
+      slab_options(/*num_allocatable_slabs=*/8);
   CompositeBlockManager manager(build_composite_leaves(options), options);
   EXPECT_EQ(manager.num_total_blocks(), 512u);
   EXPECT_EQ(manager.admission_capacity(), 512u);
@@ -3349,7 +3351,8 @@ TEST_F(SharedSlabKVCacheBlockTest, ReportsSharedPayloadBytesAndTypedCapacity) {
 
 TEST_F(SharedSlabKVCacheBlockTest,
        StateShortageRollsBackStagedFullAllocations) {
-  const BlockManager::Options options = slab_options(/*num_slabs=*/4);
+  const BlockManager::Options options =
+      slab_options(/*num_allocatable_slabs=*/3);
   CompositeBlockManager manager(build_composite_leaves(options), options);
   Sequence sequence = MakeTestSequence(/*index=*/0, {1, 2, 3, 4});
   // Two Full blocks fit, but the coupled Conv/SSM state needs three slabs.
@@ -3364,7 +3367,8 @@ TEST_F(SharedSlabKVCacheBlockTest,
 }
 
 TEST_F(SharedSlabKVCacheBlockTest, FailedGrowthPreservesExistingStateMappings) {
-  const BlockManager::Options options = slab_options(/*num_slabs=*/5);
+  const BlockManager::Options options =
+      slab_options(/*num_allocatable_slabs=*/4);
   CompositeBlockManager manager(build_composite_leaves(options), options);
   Sequence sequence = MakeTestSequence(/*index=*/0, {1, 2, 3, 4});
   ASSERT_TRUE(manager.allocate_sequence(&sequence, /*num_tokens=*/2));
@@ -3391,7 +3395,7 @@ TEST_F(SharedSlabKVCacheBlockTest, FailedGrowthPreservesExistingStateMappings) {
 TEST_F(SharedSlabKVCacheBlockTest,
        FinalAliasKeepsSlabsPinnedAcrossCacheEviction) {
   const BlockManager::Options options =
-      slab_options(/*num_slabs=*/4, /*enable_prefix_cache=*/true);
+      slab_options(/*num_allocatable_slabs=*/3, /*enable_prefix_cache=*/true);
   CompositeBlockManager manager(build_composite_leaves(options), options);
   BlockManager* linear = manager.leaf_of(BlockType::LINEAR);
   std::vector<Block> checkpoint = manager.allocate_blocks(BlockType::LINEAR, 1);
@@ -3420,8 +3424,8 @@ TEST_F(SharedSlabKVCacheBlockTest,
   const std::array<std::pair<size_t, size_t>, 2> cached_counts = {
       std::pair<size_t, size_t>{4, 3}, std::pair<size_t, size_t>{6, 2}};
   for (const auto& [full_count, linear_count] : cached_counts) {
-    const BlockManager::Options options =
-        slab_options(/*num_slabs=*/32, /*enable_prefix_cache=*/true);
+    const BlockManager::Options options = slab_options(
+        /*num_allocatable_slabs=*/31, /*enable_prefix_cache=*/true);
     CompositeBlockManager manager(build_composite_leaves(options), options);
     Sequence source =
         MakeTestSequence(/*index=*/0, std::vector<int32_t>(13, 7));
@@ -3466,7 +3470,7 @@ TEST_F(SharedSlabKVCacheBlockTest,
 TEST_F(SharedSlabKVCacheBlockTest,
        PrefixRestoreDeclinesAnImpossibleTransientStateFootprint) {
   const BlockManager::Options options =
-      slab_options(/*num_slabs=*/7, /*enable_prefix_cache=*/true);
+      slab_options(/*num_allocatable_slabs=*/6, /*enable_prefix_cache=*/true);
   CompositeBlockManager manager(build_composite_leaves(options), options);
   ASSERT_TRUE(options.shared_layout()->can_fit(/*full_blocks=*/3,
                                                /*linear_states=*/1));
@@ -3530,7 +3534,7 @@ TEST_F(SharedSlabKVCacheBlockTest,
 TEST_F(SharedSlabKVCacheBlockTest,
        FullPressureReclaimsInactiveCheckpointSlabs) {
   const BlockManager::Options options =
-      slab_options(/*num_slabs=*/4, /*enable_prefix_cache=*/true);
+      slab_options(/*num_allocatable_slabs=*/3, /*enable_prefix_cache=*/true);
   CompositeBlockManager manager(build_composite_leaves(options), options);
   BlockManager* linear = manager.leaf_of(BlockType::LINEAR);
   std::vector<Block> checkpoint = manager.allocate_blocks(BlockType::LINEAR, 1);
@@ -3553,7 +3557,7 @@ TEST_F(SharedSlabKVCacheBlockTest,
 TEST_F(SharedSlabKVCacheBlockTest,
        CheckpointPublicationRecordsExactFullBoundary) {
   const BlockManager::Options options =
-      slab_options(/*num_slabs=*/32, /*enable_prefix_cache=*/true);
+      slab_options(/*num_allocatable_slabs=*/31, /*enable_prefix_cache=*/true);
   CompositeBlockManager manager(build_composite_leaves(options), options);
   Sequence sequence = MakeTestSequence(/*index=*/0, std::vector<int32_t>(9, 7));
   ASSERT_TRUE(manager.allocate_sequence(&sequence, /*num_tokens=*/4));
@@ -3582,7 +3586,7 @@ TEST_F(SharedSlabKVCacheBlockTest,
 TEST_F(SharedSlabKVCacheBlockTest,
        PressureReclaimsOrphanStateBeforeUsefulFullPrefix) {
   BlockManager::Options options =
-      slab_options(/*num_slabs=*/8, /*enable_prefix_cache=*/true);
+      slab_options(/*num_allocatable_slabs=*/7, /*enable_prefix_cache=*/true);
   options.enable_disagg_pd(true);
   CompositeBlockManager manager(build_composite_leaves(options), options);
   BlockManager& full_leaf = *manager.leaf_of(BlockType::KV);
@@ -3621,7 +3625,7 @@ TEST_F(SharedSlabKVCacheBlockTest,
 TEST_F(SharedSlabKVCacheBlockTest,
        PairedEvictionPreservesFullAncestorsUsedByAnotherCheckpoint) {
   const BlockManager::Options options =
-      slab_options(/*num_slabs=*/10, /*enable_prefix_cache=*/true);
+      slab_options(/*num_allocatable_slabs=*/9, /*enable_prefix_cache=*/true);
   CompositeBlockManager manager(build_composite_leaves(options), options);
   BlockManager& full_leaf = *manager.leaf_of(BlockType::KV);
   BlockManager& linear_leaf = *manager.leaf_of(BlockType::LINEAR);
@@ -3665,7 +3669,7 @@ TEST_F(SharedSlabKVCacheBlockTest,
 TEST_F(SharedSlabKVCacheBlockTest,
        MtpBranchesSharingOneCheckpointStayInOneDependencyUnit) {
   BlockManager::Options options =
-      slab_options(/*num_slabs=*/8, /*enable_prefix_cache=*/true);
+      slab_options(/*num_allocatable_slabs=*/7, /*enable_prefix_cache=*/true);
   options.hasher_type(BlockHasherType::MTP_TEXT);
   CompositeBlockManager manager(build_composite_leaves(options), options);
   Sequence first = MakeTestSequence(/*index=*/0, {7, 7, 7, 7, 7, 7, 7, 7, 7});
@@ -3688,7 +3692,7 @@ TEST_F(SharedSlabKVCacheBlockTest,
 TEST_F(SharedSlabKVCacheBlockTest,
        FullEvictionPreservesPinnedCheckpointWithAlternateMtpEndpoint) {
   BlockManager::Options options =
-      slab_options(/*num_slabs=*/9, /*enable_prefix_cache=*/true);
+      slab_options(/*num_allocatable_slabs=*/8, /*enable_prefix_cache=*/true);
   options.hasher_type(BlockHasherType::MTP_TEXT);
   CompositeBlockManager manager(build_composite_leaves(options), options);
   Sequence first = MakeTestSequence(/*index=*/0, {7, 7, 7, 7, 7, 7, 7, 7, 7});

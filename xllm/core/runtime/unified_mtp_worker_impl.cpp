@@ -362,6 +362,11 @@ UnifiedMtpWorkerImpl<TargetInput>::run_unified_python_mtp_graph(
     int32_t num_speculative_tokens) {
 #if defined(USE_NPU)
   c10::StreamGuard stream_guard = compute_stream_->set_stream_guard();
+  impl_->prepare_shared_kv_cache(
+      input.input_params.embedding.full_block_slot_rows,
+      input.input_params.embedding.full_block_lease_epochs,
+      input.input_params.embedding.linear_state_slot_rows,
+      *compute_stream_);
   PyExecutorImpl* target_executor = impl_->model_executor()->python_impl();
   PyExecutorImpl* draft_executor = draft_impl_->model_executor()->python_impl();
   CHECK(target_executor != nullptr && draft_executor != nullptr);
