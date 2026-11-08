@@ -44,6 +44,15 @@ from xllm.python.models.qwen3_dflash2 import DFlash2Qwen3Config
 from xllm.python.models.qwen3_dspark import Qwen3DSparkConfig
 
 
+def _require_mega_gdn_varlen_npu() -> None:
+    import torch_npu
+
+    # The varlen kernel registers only ascend910_93, whose SoC IDs are 250..255.
+    soc_version = torch_npu._C._npu_get_soc_version()
+    if not 250 <= soc_version <= 255:
+        pytest.skip(f"MegaGdnMtpDecodeVarlen requires Ascend A3 (ascend910_93), got SoC version {soc_version}")
+
+
 class _ResidualLayer(nn.Module):
     def __init__(self, delta: float) -> None:
         super().__init__()
@@ -598,6 +607,8 @@ def test_npu_packed_gdn_graph_replays_ragged_prefixes_after_rejection(packed_ker
     pytest.importorskip("torch_npu")
     if not torch.npu.is_available():
         pytest.skip("requires an Ascend NPU")
+    if packed_kernel:
+        _require_mega_gdn_varlen_npu()
     from xllm.python.kernels_npu.gated_delta_net import mega_gdn_decode
 
     torch.manual_seed(37)
@@ -721,6 +732,7 @@ def test_npu_varlen_rejection_preserves_state_across_reordered_batches(
     pytest.importorskip("torch_npu")
     if not torch.npu.is_available():
         pytest.skip("requires an Ascend NPU")
+    _require_mega_gdn_varlen_npu()
     from xllm.python.kernels_npu.gated_delta_net import mega_gdn_decode
 
     torch.manual_seed(149)
