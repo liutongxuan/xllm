@@ -16,11 +16,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from itertools import accumulate
+from math import gcd
 from typing import TYPE_CHECKING, cast
 
 import torch
 
 from xllm.python.attention.backend import (
+    CacheRowTable,
     ExecutionMetadataSource,
     LayerCache,
     SharedKVCacheLayout,
@@ -112,6 +114,7 @@ class Qwen3_5GdnMetadataBuilder:
         self._shared_layout: SharedKVCacheLayout | None = None
         self._layer_groups: dict[int, int] = {}
         self._group_slots: tuple[torch.Tensor, ...] = ()
+        self._row_table: CacheRowTable | None = None
 
     def bind_layer_caches(self, layer_caches: list[LayerCache]) -> None:
         state_caches: dict[int, GdnStateCache] = {}
@@ -152,6 +155,7 @@ class Qwen3_5GdnMetadataBuilder:
         self._shared_layout = shared_layout
         self._layer_groups = {}
         self._group_slots = ()
+        self._row_table = None
         if shared_layout is not None:
             # Slab storage allocates Conv and SSM rows independently for each
             # layer. Legacy fixed pages instead share one map per lane group.
@@ -165,6 +169,11 @@ class Qwen3_5GdnMetadataBuilder:
                 assert slots is not None
                 group_slots[group] = slots
             self._group_slots = tuple(group_slots)
+            self._row_table = CacheRowTable(
+                tuple(row for slots in group_slots for row in slots.unbind(0))
+                if shared_layout.num_slabs
+                else self._group_slots
+            )
 
     def allocate_persistent(self, input_batch: InputBatch, metadata: ExecutionMetadataSource) -> GdnMetadata:
         return self.build(input_batch, metadata)
@@ -227,7 +236,13 @@ class Qwen3_5GdnMetadataBuilder:
         updated = self.build(input_batch, metadata)
         if type(updated) is not type(persistent_metadata):
             raise ValueError("Qwen3.5 GDN graph metadata changed execution mode during replay")
+        packed_fields = (
+            "packed_state_indices",
+            "packed_read_state_indices",
+            "packed_write_state_indices",
+        )
         for field_name in (
+            *packed_fields,
             "read_state_indices",
             "write_state_indices",
             "conv_read_state_indices",
@@ -246,6 +261,17 @@ class Qwen3_5GdnMetadataBuilder:
             "conv_state_indices",
             "ssm_state_indices",
         ):
+            if field_name in (
+                "conv_state_indices",
+                "ssm_state_indices",
+                "conv_read_state_indices",
+                "conv_write_state_indices",
+                "ssm_read_state_indices",
+                "ssm_write_state_indices",
+            ) and any(getattr(persistent_metadata, name, None) is not None for name in packed_fields):
+                # Compatibility role views alias the batched packed indices;
+                # copying the owner once refreshes every layer and role.
+                continue
             current = getattr(persistent_metadata, field_name, None)
             replacement = getattr(updated, field_name, None)
             if current is None or replacement is None:
@@ -323,23 +349,19 @@ class Qwen3_5GdnMetadataBuilder:
                 raise ValueError("Qwen3.5 MegaGdnDecode requires one SSM row per Conv slot")
             if self._shared_layout is None:
                 return GdnDecodeMetadata(self._state_caches, read_indices, write_indices)
-            conv_state_indices = tuple(
-                self._shared_layout.linear_state_indices(read_indices, role="conv", slots=slots)
-                for slots in self._group_slots
-            )
-            ssm_state_indices = tuple(
-                self._shared_layout.linear_state_indices(read_indices, role="ssm", slots=slots)
-                for slots in self._group_slots
-            )
+            packed_read = self._shared_state_indices(read_indices)
+            packed_write = self._shared_state_indices(write_indices)
             return GdnDecodeMetadata(
                 self._state_caches,
                 read_indices,
                 write_indices,
-                conv_state_indices,
-                conv_state_indices,
-                ssm_state_indices,
-                ssm_state_indices,
-                self._layer_groups,
+                tuple(packed_read[:, :, 0].unbind(0)),
+                tuple(packed_write[:, :, 0].unbind(0)),
+                tuple(packed_read[:, :, 1].unbind(0)),
+                tuple(packed_write[:, :, 1].unbind(0)),
+                layer_groups=self._layer_groups,
+                packed_read_state_indices=packed_read,
+                packed_write_state_indices=packed_write,
             )
         query_lengths_host = metadata.q_seq_lens_host
         if query_lengths_host is None:
@@ -405,20 +427,40 @@ class Qwen3_5GdnMetadataBuilder:
             shared_checkpoint_stride=self._checkpoint_stride if self._shared_layout is not None else None,
         )
 
+    def _shared_state_indices(self, indices: torch.Tensor) -> torch.Tensor:
+        """Resolve all layer/role rows once at the cache metadata boundary."""
+        assert self._shared_layout is not None and self._row_table is not None
+        layout = self._shared_layout
+        rows = self._row_table.rows().index_select(1, indices.clamp_min(0).to(torch.int64))
+        groups = len(self._group_slots)
+        if layout.num_slabs:
+            packed = rows.view(groups, 2, -1).transpose(1, 2).contiguous()
+        else:
+            if layout.conv_row_stride is None:
+                divisor = gcd(layout.slot_bytes, layout.conv_row_bytes)
+                offsets = rows.to(torch.int64) * (layout.slot_bytes // divisor)
+                denominator = layout.conv_row_bytes // divisor
+                conv = torch.div(offsets, denominator, rounding_mode="floor") + torch.remainder(
+                    offsets, denominator
+                ).ne(0)
+                conv = conv.to(indices.dtype)
+            else:
+                conv = rows * layout.conv_row_stride
+            packed = torch.stack((conv, rows * layout.ssm_row_stride), dim=-1)
+        # Zero is the shared warmup/padding slot, never a live request. Kernels
+        # skip its state access so padded lanes cannot race or touch scratch.
+        return torch.where(indices[None, :, None] > 0, packed, -1).to(indices.dtype)
+
     def _with_shared_verify_indices(self, metadata: GdnVerifyMetadata) -> GdnVerifyMetadata:
         if self._shared_layout is None:
             return metadata
+        packed = self._shared_state_indices(metadata.state_indices)
         return replace(
             metadata,
-            conv_state_indices=tuple(
-                self._shared_layout.linear_state_indices(metadata.state_indices, role="conv", slots=slots)
-                for slots in self._group_slots
-            ),
-            ssm_state_indices=tuple(
-                self._shared_layout.linear_state_indices(metadata.state_indices, role="ssm", slots=slots)
-                for slots in self._group_slots
-            ),
+            conv_state_indices=tuple(packed[:, :, 0].unbind(0)),
+            ssm_state_indices=tuple(packed[:, :, 1].unbind(0)),
             layer_groups=self._layer_groups,
+            packed_state_indices=packed,
         )
 
     def _build_verify(

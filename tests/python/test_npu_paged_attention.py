@@ -1319,6 +1319,54 @@ def test_slab_full_layers_refresh_independent_graph_block_tables() -> None:
         assert pointers[0] != pointers[1]
 
 
+def test_batched_slab_tables_and_write_slots_preserve_graph_entry_ownership() -> None:
+    from xllm.python.model_executor.forward_context import AclGraphExecutionState
+
+    backend = _ordinary_backend()
+    backend._shared_kv_layout = SharedKVCacheLayout(128, 8, 4, 8, 2, 32, 262144, num_slabs=4)
+    rows = torch.zeros(2, 32, dtype=torch.int32)
+    rows[:, 1:3] = torch.tensor([[16, 18], [48, 50]])
+    backend._kv_caches = [
+        LayerCache(torch.empty(1, 128, 1, 2), torch.empty(1, 128, 1, 2), full_block_rows=row) for row in rows.unbind(0)
+    ]
+    metadata = [_mla_metadata(), _mla_metadata()]
+    contexts = [
+        ForwardContext(
+            backend, torch.device("cpu"), view, backend._kv_caches, execution_state=AclGraphExecutionState({})
+        )
+        for view in metadata
+    ]
+    tables = []
+    mappings = []
+    for view, context in zip(metadata, contexts):
+        view.slot_mapping = torch.tensor([129, -1], dtype=torch.int32)
+        with forward_context(context):
+            backend._metadata = view
+            backend._block_table_i32 = torch.tensor([[1, 2, 0, -1]], dtype=torch.int32)
+            backend._prepare_shared_full_tables()
+            backend._active_full_layer = 0
+            tables.append(backend._shared_full_block_tables[0])
+            mappings.append(backend._full_slot_mapping(view))
+    pointers = tables[0].data_ptr(), mappings[0].data_ptr()
+    assert tables[0].data_ptr() != tables[1].data_ptr()
+    assert mappings[0].data_ptr() != mappings[1].data_ptr()
+    assert mappings[1].tolist() == [2049, -1]
+
+    rows[0, 1] = 72
+    metadata[0].slot_mapping.copy_(torch.tensor([130, -1], dtype=torch.int32))
+    with forward_context(contexts[0]):
+        backend._metadata = metadata[0]
+        backend._block_table_i32 = torch.tensor([[1, 2, 0, -1]], dtype=torch.int32)
+        backend._prepare_shared_full_tables()
+        backend._active_full_layer = 0
+        refreshed = backend._full_slot_mapping(metadata[0])
+    assert pointers == (tables[0].data_ptr(), refreshed.data_ptr())
+    assert tables[0].tolist() == [[72, 18, backend._shared_kv_layout.full_read_padding_row, -1]]
+    assert refreshed.tolist() == [9218, -1]
+    assert tables[1].tolist() == [[16, 18, backend._shared_kv_layout.full_read_padding_row, -1]]
+    assert mappings[1].tolist() == [2049, -1]
+
+
 def _sparse_attention_out_args(
     query: torch.Tensor, output: torch.Tensor, layout: str, *, rope: bool = False
 ) -> tuple[object, ...]:

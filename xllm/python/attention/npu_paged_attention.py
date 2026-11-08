@@ -32,6 +32,7 @@ from xllm.python import distributed, kernels
 from xllm.python.attention.backend import (
     AttentionBackend,
     AttentionMetadata,
+    CacheRowTable,
     LayerCache,
     MlaIndexContext,
     MlaPreprocessContext,
@@ -56,6 +57,7 @@ from xllm.python.model_executor.forward_context import (
     get_execution_buffer,
     get_execution_workspace,
     get_forward_context,
+    get_forward_context_or_none,
     in_acl_graph,
 )
 
@@ -283,6 +285,10 @@ class NpuPagedAttentionBackend(KdaLinearAttentionMixin, AttentionBackend):
         self._kda_checkpoint_offsets: dict[tuple[int, torch.device], torch.Tensor] = {}
         self._shared_kv_layout: SharedKVCacheLayout | None = None
         self._shared_full_block_tables: dict[int, torch.Tensor] = {}
+        self._shared_full_slot_mappings: dict[int, torch.Tensor] = {}
+        self._shared_full_slot_mapping_source: torch.Tensor | None = None
+        self._shared_full_row_table: CacheRowTable | None = None
+        self._shared_full_layer_ids: tuple[int, ...] = ()
         self._active_full_layer: int | None = None
 
         self._kv_caches: list[LayerCache] = []
@@ -405,6 +411,8 @@ class NpuPagedAttentionBackend(KdaLinearAttentionMixin, AttentionBackend):
 
         self._kv_caches = kv_caches
         self._shared_kv_layout = detect_shared_kv_cache_layout(kv_caches)
+        self._shared_full_row_table = None
+        self._shared_full_layer_ids = ()
         self._kpool_cache_triton_compatible = tuple(_is_compact_kpool_cache_compatible(cache) for cache in kv_caches)
         self._page_size = page_sizes.pop()
         # FIA workspace sizing follows the physical cache view passed to the
@@ -655,6 +663,8 @@ class NpuPagedAttentionBackend(KdaLinearAttentionMixin, AttentionBackend):
         self._graph_metadata_updated_in_place = False
         self._active_full_layer = None
         self._shared_full_block_tables.clear()
+        self._shared_full_slot_mappings.clear()
+        self._shared_full_slot_mapping_source = None
         prepared = getattr(metadata, "prepared_attention_state", None)
         if isinstance(prepared, _PreparedMlaAttention):
             block_graph = self._mla_block_draft and prepared.is_chunked_prefill and not prepared.is_prefill
@@ -2606,15 +2616,44 @@ class NpuPagedAttentionBackend(KdaLinearAttentionMixin, AttentionBackend):
 
     def _prepare_shared_full_tables(self) -> None:
         layout = self._shared_kv_layout
-        if layout is None or not layout.num_slabs or self._block_table_i32 is None:
+        if layout is None or not layout.num_slabs:
             return
-        for layer_id, cache in enumerate(self._kv_caches):
-            if cache.key is None:
-                continue
-            translated = layout.full_block_table(self._block_table_i32, cache.full_block_rows)
-            self._shared_full_block_tables[layer_id] = copy_into_execution_buffer(
-                ("SHARED_FULL_BLOCK_TABLE", layer_id, tuple(translated.shape)), translated
+        if self._shared_full_row_table is None:
+            full_caches = [(layer_id, cache) for layer_id, cache in enumerate(self._kv_caches) if cache.key is not None]
+            self._shared_full_layer_ids = tuple(layer_id for layer_id, _ in full_caches)
+            self._shared_full_row_table = CacheRowTable([cache.full_block_rows for _, cache in full_caches])
+        rows = self._shared_full_row_table.rows()
+        block_table = self._block_table_i32
+        context = get_forward_context_or_none()
+        if block_table is not None:
+            shape = (len(self._shared_full_layer_ids), *block_table.shape)
+            key = ("SHARED_FULL_BLOCK_TABLES", self._shared_full_layer_ids, shape)
+            tables = (
+                get_execution_buffer(key, lambda: block_table.new_empty(shape))
+                if context is not None
+                else block_table.new_empty(shape)
             )
+            layout.full_block_table(block_table, rows, out=tables)
+            self._shared_full_block_tables = dict(zip(self._shared_full_layer_ids, tables.unbind(0)))
+
+        metadata = self._metadata
+        slot_mapping = (
+            getattr(metadata, "local_slot_mapping", None)
+            if getattr(metadata, "has_kv_shard", False)
+            else getattr(metadata, "slot_mapping", None)
+        )
+        if slot_mapping is None:
+            return
+        shape = (len(self._shared_full_layer_ids), *slot_mapping.shape)
+        key = ("SHARED_FULL_SLOT_MAPPINGS", self._shared_full_layer_ids, shape)
+        mappings = (
+            get_execution_buffer(key, lambda: slot_mapping.new_empty(shape))
+            if context is not None
+            else slot_mapping.new_empty(shape)
+        )
+        layout.full_slot_mapping(slot_mapping, rows, out=mappings)
+        self._shared_full_slot_mappings = dict(zip(self._shared_full_layer_ids, mappings.unbind(0)))
+        self._shared_full_slot_mapping_source = slot_mapping
 
     def _full_slot_mapping(self, metadata: AttentionMetadata) -> torch.Tensor:
         slot_mapping = metadata.local_slot_mapping if metadata.has_kv_shard else metadata.slot_mapping
@@ -2623,6 +2662,10 @@ class NpuPagedAttentionBackend(KdaLinearAttentionMixin, AttentionBackend):
         layout = self._shared_kv_layout
         if layout is None:
             return slot_mapping
+        if slot_mapping is self._shared_full_slot_mapping_source:
+            prepared = self._shared_full_slot_mappings.get(self._active_full_layer)
+            if prepared is not None:
+                return prepared
         rows = (
             self._kv_caches[self._active_full_layer].full_block_rows
             if layout.num_slabs and self._active_full_layer is not None
