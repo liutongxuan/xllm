@@ -1406,6 +1406,18 @@ def test_npu_slab_gdn_verify_refreshes_each_layers_role_rows(monkeypatch: pytest
     assert pointers == tuple(
         tensor.data_ptr() for tensor in (*persistent.conv_state_indices, *persistent.ssm_state_indices)
     )
+    previous = packed.clone()
+    source.linear_verify_graph = LinearVerifyGraphInputs(
+        torch.tensor([1, 2, 0], dtype=torch.int32),
+        torch.ones(3, dtype=torch.int32),
+        3,
+        torch.arange(9),
+        torch.arange(9),
+    )
+    with pytest.raises(ValueError, match="packed state indices changed shape"):
+        builder.update_persistent(persistent, _input_batch(9, (3, 3, 3)), source)
+    assert packed.shape == (2, 4, 2) and packed.data_ptr() == packed_pointer
+    torch.testing.assert_close(packed, previous)
 
 
 def test_npu_slab_gdn_decode_keeps_independent_packed_read_and_write_owners(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1462,6 +1474,14 @@ def test_npu_slab_gdn_decode_keeps_independent_packed_read_and_write_owners(monk
     assert pointers == (read.data_ptr(), write.data_ptr())
     for packed, role in ((read, persistent.ssm_read_state_indices[1]), (write, persistent.conv_write_state_indices[0])):
         assert packed.untyped_storage().data_ptr() == role.untyped_storage().data_ptr()
+
+    source.linear_state_read_indices = torch.tensor([1, 2, 0, -1], dtype=torch.int32)
+    source.linear_state_write_indices = torch.tensor([2, 1, 0, -1], dtype=torch.int32)
+    with pytest.raises(RuntimeError, match="separation is only supported for non-speculative prefill"):
+        builder.update_persistent(persistent, batch, source)
+    torch.testing.assert_close(read, expected)
+    torch.testing.assert_close(write, expected)
+    assert pointers == (read.data_ptr(), write.data_ptr())
 
 
 @pytest.mark.parametrize("lengths", [(3, 3), (1, 3)], ids=["uniform", "ragged"])
