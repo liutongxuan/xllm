@@ -51,7 +51,7 @@ class StaticKVCacheBlockPool final {
   // stay sentinels in every group.
   void append_linear_state_slots(int32_t state_id,
                                  std::vector<int32_t>* slots) const;
-  // Full-layer order; KEY and VALUE use the same row through adjacent views.
+  // Full-layer order; KEY and VALUE views consume the same native page.
   void append_full_block_rows(
       int32_t block_id,
       std::vector<int32_t>* rows,
@@ -157,6 +157,7 @@ class StaticKVCacheBlockPool final {
   std::array<size_t, 3> object_capacities_{};
   size_t num_reserved_slabs_ = 0;
   size_t full_row_bytes_ = 0;
+  size_t full_pair_bytes_ = 0;
   size_t conv_row_bytes_ = 0;
   size_t ssm_row_bytes_ = 0;
   size_t checkpoint_stride_ = 0;

@@ -446,10 +446,13 @@ void WorkerImpl::configure_shared_kv_allocation(
     const StaticKVCacheLayout& layout = allocator->layout();
     static_full_block_slots_ = std::make_shared<LinearStateSlotTable>(
         layout.num_slots(), layout.full_layer_count(), device_.unwrap());
-    create_options
-        .linear_state_slot_table(std::make_shared<LinearStateSlotTable>(
-            layout.num_slots(), layout.num_linear_groups(), device_.unwrap()))
-        .full_block_slot_table(static_full_block_slots_)
+    if (layout.num_linear_groups() > 0) {
+      create_options.linear_state_slot_table(
+          std::make_shared<LinearStateSlotTable>(layout.num_slots(),
+                                                 layout.num_linear_groups(),
+                                                 device_.unwrap()));
+    }
+    create_options.full_block_slot_table(static_full_block_slots_)
         .static_layout(
             std::shared_ptr<const StaticKVCacheLayout>(allocator, &layout));
     static_kv_cache_allocator_ = allocator;

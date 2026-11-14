@@ -59,28 +59,26 @@ KVCacheManagerFactoryResult KVCacheManagerFactory::create(
       << "Shared KV cache manager requires shared storage capacity metadata.";
   options.enable_shared_kv_cache(enable_shared_kv_cache);
   if (enable_shared_kv_cache) {
-    const std::string& model_type = model_args.model_type();
-    CHECK(model_type == "qwen3_next" ||
-          is_qwen3_5_target_model_type(model_type))
-        << "Shared KV cache requires a supported Qwen hybrid model.";
-    CHECK(options.enable_linear_state() && !options.enable_vmm_kvcache() &&
-          !options.enable_host_offload() && !options.enable_disagg_pd() &&
-          !options.enable_kvcache_store() && options.manager_types().empty() &&
-          shared_vmm_layout == nullptr)
-        << "Shared KV cache requires local Full and Linear cache managers.";
+    CHECK(!options.enable_vmm_kvcache() && !options.enable_host_offload() &&
+          !options.enable_disagg_pd() && !options.enable_kvcache_store() &&
+          options.manager_types().empty() && shared_vmm_layout == nullptr)
+        << "Shared KV cache requires local device cache managers.";
     CHECK(!host_validation_options.has_value() ||
           host_validation_options->host_blocks_factor == 0.0)
         << "Shared KV cache does not support Host storage.";
-    CHECK_EQ(kv_cache_capacity.n_blocks(),
-             kv_cache_capacity.num_linear_state_blocks());
-    CHECK_EQ(kv_cache_capacity.linear_ssm_checkpoint_stride(),
-             options.num_speculative_tokens() + 1);
+    if (options.enable_linear_state()) {
+      CHECK_EQ(kv_cache_capacity.n_blocks(),
+               kv_cache_capacity.num_linear_state_blocks());
+      CHECK_EQ(kv_cache_capacity.linear_ssm_checkpoint_stride(),
+               options.num_speculative_tokens() + 1);
+    }
     auto create_options =
         get_kv_cache_create_options(model_args, shape, /*is_spec_draft=*/false);
     create_options.num_layers(model_args.n_layers())
         .dtype(dtype)
         .ssm_dtype(resolve_ssm_dtype(model_args.mamba_ssm_dtype(), dtype));
     auto layout = std::make_shared<StaticKVCacheLayout>(shape, create_options);
+    CHECK_EQ(options.enable_linear_state(), layout->linear_layer_count() > 0);
     CHECK_EQ(layout->slot_bytes(),
              static_cast<size_t>(kv_cache_capacity.shared_slot_bytes()));
     CHECK_EQ(layout->num_linear_groups(),

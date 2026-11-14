@@ -337,10 +337,13 @@ CompositeBlockManager::LeafMap build_composite_leaves(
   BlockManager::Options cache_options = options;
   if (options.enable_shared_kv_cache()) {
     CHECK(!options.enable_vmm_kvcache());
-    CHECK(options.enable_linear_state());
     CHECK(options.manager_types().empty());
-    CHECK_EQ(options.num_blocks(),
-             static_cast<uint32_t>(options.linear_state_num_slots()));
+    CHECK(options.enable_linear_state() ||
+          (options.shared_layout() && options.shared_layout()->is_full_only()));
+    if (options.enable_linear_state()) {
+      CHECK_EQ(options.num_blocks(),
+               static_cast<uint32_t>(options.linear_state_num_slots()));
+    }
     cache_options.shared_block_pool(
         options.shared_layout()
             ? std::make_shared<StaticKVCacheBlockPool>(options.num_blocks(),
@@ -491,8 +494,10 @@ CompositeBlockManager::CompositeBlockManager(
     CHECK(cache_tier == CacheTier::DEVICE);
     shared_block_pool_ = leaf_of(BlockType::KV)->options().shared_block_pool();
     CHECK(shared_block_pool_ != nullptr);
-    CHECK_EQ(shared_block_pool_,
-             leaf_of(BlockType::LINEAR)->options().shared_block_pool());
+    if (options.enable_linear_state()) {
+      CHECK_EQ(shared_block_pool_,
+               leaf_of(BlockType::LINEAR)->options().shared_block_pool());
+    }
   }
 }
 
@@ -1092,7 +1097,7 @@ const CompositeBlockManager::LeafEntry* CompositeBlockManager::capacity_leaf()
 
 bool CompositeBlockManager::reclaim_shared_cache() {
   CHECK(shared_block_pool_ != nullptr);
-  if (shared_block_pool_->uses_slabs()) {
+  if (shared_block_pool_->uses_slabs() && options_.enable_linear_state()) {
     return reclaim_shared_prefix();
   }
   for (auto& [type, entry] : leaves_) {

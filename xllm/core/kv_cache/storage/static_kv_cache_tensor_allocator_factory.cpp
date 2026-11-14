@@ -36,10 +36,8 @@ StaticKVCacheLayoutSpec make_layout_spec(const KVCacheShape& shape,
   CHECK(!options.enable_kv_cache_quant() &&
         !options.enable_indexer_cache_quant());
   CHECK(options.layer_cache_owned().empty());
-  CHECK(options.enable_linear_attention());
   CHECK_GT(options.num_layers(), 0);
-  CHECK(shape.has_key_cache_shape() && shape.has_value_cache_shape());
-  CHECK(shape.has_conv_cache_shape() && shape.has_ssm_cache_shape());
+  CHECK(shape.has_key_cache_shape());
   CHECK_GT(shape.key_cache_shape().front(), 0);
 
   StaticKVCacheLayoutSpec spec;
@@ -53,18 +51,13 @@ StaticKVCacheLayoutSpec make_layout_spec(const KVCacheShape& shape,
   const size_t dtype_bytes = torch::elementSize(spec.dtype);
   spec.full_row_bytes = VirtualKVCachePageLayout::tensor_block_bytes(
       shape.key_cache_shape(), dtype_bytes);
-  CHECK_EQ(spec.full_row_bytes,
-           VirtualKVCachePageLayout::tensor_block_bytes(
-               shape.value_cache_shape(), dtype_bytes))
-      << "Static shared storage requires equal KEY and VALUE row costs";
-  spec.conv_row_bytes = VirtualKVCachePageLayout::tensor_block_bytes(
-      shape.conv_cache_shape(), dtype_bytes);
-  spec.ssm_row_bytes = VirtualKVCachePageLayout::tensor_block_bytes(
-      shape.ssm_cache_shape(), torch::elementSize(spec.ssm_dtype));
-  CHECK_EQ(shape.key_cache_shape().front(), shape.value_cache_shape().front());
-  CHECK_EQ(shape.key_cache_shape().front(), shape.conv_cache_shape().front());
-  spec.checkpoint_stride =
-      static_cast<size_t>(shape.linear_ssm_checkpoint_stride());
+  spec.full_value_row_bytes = 0;
+  if (shape.has_value_cache_shape()) {
+    spec.full_value_row_bytes = VirtualKVCachePageLayout::tensor_block_bytes(
+        shape.value_cache_shape(), dtype_bytes);
+    CHECK_EQ(shape.key_cache_shape().front(),
+             shape.value_cache_shape().front());
+  }
   spec.full_layer_ids.reserve(static_cast<size_t>(options.num_layers()));
   spec.linear_layer_ids.reserve(static_cast<size_t>(options.num_layers()));
   for (int64_t layer_id = 0; layer_id < options.num_layers(); ++layer_id) {
@@ -74,6 +67,17 @@ StaticKVCacheLayoutSpec make_layout_spec(const KVCacheShape& shape,
             ? spec.linear_layer_ids
             : spec.full_layer_ids;
     layers.emplace_back(layer_id);
+  }
+  if (!spec.linear_layer_ids.empty()) {
+    CHECK(options.enable_linear_attention());
+    CHECK(shape.has_conv_cache_shape() && shape.has_ssm_cache_shape());
+    spec.conv_row_bytes = VirtualKVCachePageLayout::tensor_block_bytes(
+        shape.conv_cache_shape(), dtype_bytes);
+    spec.ssm_row_bytes = VirtualKVCachePageLayout::tensor_block_bytes(
+        shape.ssm_cache_shape(), torch::elementSize(spec.ssm_dtype));
+    CHECK_EQ(shape.key_cache_shape().front(), shape.conv_cache_shape().front());
+    spec.checkpoint_stride =
+        static_cast<size_t>(shape.linear_ssm_checkpoint_stride());
   }
   return spec;
 }

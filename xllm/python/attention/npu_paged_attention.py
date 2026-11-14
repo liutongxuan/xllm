@@ -540,11 +540,13 @@ class NpuPagedAttentionBackend(KdaLinearAttentionMixin, AttentionBackend):
         if self._is_mla:
             if block_table is None:
                 raise ValueError("prepared MLA requires a block table for every forward type")
+            if shared_full_table is not None:
+                block_table = shared_full_table
             query_tensor = metadata.q_cu_seq_lens
             if self._mla_block_draft and query_tensor is not None and query_tensor.numel() == batch_size + 1:
                 query_tensor = query_tensor[1:]
             kv_tensor = metadata.kv_seq_lens
-            slot_mapping = metadata.slot_mapping
+            slot_mapping = shared_full_slots if shared_full_slots is not None else metadata.slot_mapping
             for tensor in (query_tensor, kv_tensor, slot_mapping):
                 if (
                     tensor is None
@@ -654,6 +656,8 @@ class NpuPagedAttentionBackend(KdaLinearAttentionMixin, AttentionBackend):
         owned_metadata: bool,
         update_shared_full_tables: bool,
     ) -> None:
+        if graph_mode and self._is_mla and self._shared_kv_layout is not None:
+            raise ValueError("shared MLA cache currently supports eager execution only")
         # Device KV lengths can change between forwards while the prepared
         # Slot binding stays the same. Masks are shared only within a forward.
         self._block_attention_masks.clear()
@@ -677,6 +681,8 @@ class NpuPagedAttentionBackend(KdaLinearAttentionMixin, AttentionBackend):
             self._metadata = prepared
             self._use_expanded_decode = False
             self._block_table_i32 = self._translate_full_block_table(prepared.block_table)
+            if self._shared_kv_layout is not None and self._shared_kv_layout.bank_bytes:
+                self._direct_full_slot_mapping = prepared.slot_mapping
             self._actual_seq_lens = None
             self._actual_seq_q = []
             self._actual_seq_kv = []
@@ -1247,14 +1253,14 @@ class NpuPagedAttentionBackend(KdaLinearAttentionMixin, AttentionBackend):
                         raise RuntimeError("MLA cache inputs are required")
                     if c8_enabled:
                         self._write_mla_packed_c8_cache(
-                            metadata.slot_mapping,
+                            self._full_slot_mapping(metadata),
                             k_latent_3d,
                             k_pe_3d,
                             nope_cache,
                         )
                     else:
                         write_mla_paged_cache(
-                            metadata.slot_mapping,
+                            self._full_slot_mapping(metadata),
                             k_latent_3d,
                             k_pe_3d,
                             nope_cache,
@@ -1303,12 +1309,14 @@ class NpuPagedAttentionBackend(KdaLinearAttentionMixin, AttentionBackend):
                 if k_latent_3d is None:
                     raise RuntimeError("MLA cache inputs are required")
                 write_mla_paged_cache(
-                    metadata.slot_mapping,
+                    self._full_slot_mapping(metadata),
                     k_latent_3d,
                     k_pe_3d,
                     nope_cache,
                     rope_cache,
                 )
+            if topk is None and self._shared_kv_layout is not None and self._shared_kv_layout.dense_full:
+                return self._mla_dense_fia_v2(q_latent, None, nope_cache, None, self._block_table_i32, layer_id)
             return self._mla_sparse(
                 q_latent,
                 None,
@@ -1436,7 +1444,7 @@ class NpuPagedAttentionBackend(KdaLinearAttentionMixin, AttentionBackend):
         return MlaPreprocessContext(
             kv_cache=kv_cache,
             rope_cache=rope_cache,
-            slot_mapping=metadata.slot_mapping,
+            slot_mapping=self._full_slot_mapping(metadata),
         )
 
     def mla_index_context(self, layer: Attention) -> MlaIndexContext:
@@ -1888,9 +1896,9 @@ class NpuPagedAttentionBackend(KdaLinearAttentionMixin, AttentionBackend):
     def _mla_dense_fia_v2_out(
         self,
         q_latent: torch.Tensor,
-        q_pe: torch.Tensor,
+        q_pe: torch.Tensor | None,
         nope_cache: torch.Tensor,
-        rope_cache: torch.Tensor,
+        rope_cache: torch.Tensor | None,
         block_table: torch.Tensor,
         workspace: torch.Tensor,
         output: torch.Tensor,
@@ -1902,7 +1910,7 @@ class NpuPagedAttentionBackend(KdaLinearAttentionMixin, AttentionBackend):
             raise RuntimeError("dense MLA requires KV sequence lengths")
         block_size = nope_cache.size(1)
         nope_flat = nope_cache.view(nope_cache.size(0), block_size, -1)
-        rope_flat = rope_cache.view(rope_cache.size(0), block_size, -1)
+        rope_flat = None if rope_cache is None else rope_cache.view(rope_cache.size(0), block_size, -1)
         is_prefill = bool(
             self._metadata is not None and (self._metadata.is_prefill or self._metadata.is_chunked_prefill)
         )
@@ -1931,9 +1939,9 @@ class NpuPagedAttentionBackend(KdaLinearAttentionMixin, AttentionBackend):
     def _mla_dense_fia_v2(
         self,
         q_latent: torch.Tensor,
-        q_pe: torch.Tensor,
+        q_pe: torch.Tensor | None,
         nope_cache: torch.Tensor,
-        rope_cache: torch.Tensor,
+        rope_cache: torch.Tensor | None,
         block_table: torch.Tensor,
         layer_id: int,
     ) -> torch.Tensor:
@@ -1947,7 +1955,7 @@ class NpuPagedAttentionBackend(KdaLinearAttentionMixin, AttentionBackend):
 
         block_size = nope_cache.size(1)
         nope_flat = nope_cache.view(nope_cache.size(0), block_size, -1)
-        rope_flat = rope_cache.view(rope_cache.size(0), block_size, -1)
+        rope_flat = None if rope_cache is None else rope_cache.view(rope_cache.size(0), block_size, -1)
         is_prefill = bool(
             self._metadata is not None and (self._metadata.is_prefill or self._metadata.is_chunked_prefill)
         )

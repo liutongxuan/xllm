@@ -92,6 +92,8 @@ class LayerCache:
     shared_conv_scratch_row: int | None = None
     shared_ssm_scratch_row: int | None = None
     shared_full_read_padding_page: int | None = None
+    # Full-only arenas expose contiguous role planes with one common page ID.
+    shared_full_page_count: int | None = None
 
     @property
     def index_scale(self) -> torch.Tensor | None:
@@ -139,7 +141,8 @@ class CacheRowTable:
 class SharedKVCacheLayout:
     """Physical row geometry for a shared Full/Linear cache arena.
 
-    Slab storage resolves logical ids with each layer's stable physical row
+    Full-only storage uses separate dense role planes with a common native
+    page index. Slab storage resolves logical ids with each layer's stable physical row
     maps. Full K/V allocations are adjacent, while Conv and SSM allocations
     are independent. Slab count and logical id capacity need not agree.
 
@@ -171,6 +174,7 @@ class SharedKVCacheLayout:
     num_slabs: int = 0
     bank_bytes: int = 0
     read_padding_page: int = 0
+    dense_full: bool = False
 
     def __post_init__(self) -> None:
         values = (
@@ -344,6 +348,76 @@ def _tensor_row_bytes(tensor: torch.Tensor) -> int:
     if tensor.ndim < 2 or not tensor.is_contiguous() or tensor.shape[0] <= 0:
         raise ValueError("shared KV cache tensors must be contiguous row views")
     return tensor.element_size() * tensor[0].numel()
+
+
+def _detect_shared_dense_full_layout(full: Sequence[LayerCache], arena_bytes: int) -> SharedKVCacheLayout:
+    key, value = full[0].key, full[0].value
+    assert key is not None
+    page_count = full[0].shared_full_page_count
+    if not isinstance(page_count, int) or page_count < 3:
+        raise ValueError("shared dense Full planes require scratch, read padding, and allocatable pages")
+    key_bytes = _tensor_row_bytes(key)
+    value_bytes = 0 if value is None else _tensor_row_bytes(value)
+    page_bytes = key_bytes + value_bytes
+    bank_bytes = page_count * page_bytes
+    rows = full[0].full_block_rows
+    if rows is None or rows.ndim != 1 or rows.numel() < 2 or rows.dtype != torch.int32 or rows.device != key.device:
+        raise ValueError("shared dense Full caches require a native Full row map")
+    if arena_bytes != len(full) * bank_bytes:
+        raise ValueError("shared dense Full planes must cover the complete arena")
+    for layer, cache in enumerate(full):
+        if (
+            cache.shared_full_page_count != page_count
+            or cache.shared_bank_bytes != bank_bytes
+            or cache.shared_slice_bytes != page_bytes
+            or cache.shared_checkpoint_stride != 1
+            or cache.shared_full_read_padding_page != 1
+        ):
+            raise ValueError("shared dense Full descriptors must use one native geometry")
+        if cache.linear_state_slots is not None:
+            raise ValueError("shared dense Full caches do not own recurrent state slots")
+        mapping = cache.full_block_rows
+        if (
+            mapping is None
+            or mapping.shape != rows.shape
+            or mapping.dtype != rows.dtype
+            or mapping.device != rows.device
+            or not mapping.is_contiguous()
+        ):
+            raise ValueError("shared dense Full caches require matching native Full row maps")
+        for tensor, prototype, offset in (
+            (cache.key, key, layer * bank_bytes),
+            (cache.value, value, layer * bank_bytes + page_count * key_bytes),
+        ):
+            if prototype is None:
+                if tensor is not None:
+                    raise ValueError("shared dense Full layers must agree on optional value planes")
+                continue
+            if (
+                tensor is None
+                or tensor.shape != (page_count, *prototype.shape[1:])
+                or tensor.shape[1] != key.shape[1]
+                or tensor.dtype != key.dtype
+                or not tensor.is_contiguous()
+                or _tensor_storage_span(tensor)[1] != offset
+            ):
+                raise ValueError("shared dense Full caches require contiguous native key/value planes")
+            if tensor.numel() > 1 << 32:
+                raise ValueError("shared dense Full views exceed FIA's 32-bit element offset range")
+    return SharedKVCacheLayout(
+        page_size_tokens=int(key.shape[1]),
+        full_row_stride=1,
+        conv_row_stride=1,
+        ssm_row_stride=1,
+        checkpoint_stride=1,
+        num_slots=rows.numel(),
+        slot_bytes=page_bytes,
+        scratch_full_rows=1,
+        num_slabs=page_count,
+        bank_bytes=bank_bytes,
+        read_padding_page=1,
+        dense_full=True,
+    )
 
 
 def _detect_shared_mirrored_layout(
@@ -551,7 +625,8 @@ def detect_shared_kv_cache_layout(
     full = [cache for cache in layer_caches if cache.key is not None or cache.value is not None]
     linear = [cache for cache in layer_caches if cache.conv is not None or cache.ssm is not None]
     has_native_banks = any(cache.shared_bank_bytes is not None for cache in layer_caches)
-    if not full or (not linear and not has_native_banks):
+    has_dense_full = any(cache.shared_full_page_count not in (None, 0) for cache in layer_caches)
+    if not full or (not linear and not has_native_banks and not has_dense_full):
         return None
     full_tensors = [tensor for cache in full for tensor in (cache.key, cache.value) if tensor is not None]
     linear_tensors = [tensor for cache in linear for tensor in (cache.conv, cache.ssm) if tensor is not None]
@@ -562,7 +637,11 @@ def detect_shared_kv_cache_layout(
     if len(full_storages.union(linear_storages)) != 1:
         raise ValueError("shared KV cache roles must expose one complete arena")
     if any(
-        cache.key is None or cache.value is None or cache.conv is not None or cache.ssm is not None for cache in full
+        cache.key is None
+        or (cache.value is None and not has_dense_full)
+        or cache.conv is not None
+        or cache.ssm is not None
+        for cache in full
     ):
         raise ValueError("shared Full cache layers require only paired key/value roles")
     if any(
@@ -586,6 +665,11 @@ def detect_shared_kv_cache_layout(
     arena_bytes = spans[0][2]
     if arena_bytes <= 0 or any(span[2] != arena_bytes for span in spans):
         raise ValueError("shared KV cache views must expose one complete arena")
+
+    if has_dense_full:
+        if linear:
+            raise ValueError("shared dense Full planes do not support recurrent state roles")
+        return _detect_shared_dense_full_layout(full, arena_bytes)
 
     if has_native_banks:
         return _detect_shared_mirrored_layout(full, linear, arena_bytes)

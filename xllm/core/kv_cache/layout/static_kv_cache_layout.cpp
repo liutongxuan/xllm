@@ -45,12 +45,22 @@ size_t checked_lcm(size_t left, size_t right) {
 StaticKVCacheLayout::StaticKVCacheLayout(StaticKVCacheLayoutSpec spec)
     : spec_(std::move(spec)) {
   CHECK_GT(spec_.full_row_bytes, 0u);
+  CHECK(!spec_.full_layer_ids.empty());
+  CHECK_EQ(spec_.full_row_bytes % torch::elementSize(spec_.dtype), 0u);
+  CHECK_EQ(
+      row_bytes(KVCacheTensorRole::VALUE) % torch::elementSize(spec_.dtype),
+      0u);
+  full_pair_bytes_ =
+      checked_add(spec_.full_row_bytes, row_bytes(KVCacheTensorRole::VALUE));
+  if (is_full_only()) {
+    initialize_full_only_layout();
+    return;
+  }
   CHECK_GT(spec_.conv_row_bytes, 0u);
   CHECK_GT(spec_.ssm_row_bytes, 0u);
   CHECK_GT(spec_.checkpoint_stride, 0u);
-  CHECK(!spec_.full_layer_ids.empty());
-  CHECK(!spec_.linear_layer_ids.empty());
-  CHECK_EQ(spec_.full_row_bytes % torch::elementSize(spec_.dtype), 0u);
+  CHECK_EQ(row_bytes(KVCacheTensorRole::VALUE), spec_.full_row_bytes)
+      << "Hybrid static storage requires equal KEY and VALUE row costs";
   CHECK_EQ(spec_.conv_row_bytes % torch::elementSize(spec_.dtype), 0u);
   CHECK_EQ(spec_.ssm_row_bytes % torch::elementSize(spec_.ssm_dtype), 0u);
 
@@ -62,7 +72,6 @@ StaticKVCacheLayout::StaticKVCacheLayout(StaticKVCacheLayoutSpec spec)
       << "Draft Full layers must fill whole companion banks";
   bank_count_ = checked_add(target_bank_count,
                             draft_layer_count() / full_layers_per_bank_);
-  full_pair_bytes_ = checked_multiply(2, spec_.full_row_bytes);
   full_bundle_bytes_ =
       checked_multiply(full_layers_per_bank_, full_pair_bytes_);
   ssm_bundle_bytes_ =
@@ -195,10 +204,67 @@ StaticKVCacheLayout::StaticKVCacheLayout(StaticKVCacheLayoutSpec spec)
   }
 }
 
+void StaticKVCacheLayout::initialize_full_only_layout() {
+  CHECK_EQ(draft_layer_count(), 0u)
+      << "Full-only static storage does not use companion draft banks";
+  bank_count_ = full_layer_count();
+  full_layers_per_bank_ = 1;
+  full_bundle_bytes_ = full_pair_bytes_;
+  // Pool slices account for one page across role planes; their payloads are
+  // separated so every role addresses the same native page without remapping.
+  slice_bytes_ = full_pair_bytes_;
+  slab_bytes_ = checked_multiply(bank_count_, slice_bytes_);
+  full_read_padding_row_ = 1;
+  num_reserved_slabs_ = 2;
+  CHECK_LE(spec_.num_slabs, max_slab_count())
+      << "Shared Full plane exceeds the paged attention address range";
+  bank_bytes_ = checked_multiply(spec_.num_slabs, slice_bytes_);
+  bytes_used_ = checked_multiply(bank_count_, bank_bytes_);
+  tensors_.reserve(checked_multiply(full_layer_count(), 2));
+  std::unordered_set<int64_t> layer_ids;
+  layer_ids.reserve(full_layer_count());
+  const size_t value_row_bytes = row_bytes(KVCacheTensorRole::VALUE);
+  for (size_t layer_index = 0; layer_index < full_layer_count();
+       ++layer_index) {
+    const int64_t layer_id = spec_.full_layer_ids[layer_index];
+    CHECK_GE(layer_id, 0);
+    CHECK(layer_ids.emplace(layer_id).second) << "Duplicate cache layer id";
+    const size_t key_offset = checked_multiply(layer_index, bank_bytes_);
+    tensors_.emplace_back(StaticKVCacheTensorLayout{
+        .layer_id = layer_id,
+        .role = KVCacheTensorRole::KEY,
+        .offset_bytes = key_offset,
+        .row_bytes = spec_.full_row_bytes,
+        .view_rows = spec_.num_slabs,
+        .lane = layer_index,
+        .bank = layer_index,
+    });
+    if (value_row_bytes == 0) {
+      continue;
+    }
+    tensors_.emplace_back(StaticKVCacheTensorLayout{
+        .layer_id = layer_id,
+        .role = KVCacheTensorRole::VALUE,
+        .offset_bytes = checked_add(
+            key_offset,
+            checked_multiply(spec_.num_slabs, spec_.full_row_bytes)),
+        .row_bytes = value_row_bytes,
+        .view_rows = spec_.num_slabs,
+        .lane = layer_index,
+        .bank = layer_index,
+    });
+  }
+}
+
 bool StaticKVCacheLayout::can_fit(size_t full_blocks,
                                   size_t linear_states) const {
-  if (spec_.num_slabs < num_reserved_slabs_ || full_blocks >= spec_.num_slots ||
-      linear_states >= spec_.num_slots) {
+  if (spec_.num_slabs < num_reserved_slabs_ || full_blocks >= spec_.num_slots) {
+    return false;
+  }
+  if (is_full_only()) {
+    return full_blocks <= spec_.num_slabs - num_reserved_slabs_;
+  }
+  if (linear_states >= spec_.num_slots) {
     return false;
   }
   const auto slabs_for = [this](size_t objects, KVCacheTensorRole role) {
@@ -218,6 +284,23 @@ size_t StaticKVCacheLayout::max_slab_count() const {
   // The deployed paged FIA address chain uses 32-bit relative element offsets.
   // Bound each compact bank, independently of the logical-ID or arena sizes.
   constexpr uint64_t kFiaElementSpan = uint64_t{1} << 32;
+  if (is_full_only()) {
+    size_t limit = std::min(
+        static_cast<size_t>(std::numeric_limits<int64_t>::max()) / slab_bytes_,
+        static_cast<size_t>(std::numeric_limits<int32_t>::max()));
+    for (const KVCacheTensorRole role :
+         {KVCacheTensorRole::KEY, KVCacheTensorRole::VALUE}) {
+      const size_t bytes = row_bytes(role);
+      if (bytes == 0) {
+        continue;
+      }
+      limit = std::min(
+          limit,
+          static_cast<size_t>(kFiaElementSpan /
+                              (bytes / torch::elementSize(spec_.dtype))));
+    }
+    return limit;
+  }
   const size_t row_elements =
       full_row_bytes() / torch::elementSize(spec_.dtype);
   const size_t full_limit =
@@ -236,6 +319,13 @@ size_t StaticKVCacheLayout::max_slab_count() const {
 }
 
 size_t StaticKVCacheLayout::objects_per_slab(KVCacheTensorRole role) const {
+  if (is_full_only()) {
+    return role == KVCacheTensorRole::KEY ||
+                   (role == KVCacheTensorRole::VALUE &&
+                    row_bytes(KVCacheTensorRole::VALUE) != 0)
+               ? 1
+               : 0;
+  }
   switch (role) {
     case KVCacheTensorRole::KEY:
     case KVCacheTensorRole::VALUE:
@@ -267,8 +357,9 @@ size_t StaticKVCacheLayout::layer_bank_index(int64_t layer_id) const {
 size_t StaticKVCacheLayout::row_bytes(KVCacheTensorRole role) const {
   switch (role) {
     case KVCacheTensorRole::KEY:
-    case KVCacheTensorRole::VALUE:
       return spec_.full_row_bytes;
+    case KVCacheTensorRole::VALUE:
+      return spec_.full_value_row_bytes.value_or(spec_.full_row_bytes);
     case KVCacheTensorRole::CONV:
       return spec_.conv_row_bytes;
     case KVCacheTensorRole::SSM:
@@ -281,6 +372,9 @@ size_t StaticKVCacheLayout::row_bytes(KVCacheTensorRole role) const {
 }
 
 size_t StaticKVCacheLayout::rows_per_slab(KVCacheTensorRole role) const {
+  if (is_full_only()) {
+    return objects_per_slab(role);
+  }
   const size_t bytes =
       role == KVCacheTensorRole::KEY || role == KVCacheTensorRole::VALUE
           ? slice_bytes_
@@ -291,12 +385,19 @@ size_t StaticKVCacheLayout::rows_per_slab(KVCacheTensorRole role) const {
 
 size_t StaticKVCacheLayout::row_index(size_t slab,
                                       KVCacheTensorRole role) const {
+  if (is_full_only()) {
+    CHECK_GT(objects_per_slab(role), 0u);
+    return slab;
+  }
   const size_t bytes = checked_multiply(slab, slice_bytes_);
   const size_t row = row_bytes(role);
   return bytes / row + static_cast<size_t>(bytes % row != 0);
 }
 
 size_t StaticKVCacheLayout::role_row_stride(KVCacheTensorRole role) const {
+  if (is_full_only()) {
+    return objects_per_slab(role);
+  }
   CHECK_EQ(slice_bytes_ % row_bytes(role), 0u)
       << "Aligned Conv objects do not have a constant native row stride";
   return slice_bytes_ / row_bytes(role);

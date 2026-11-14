@@ -39,6 +39,121 @@ def _identity_slots(num_slots: int) -> torch.Tensor:
     return torch.arange(num_slots, dtype=torch.int32)
 
 
+def _make_dense_full_caches(*, key_dim: int = 8, value_dim: int = 2) -> list[LayerCache]:
+    pages, page_size, layers = 6, 2, 2
+    key_bytes, value_bytes = (page_size * dim * 2 for dim in (key_dim, value_dim))
+    bank_bytes = pages * (key_bytes + value_bytes)
+    arena = torch.zeros(layers * bank_bytes, dtype=torch.uint8)
+    rows = torch.tensor([0, 4, 2, 3, 5, 0, 0, 0], dtype=torch.int32)
+    return [
+        LayerCache(
+            key=_arena_view(arena, layer * bank_bytes, (pages, page_size, 1, key_dim), torch.bfloat16),
+            value=(
+                _arena_view(
+                    arena, layer * bank_bytes + pages * key_bytes, (pages, page_size, 1, value_dim), torch.bfloat16
+                )
+                if value_dim
+                else None
+            ),
+            full_block_rows=rows,
+            shared_checkpoint_stride=1,
+            shared_bank_bytes=bank_bytes,
+            shared_slice_bytes=key_bytes + value_bytes,
+            shared_full_read_padding_page=1,
+            shared_full_page_count=pages,
+        )
+        for layer in range(layers)
+    ]
+
+
+@pytest.mark.parametrize("key_dim,value_dim", [(8, 8), (512, 64), (512, 0)])
+def test_dense_full_planes_preserve_role_widths_and_native_page_ids(key_dim: int, value_dim: int) -> None:
+    caches = _make_dense_full_caches(key_dim=key_dim, value_dim=value_dim)
+    layout = detect_shared_kv_cache_layout(caches)
+    assert layout is not None and layout.dense_full
+    assert layout.full_row_stride == 1
+    assert layout.num_slots == 8
+    assert layout.num_slabs == 6
+    assert layout.full_read_padding_row == 1
+    for cache in caches:
+        assert cache.key is not None
+        assert cache.key.shape == (6, 2, 1, key_dim)
+        assert (cache.value is None) == (value_dim == 0)
+        assert cache.key.untyped_storage().nbytes() == 2 * 6 * 2 * (key_dim + value_dim) * 2
+        if cache.value is not None:
+            assert cache.value.shape == (6, 2, 1, value_dim)
+            assert cache.value.data_ptr() - cache.key.data_ptr() == cache.key.numel() * cache.key.element_size()
+
+
+def test_dense_full_padding_and_reused_page_follow_native_row_maps() -> None:
+    caches = _make_dense_full_caches()
+    layout = detect_shared_kv_cache_layout(caches)
+    assert layout is not None
+    blocks = torch.tensor([[1, 2, 0, -1]], dtype=torch.int32)
+    slots = torch.tensor([2, 3, 0, -1], dtype=torch.int32)
+    for cache in caches:
+        assert cache.key is not None and cache.value is not None
+        assert layout.full_block_table(blocks, cache.full_block_rows).tolist() == [[4, 2, 1, -1]]
+        assert layout.full_slot_mapping(slots, cache.full_block_rows).tolist() == [8, 9, 0, -1]
+        cache.key[0].fill_(torch.nan)
+        cache.value[0].fill_(torch.nan)
+        assert torch.isfinite(cache.key[1]).all() and torch.isfinite(cache.value[1]).all()
+    caches[0].full_block_rows[1] = 5
+    for cache in caches:
+        assert layout.full_block_table(blocks, cache.full_block_rows).tolist() == [[5, 2, 1, -1]]
+        assert layout.full_slot_mapping(slots, cache.full_block_rows).tolist() == [10, 11, 0, -1]
+
+
+@pytest.mark.parametrize(
+    "field,value,error",
+    [
+        ("shared_full_page_count", 7, "native geometry"),
+        ("shared_full_read_padding_page", 0, "native geometry"),
+        ("shared_bank_bytes", 512, "native geometry"),
+        ("shared_slice_bytes", 512, "native geometry"),
+        ("value", None, "contiguous native"),
+        ("index", torch.zeros(6, 2, 1, 4), "only Full"),
+    ],
+)
+def test_dense_full_rejects_inconsistent_role_geometry(field: str, value: object, error: str) -> None:
+    caches = _make_dense_full_caches()
+    caches[1] = replace(caches[1], **{field: value})
+    with pytest.raises(ValueError, match=error):
+        detect_shared_kv_cache_layout(caches)
+
+
+def test_dense_full_rejects_a_value_plane_overlapping_latent_storage() -> None:
+    caches = _make_dense_full_caches()
+    key = caches[0].key
+    assert key is not None
+    arena = key.untyped_storage()
+    value = torch.empty(0, dtype=torch.bfloat16).set_(arena, 0, (6, 2, 1, 2))
+    caches[0] = replace(caches[0], value=value)
+    with pytest.raises(ValueError, match="contiguous native"):
+        detect_shared_kv_cache_layout(caches)
+
+
+def test_normalize_dense_full_tuple_preserves_explicit_page_count() -> None:
+    cache = _make_dense_full_caches(value_dim=0)[0]
+    raw = (
+        cache.key,
+        None,
+        *(None for _ in range(11)),
+        cache.full_block_rows,
+        1,
+        cache.shared_bank_bytes,
+        cache.shared_slice_bytes,
+        0,
+        0,
+        1,
+        6,
+    )
+    normalized = normalize_layer_caches([raw])[0]
+    assert normalized.shared_full_page_count == 6
+    assert normalized.full_block_rows is cache.full_block_rows
+    assert normalized.value is None
+
+
 def _make_slab_caches() -> list[LayerCache]:
     # Four 240-byte slabs contain dense 8-byte Full rows, 20-byte Conv
     # rows, and 16-byte SSM rows. Logical capacity is independent of slabs.

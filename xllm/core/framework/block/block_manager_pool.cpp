@@ -511,8 +511,7 @@ size_t BlockManagerPool::block_resource_units(BlockType type,
   if (options_.shared_layout()) {
     const StaticKVCacheLayout& layout = *options_.shared_layout();
     if (type == BlockType::KV) {
-      return count * layout.full_layer_count() * 2 *
-             layout.row_bytes(KVCacheTensorRole::KEY);
+      return count * layout.full_layer_count() * layout.full_pair_bytes();
     }
     return type == BlockType::LINEAR
                ? count * layout.linear_layer_count() *

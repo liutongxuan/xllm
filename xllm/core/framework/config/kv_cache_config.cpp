@@ -95,7 +95,8 @@ DEFINE_bool(enable_vmm_kvcache,
 DEFINE_bool(enable_shared_kv_cache,
             false,
             "Share a fixed physical arena between full-attention KV blocks "
-            "and linear-attention states. NPU Torch Qwen3 hybrid models only.");
+            "and linear-attention states. NPU Torch Qwen hybrid models and "
+            "ordinary Python Qwen3 Full-only targets are supported.");
 
 DEFINE_int64(
     phy_page_granularity_size,

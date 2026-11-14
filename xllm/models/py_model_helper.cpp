@@ -92,6 +92,9 @@ py::list build_python_kv_caches(const std::vector<KVCache>& kv_caches) {
             : py::none(),
         kv_cache.shared_bank_bytes() > 0
             ? py::cast(kv_cache.shared_full_read_padding_page())
+            : py::none(),
+        kv_cache.shared_full_page_count() > 0
+            ? py::cast(kv_cache.shared_full_page_count())
             : py::none()));
   }
   return python_caches;
