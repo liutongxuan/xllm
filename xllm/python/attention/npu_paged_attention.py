@@ -405,8 +405,25 @@ class NpuPagedAttentionBackend(KdaLinearAttentionMixin, AttentionBackend):
         if len(num_kv_blocks) != 1:
             raise RuntimeError("full-attention layers use inconsistent KV block counts")
 
+        shared_layout = detect_shared_kv_cache_layout(kv_caches)
+        has_sparse_index = any(cache.index is not None for cache in kv_caches)
+        # NoPE MLA can expose only its latent plane; sparse models also carry
+        # an index cache. Infer MLA before validating the bound operator layout.
+        has_latent_only_cache = any(
+            cache.key is not None and cache.value is None and cache.conv is None for cache in kv_caches
+        )
+        is_mla = self._is_mla or has_sparse_index or has_latent_only_cache
+        if (
+            shared_layout is not None
+            and shared_layout.dense_full
+            and is_mla
+            and not has_sparse_index
+            and any(value is None and key.shape[-1] not in (64, 128, 192) for key, value in full_attention_caches)
+        ):
+            raise ValueError("shared dense NoPE MLA requires FIA v2 TND head dimension 64, 128, or 192")
+
         self._kv_caches = kv_caches
-        self._shared_kv_layout = detect_shared_kv_cache_layout(kv_caches)
+        self._shared_kv_layout = shared_layout
         self._shared_full_row_table = None
         self._shared_full_layer_ids = ()
         self._kpool_cache_triton_compatible = tuple(_is_compact_kpool_cache_compatible(cache) for cache in kv_caches)
@@ -430,18 +447,8 @@ class NpuPagedAttentionBackend(KdaLinearAttentionMixin, AttentionBackend):
             if len(checkpoint_strides) > 1:
                 raise RuntimeError("linear-attention layers use inconsistent checkpoint capacities")
             self._kda_checkpoint_stride = checkpoint_strides.pop() if checkpoint_strides else None
-        has_sparse_index = any(cache.index is not None for cache in kv_caches)
-        # glm5_next DSA layers are NoPE: the latent lives in the key slot and
-        # the value/rope slot is a 0-dim tensor normalized to None, while the
-        # kPool indexer adds a paged index cache. Either signal marks this
-        # backend instance as MLA even though the constructor heuristic
-        # (head_dim > 192 and num_kv_heads == 1) does not fire for it.
-        has_latent_only_cache = any(
-            cache.key is not None and cache.value is None and cache.conv is None for cache in kv_caches
-        )
-        if has_sparse_index or has_latent_only_cache:
-            self._is_mla = True
-        self._uses_sparse_mla = self._is_mla and has_sparse_index
+        self._is_mla = is_mla
+        self._uses_sparse_mla = is_mla and has_sparse_index
 
     @staticmethod
     def _query_sequence_ends(
