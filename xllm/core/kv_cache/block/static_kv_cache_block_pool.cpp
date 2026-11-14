@@ -74,6 +74,7 @@ StaticKVCacheBlockPool::StaticKVCacheBlockPool(
                          layout.objects_per_slab(KVCacheTensorRole::SSM)},
       num_reserved_slabs_(layout.num_reserved_slabs()),
       full_row_bytes_(layout.row_bytes(KVCacheTensorRole::KEY)),
+      full_pair_bytes_(layout.full_pair_bytes()),
       conv_row_bytes_(layout.row_bytes(KVCacheTensorRole::CONV)),
       ssm_row_bytes_(layout.row_bytes(KVCacheTensorRole::SSM)),
       checkpoint_stride_(layout.checkpoint_stride()),
@@ -85,20 +86,24 @@ StaticKVCacheBlockPool::StaticKVCacheBlockPool(
            static_cast<uint32_t>(std::numeric_limits<int32_t>::max()));
   CHECK_GT(slabs_.size(), num_reserved_slabs_);
   CHECK_GT(full_layers_, 0u);
-  CHECK_GT(linear_layers_, 0u);
   CHECK_GT(checkpoint_stride_, 0u);
   CHECK_LE(slabs_.size(),
            static_cast<size_t>(std::numeric_limits<uint32_t>::max()));
   // The layout already validates object geometry and arena byte arithmetic.
   CHECK_LE(full_layers_,
            std::numeric_limits<size_t>::max() / layout.full_pair_bytes());
-  CHECK_LE(layout.ssm_bundle_bytes(),
-           std::numeric_limits<size_t>::max() - conv_row_bytes_);
-  CHECK_LE(linear_layers_,
-           std::numeric_limits<size_t>::max() /
-               (conv_row_bytes_ + layout.ssm_bundle_bytes()));
+  if (linear_layers_ > 0) {
+    CHECK_LE(layout.ssm_bundle_bytes(),
+             std::numeric_limits<size_t>::max() - conv_row_bytes_);
+    CHECK_LE(linear_layers_,
+             std::numeric_limits<size_t>::max() /
+                 (conv_row_bytes_ + layout.ssm_bundle_bytes()));
+  }
   CHECK_LE(linear_layers_, std::numeric_limits<size_t>::max() / 2);
   for (const SlabType type : {SlabType::KV, SlabType::CONV, SlabType::SSM}) {
+    if (object_capacity(type) == 0) {
+      continue;
+    }
     CHECK_LE(object_capacity(type),
              static_cast<size_t>(std::numeric_limits<uint32_t>::max()));
     const size_t view_bytes =
@@ -117,6 +122,9 @@ StaticKVCacheBlockPool::StaticKVCacheBlockPool(
     const size_t index = block_type_index(type);
     const size_t row_width =
         type == BlockType::KV ? full_layers_ : 2 * linear_layers_;
+    if (row_width == 0) {
+      continue;
+    }
     CHECK_LE(logical_capacity_, std::numeric_limits<size_t>::max() / row_width);
     logical_states_[index].assign(logical_capacity_, 0);
     placement_hints_[index].assign(logical_capacity_, nullptr);
@@ -136,7 +144,7 @@ size_t StaticKVCacheBlockPool::block_type_index(BlockType type) const {
 size_t StaticKVCacheBlockPool::object_bytes(SlabType type) const {
   switch (type) {
     case SlabType::KV:
-      return 2 * full_layers_per_bank_ * full_row_bytes_;
+      return full_layers_per_bank_ * full_pair_bytes_;
     case SlabType::CONV:
       return conv_row_bytes_;
     case SlabType::SSM:
@@ -150,6 +158,10 @@ size_t StaticKVCacheBlockPool::object_bytes(SlabType type) const {
 }
 
 size_t StaticKVCacheBlockPool::object_row_bytes(SlabType type) const {
+  // Full-only role planes use one native page per slab even when K/V differ.
+  if (linear_layers_ == 0 && type == SlabType::KV) {
+    return full_pair_bytes_;
+  }
   return type == SlabType::SSM
              ? ssm_row_bytes_
              : (type == SlabType::KV ? full_row_bytes_ : conv_row_bytes_);
@@ -727,6 +739,9 @@ size_t StaticKVCacheBlockPool::num_free_blocks(BlockType type) const {
     return free_slots_.size() / slots_per_block(type);
   }
   const size_t index = block_type_index(type);
+  if (type == BlockType::LINEAR && linear_layers_ == 0) {
+    return 0;
+  }
   if (type == BlockType::KV) {
     const size_t objects = available_objects(SlabType::KV) +
                            free_slabs_.size() * object_capacity(SlabType::KV);

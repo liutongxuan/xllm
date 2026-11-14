@@ -19,6 +19,7 @@ limitations under the License.
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 #include "core/kv_cache/layout/kv_cache_tensor_role.h"
@@ -34,6 +35,8 @@ struct StaticKVCacheLayoutSpec {
   size_t num_slots = 0;
   size_t num_slabs = 0;
   size_t full_row_bytes = 0;
+  // Unspecified preserves equal KEY/VALUE rows; zero omits VALUE storage.
+  std::optional<size_t> full_value_row_bytes;
   size_t conv_row_bytes = 0;
   size_t ssm_row_bytes = 0;
   size_t checkpoint_stride = 1;
@@ -59,17 +62,19 @@ struct StaticKVCacheTensorLayout {
   size_t linear_group = 0;
 };
 
-// Fixed banks expose compact dense Full views. A shared slab group contains
-// one slice in every bank and changes role only after all mirrored leases end.
-// Full layers in a bank own fixed lanes of each object bundle; target and draft
-// therefore consume the same final native page index. With draft banks, Linear
-// objects can occupy any bank instead of requiring mirrored target-only rows.
+// Fixed banks expose compact dense Full views with one native page index.
+// Full-only banks store separate KEY/VALUE planes to support unequal row costs.
+// Hybrid banks contain slices that change role after all mirrored leases end.
+// Their Full layers own fixed lanes of each object bundle; target and draft
+// therefore consume the same page. With draft banks, Linear objects can occupy
+// any bank instead of requiring mirrored target-only rows.
 class StaticKVCacheLayout final {
  public:
   explicit StaticKVCacheLayout(StaticKVCacheLayoutSpec spec);
   StaticKVCacheLayout(const KVCacheShape& shape,
                       const KVCacheCreateOptions& options);
 
+  bool is_full_only() const { return spec_.linear_layer_ids.empty(); }
   size_t num_slabs() const { return spec_.num_slabs; }
   size_t num_reserved_slabs() const { return num_reserved_slabs_; }
   // Total backing bytes of one mirrored group, not one bank-local slice.
@@ -86,7 +91,9 @@ class StaticKVCacheLayout final {
                                     : linear_layer_count();
   }
   size_t full_bundle_bytes() const { return full_bundle_bytes_; }
-  size_t full_pages_per_slab() const { return slice_bytes_ / full_row_bytes(); }
+  size_t full_pages_per_slab() const {
+    return is_full_only() ? 1 : slice_bytes_ / full_row_bytes();
+  }
   size_t max_slab_count() const;
   size_t objects_per_slab(KVCacheTensorRole role) const;
   size_t layer_bank_index(int64_t layer_id) const;
@@ -135,6 +142,8 @@ class StaticKVCacheLayout final {
                       KVCacheTensorRole role = KVCacheTensorRole::CONV) const;
 
  private:
+  void initialize_full_only_layout();
+
   StaticKVCacheLayoutSpec spec_;
   std::vector<StaticKVCacheTensorLayout> tensors_;
   std::vector<StaticKVCacheTensorLayout> draft_tensors_;

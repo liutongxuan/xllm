@@ -334,6 +334,40 @@ TEST_F(BlockManagerPoolTest, SharedFactoryAccountsForTypedSlabFragmentation) {
   EXPECT_EQ(result.manager->num_free_blocks(), std::vector<size_t>{192});
 }
 
+TEST_F(BlockManagerPoolTest, SharedFullOnlyFactoryAllocatesWithoutLinearState) {
+  ModelArgs args;
+  args.model_type("qwen3").n_layers(2).n_heads(1).n_kv_heads(1).head_dim(8);
+  KVCacheCapacity capacity;
+  // Eight physical pages, two reserved; six allocatable logical IDs.
+  capacity.n_blocks(7)
+      .block_size(2)
+      .shared_slot_bytes(128)
+      .shared_slab_count(8)
+      .shared_min_slab_count(3)
+      .shared_reserved_slab_count(2)
+      .shared_linear_state_slots(0);
+  BlockManagerPool::Options options;
+  options.block_size(2).enable_prefix_cache(false);
+  auto result = KVCacheManagerFactory::create(capacity,
+                                              args,
+                                              /*world_size=*/1,
+                                              torch::kBFloat16,
+                                              options,
+                                              /*transfer_coordinator=*/nullptr);
+  EXPECT_EQ(result.manager->block_resource_units(BlockType::KV, 1), 128);
+  EXPECT_EQ(result.manager->block_resource_units(BlockType::LINEAR, 1), 0);
+  EXPECT_EQ(result.manager->num_free_blocks(), std::vector<size_t>{768});
+  auto sequence = make_sequence(0, {1, 2, 3, 4, 5});
+  EXPECT_FALSE(result.manager->exceeds_total_capacity(&sequence, 12));
+  EXPECT_TRUE(result.manager->exceeds_total_capacity(&sequence, 13));
+  ASSERT_TRUE(result.manager->allocate(&sequence));
+  EXPECT_EQ(sequence.kv_state().num_blocks(BlockType::KV), 3);
+  EXPECT_EQ(sequence.kv_state().num_blocks(BlockType::LINEAR), 0);
+  EXPECT_EQ(result.manager->num_free_blocks(), std::vector<size_t>{384});
+  result.manager->deallocate(&sequence);
+  EXPECT_EQ(result.manager->num_free_blocks(), std::vector<size_t>{768});
+}
+
 TEST(KVCacheManagerFactoryTest, RejectsSharedStorageCostMismatch) {
   BlockManagerPool::Options options;
   options.block_size(8).enable_linear_state(true).enable_prefix_cache(false);

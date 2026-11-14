@@ -553,8 +553,16 @@ StaticKVCacheLayoutSpec shared_layout_spec(const ModelArgs& model_args,
   StaticKVCacheLayoutSpec spec;
   spec.dtype = dtype;
   spec.ssm_dtype = resolve_ssm_dtype(model_args.mamba_ssm_dtype(), dtype);
-  spec.full_row_bytes =
-      static_cast<size_t>(capacity.slot_size() / 2 * capacity.block_size());
+  spec.full_row_bytes = static_cast<size_t>(
+      capacity.block_size() *
+      (model_args.enable_mla()
+           ? torch::elementSize(dtype) * model_args.kv_lora_rank()
+           : capacity.slot_size() / 2));
+  if (model_args.enable_mla()) {
+    spec.full_value_row_bytes =
+        static_cast<size_t>(capacity.block_size() * torch::elementSize(dtype) *
+                            model_args.qk_rope_head_dim());
+  }
   spec.conv_row_bytes = static_cast<size_t>(
       torch::elementSize(dtype) * capacity.linear_conv_state_len() *
       (model_args.linear_key_head_dim() * local_linear_k_heads * 2 +
@@ -580,7 +588,6 @@ void init_shared_counts(const ModelArgs& model_args,
                         const KVCacheEstimateOptions& options,
                         KVCacheCapacity* capacity) {
   CHECK_GT(capacity->num_full_attention_layers(), 0);
-  CHECK_GT(capacity->num_linear_attention_layers(), 0);
   CHECK_EQ(options.layerwise_split_size, 1);
   CHECK_EQ(options.max_linear_state_cache_slots, 0)
       << "Shared static storage derives linear capacity from its arena.";
@@ -590,9 +597,15 @@ void init_shared_counts(const ModelArgs& model_args,
   CHECK_EQ(capacity->index_block_bytes(), 0);
   CHECK_EQ(capacity->scale_slot_size(), 0);
   CHECK_EQ(capacity->kpool_tail_slot_size(), 0);
-  CHECK(!model_args.enable_mla());
-  CHECK_EQ(model_args.linear_key_head_dim(),
-           model_args.linear_value_head_dim());
+  CHECK(!model_args.enable_mla() ||
+        !use_npu_nz_kv_cache_layout(model_args.model_type()))
+      << "Shared MLA storage requires native ND cache planes.";
+  if (capacity->num_linear_attention_layers() > 0) {
+    CHECK(!model_args.enable_mla())
+        << "Shared hybrid MLA storage is not supported yet.";
+    CHECK_EQ(model_args.linear_key_head_dim(),
+             model_args.linear_value_head_dim());
+  }
   StaticKVCacheLayoutSpec spec =
       shared_layout_spec(model_args,
                          *capacity,
@@ -613,6 +626,22 @@ void init_shared_counts(const ModelArgs& model_args,
   slabs = std::min(
       slabs,
       static_cast<int64_t>(max_index / capacity->block_size() / full_rows));
+  if (layout.is_full_only()) {
+    const int64_t reserved_slabs =
+        static_cast<int64_t>(layout.num_reserved_slabs());
+    CHECK_GT(slabs, reserved_slabs)
+        << "Static shared KV budget cannot fit padding and one Full block.";
+    capacity->n_blocks(1 + slabs - reserved_slabs)
+        .num_linear_state_blocks(0)
+        .shared_slot_bytes(slab_bytes)
+        .shared_slab_count(slabs)
+        .shared_min_slab_count(reserved_slabs + 1)
+        .shared_reserved_slab_count(reserved_slabs)
+        .shared_linear_state_slots(0)
+        .cache_size_in_bytes(slabs * slab_bytes)
+        .linear_cache_size_in_bytes(0);
+    return;
+  }
   for (const KVCacheTensorRole role :
        {KVCacheTensorRole::CONV, KVCacheTensorRole::SSM}) {
     slabs = std::min(

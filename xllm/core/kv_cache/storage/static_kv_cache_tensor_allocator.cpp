@@ -130,8 +130,10 @@ void StaticKVCacheTensorAllocator::initialize_full_blocks(
       continue;
     }
     bundle_indices.emplace_back(
-        static_cast<int64_t>(entry[1]) /
-        static_cast<int64_t>(2 * layout_.full_layers_per_bank()));
+        layout_.is_full_only()
+            ? static_cast<int64_t>(entry[1])
+            : static_cast<int64_t>(entry[1]) /
+                  static_cast<int64_t>(2 * layout_.full_layers_per_bank()));
     initialized_full_block_epochs_[id] = lease_epochs[i];
   }
   if (bundle_indices.empty()) {
@@ -150,10 +152,32 @@ void StaticKVCacheTensorAllocator::initialize_full_blocks(
            bundle_indices[range_end] <= bundle_indices[range_end - 1] + 1) {
       ++range_end;
     }
-    const int64_t offset_bytes = bundle_indices[range_begin] * bundle_bytes;
-    const int64_t length_bytes =
-        (bundle_indices[range_end - 1] - bundle_indices[range_begin] + 1) *
-        bundle_bytes;
+    const int64_t first_bundle = bundle_indices[range_begin];
+    const int64_t bundle_count =
+        bundle_indices[range_end - 1] - first_bundle + 1;
+    if (layout_.is_full_only()) {
+      for (const KVCacheTensorRole role :
+           {KVCacheTensorRole::KEY, KVCacheTensorRole::VALUE}) {
+        const int64_t row_bytes = static_cast<int64_t>(layout_.row_bytes(role));
+        if (row_bytes == 0) {
+          continue;
+        }
+        const int64_t plane_offset =
+            role == KVCacheTensorRole::KEY
+                ? 0
+                : static_cast<int64_t>(layout_.num_slabs() *
+                                       layout_.full_row_bytes());
+        banks
+            .narrow(/*dim=*/1,
+                    plane_offset + first_bundle * row_bytes,
+                    bundle_count * row_bytes)
+            .zero_();
+      }
+      range_begin = range_end;
+      continue;
+    }
+    const int64_t offset_bytes = first_bundle * bundle_bytes;
+    const int64_t length_bytes = bundle_count * bundle_bytes;
     // Narrow before dispatch so initialization touches only newly leased pairs.
     // Zero bits also clear pairs retyped from FP32 SSM or Conv storage.
     banks.narrow(/*dim=*/1, offset_bytes, length_bytes).zero_();

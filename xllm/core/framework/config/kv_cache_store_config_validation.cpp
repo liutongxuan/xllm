@@ -80,13 +80,15 @@ void validate_shared_kv_cache_config(const ModelArgs& args,
       << "Shared KV cache does not support piecewise graphs.";
   if (python_model) {
     CHECK_EQ(options.npu_kernel_backend(), "TORCH");
+    const bool full_only =
+        !has_linear_attention_layers(args) && model_type == "qwen3";
     const bool mtp_draft =
         options.is_draft_engine() &&
         (model_type == "qwen3_5_mtp" || model_type == "qwen3_5_moe_mtp");
     CHECK(model_type == "qwen3_next" ||
-          is_qwen3_5_target_model_type(model_type) || mtp_draft)
+          is_qwen3_5_target_model_type(model_type) || mtp_draft || full_only)
         << "Shared Python KV cache requires a supported Qwen hybrid target "
-           "or full-attention MTP draft.";
+           "or full-attention target/draft.";
     const bool speculative = options.enable_speculative_decode() ||
                              options.num_speculative_tokens() > 0 ||
                              options.is_draft_engine();
@@ -98,6 +100,10 @@ void validate_shared_kv_cache_config(const ModelArgs& args,
     CHECK(!options.is_draft_engine() ||
           (mtp_draft && !has_linear_attention_layers(args)))
         << "Shared Python KV cache requires a full-attention-only MTP draft.";
+    CHECK(!full_only ||
+          (!speculative && (!args.enable_mla() || !options.enable_graph())))
+        << "Shared Full-only targets require ordinary decoding; MLA currently "
+           "requires eager execution.";
   } else {
     CHECK(model_type == "qwen3_next" || model_type == "qwen3_5_text" ||
           model_type == "qwen3_5_moe_text")
@@ -115,10 +121,9 @@ void validate_shared_kv_cache_config(const ModelArgs& args,
         parallel_args.cp_size() == 1 &&
         parallel_args.kv_split_size_effective() == 1)
       << "Shared KV cache does not support layerwise, context or KV splitting.";
-  CHECK(args.index_n_heads() == 0 && !args.enable_mla() &&
-        !options.enable_mla() && options.kv_cache_dtype() == "auto" &&
+  CHECK(args.index_n_heads() == 0 && options.kv_cache_dtype() == "auto" &&
         kv_cache_config.indexer_cache_dtype() != "int8")
-      << "Shared KV cache requires unquantized ordinary Full and GDN caches.";
+      << "Shared KV cache does not support indexer or quantized cache roles.";
 }
 
 }  // namespace xllm

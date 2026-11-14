@@ -62,6 +62,9 @@ CacheViews allocate_views(StaticKVCacheTensorAllocator& allocator,
   const int64_t slots = static_cast<int64_t>(spec.num_slots);
   const int64_t row_elements = static_cast<int64_t>(
       spec.full_row_bytes / torch::elementSize(spec.dtype));
+  const int64_t value_elements = static_cast<int64_t>(
+      spec.full_value_row_bytes.value_or(spec.full_row_bytes) /
+      torch::elementSize(spec.dtype));
   const int64_t conv_elements = static_cast<int64_t>(
       spec.conv_row_bytes / torch::elementSize(spec.dtype));
   const int64_t ssm_elements = static_cast<int64_t>(
@@ -72,10 +75,12 @@ CacheViews allocate_views(StaticKVCacheTensorAllocator& allocator,
                                                {slots, row_elements},
                                                spec.dtype,
                                                torch::kCPU));
-    views.values.emplace_back(allocator.allocate(KVCacheTensorRole::VALUE,
-                                                 {slots, row_elements},
-                                                 spec.dtype,
-                                                 torch::kCPU));
+    if (value_elements > 0) {
+      views.values.emplace_back(allocator.allocate(KVCacheTensorRole::VALUE,
+                                                   {slots, value_elements},
+                                                   spec.dtype,
+                                                   torch::kCPU));
+    }
   }
   for (const int64_t layer : spec.linear_layer_ids) {
     allocator.begin_layer(layer);
@@ -108,6 +113,160 @@ FullPublication full_publication(const StaticKVCacheBlockPool& pool,
     pool.append_full_block_rows(id, &publication.rows, &publication.epochs);
   }
   return publication;
+}
+
+TEST(StaticKVCacheTensorAllocatorTest,
+     FullOnlyUnequalRolesSharePagesWithoutOverlappingPayloads) {
+  StaticKVCacheLayoutSpec spec = make_spec();
+  spec.full_value_row_bytes = 4;
+  spec.conv_row_bytes = 0;
+  spec.ssm_row_bytes = 0;
+  spec.linear_layer_ids.clear();
+  const StaticKVCacheLayout layout(spec);
+  StaticKVCacheTensorAllocator allocator(layout, torch::kCPU);
+  const CacheViews views = allocate_views(allocator, spec);
+  StaticKVCacheBlockPool pool(/*logical_capacity=*/64, layout);
+  const auto blocks = pool.allocate(/*num_blocks=*/10, BlockType::KV);
+  ASSERT_EQ(blocks.size(), 10u);
+  ASSERT_TRUE(layout.is_full_only());
+  EXPECT_EQ(layout.bank_bytes(), spec.num_slabs * 20);
+  EXPECT_EQ(layout.bytes_used(), spec.num_slabs * 40);
+  EXPECT_EQ(layout.full_pages_per_slab(), 1u);
+  EXPECT_TRUE(layout.can_fit(/*full_blocks=*/10, /*linear_states=*/1000));
+  EXPECT_FALSE(layout.can_fit(/*full_blocks=*/11, /*linear_states=*/0));
+  for (size_t layer = 0; layer < views.keys.size(); ++layer) {
+    EXPECT_EQ(views.keys[layer].size(0), spec.num_slabs);
+    EXPECT_EQ(views.values[layer].size(0), spec.num_slabs);
+    EXPECT_TRUE(views.keys[layer].is_contiguous());
+    EXPECT_TRUE(views.values[layer].is_contiguous());
+    EXPECT_TRUE(views.keys.front().is_alias_of(views.values[layer]));
+    for (const int32_t block : blocks) {
+      const int32_t page = pool.final_full_page(block);
+      EXPECT_GE(page, 2);
+      EXPECT_LT(page, spec.num_slabs);
+      views.keys[layer][page].fill_(100 * layer + page);
+      views.values[layer][page].fill_(100 * layer + page + 50);
+    }
+  }
+  for (size_t layer = 0; layer < views.keys.size(); ++layer) {
+    for (const int32_t block : blocks) {
+      const int32_t page = pool.final_full_page(block);
+      EXPECT_TRUE(
+          views.keys[layer][page].eq(100 * layer + page).all().item<bool>());
+      EXPECT_TRUE(views.values[layer][page]
+                      .eq(100 * layer + page + 50)
+                      .all()
+                      .item<bool>());
+    }
+  }
+}
+
+TEST(StaticKVCacheTensorAllocatorTest,
+     FullOnlyKeyWithoutValueUsesOnlyItsActualBacking) {
+  StaticKVCacheLayoutSpec spec = make_spec();
+  spec.full_value_row_bytes = 0;
+  spec.conv_row_bytes = 0;
+  spec.ssm_row_bytes = 0;
+  spec.linear_layer_ids.clear();
+  const StaticKVCacheLayout layout(spec);
+  StaticKVCacheTensorAllocator allocator(layout, torch::kCPU);
+  const CacheViews views = allocate_views(allocator, spec);
+  EXPECT_TRUE(views.values.empty());
+  EXPECT_EQ(layout.bytes_used(),
+            spec.full_layer_ids.size() * spec.num_slabs * spec.full_row_bytes);
+  EXPECT_EQ(layout.objects_per_slab(KVCacheTensorRole::VALUE), 0u);
+  views.keys[0].fill_(17);
+  views.keys[1].fill_(23);
+  EXPECT_TRUE(views.keys[0].eq(17).all().item<bool>());
+  EXPECT_TRUE(views.keys[1].eq(23).all().item<bool>());
+  EXPECT_TRUE(views.keys[0].is_alias_of(views.keys[1]));
+}
+
+TEST(StaticKVCacheTensorAllocatorTest,
+     FullOnlyFreshLeasesClearBothPlanesAndPreservePrefixAndPadding) {
+  StaticKVCacheLayoutSpec spec = make_spec();
+  spec.full_value_row_bytes = 4;
+  spec.conv_row_bytes = 0;
+  spec.ssm_row_bytes = 0;
+  spec.linear_layer_ids.clear();
+  const StaticKVCacheLayout layout(spec);
+  StaticKVCacheTensorAllocator allocator(layout, torch::kCPU);
+  const CacheViews views = allocate_views(allocator, spec);
+  StaticKVCacheBlockPool pool(/*logical_capacity=*/64, layout);
+  const auto blocks = pool.allocate(/*num_blocks=*/3, BlockType::KV);
+  ASSERT_EQ(blocks.size(), 3u);
+  const int32_t first_page = pool.final_full_page(blocks[0]);
+  const int32_t prefix_page = pool.final_full_page(blocks[1]);
+  const int32_t last_page = pool.final_full_page(blocks[2]);
+  const FullPublication prefix = full_publication(pool, layout, {blocks[1]});
+  allocator.initialize_full_blocks(prefix.rows, prefix.epochs);
+  for (const auto* tensors : {&views.keys, &views.values}) {
+    for (const torch::Tensor& tensor : *tensors) {
+      tensor[first_page].fill_(std::numeric_limits<float>::quiet_NaN());
+      tensor[last_page].fill_(std::numeric_limits<float>::quiet_NaN());
+      tensor[prefix_page].fill_(31);
+      tensor[layout.scratch_full_page()].fill_(
+          std::numeric_limits<float>::quiet_NaN());
+    }
+  }
+  pool.mark_inactive(blocks[1], BlockType::KV);
+  const FullPublication publication = full_publication(pool, layout, blocks);
+  EXPECT_TRUE(allocator.needs_full_block_initialization(publication.rows,
+                                                        publication.epochs));
+  allocator.initialize_full_blocks(publication.rows, publication.epochs);
+  for (const auto* tensors : {&views.keys, &views.values}) {
+    for (const torch::Tensor& tensor : *tensors) {
+      EXPECT_TRUE(tensor[first_page].eq(0).all().item<bool>());
+      EXPECT_TRUE(tensor[last_page].eq(0).all().item<bool>());
+      EXPECT_TRUE(tensor[prefix_page].eq(31).all().item<bool>());
+      EXPECT_TRUE(
+          tensor[layout.full_read_padding_page()].eq(0).all().item<bool>());
+      EXPECT_TRUE(
+          tensor[layout.scratch_full_page()].isnan().all().item<bool>());
+      tensor[first_page].fill_(43);
+    }
+  }
+  allocator.initialize_full_blocks(publication.rows, publication.epochs);
+  for (const auto* tensors : {&views.keys, &views.values}) {
+    for (const torch::Tensor& tensor : *tensors) {
+      EXPECT_TRUE(tensor[first_page].eq(43).all().item<bool>());
+    }
+  }
+  pool.release(blocks[0], BlockType::KV);
+  const auto renewed = pool.allocate(/*num_blocks=*/1, BlockType::KV);
+  ASSERT_EQ(renewed.size(), 1u);
+  EXPECT_EQ(renewed[0], blocks[0]);
+  const FullPublication next = full_publication(pool, layout, renewed);
+  allocator.initialize_full_blocks(next.rows, next.epochs);
+  for (const auto* tensors : {&views.keys, &views.values}) {
+    for (const torch::Tensor& tensor : *tensors) {
+      EXPECT_TRUE(tensor[first_page].eq(0).all().item<bool>());
+      EXPECT_TRUE(tensor[prefix_page].eq(31).all().item<bool>());
+    }
+  }
+}
+
+TEST(StaticKVCacheTensorAllocatorTest,
+     FullOnlyBoundsTheLargerRoleWithoutAllocatingBacking) {
+  StaticKVCacheLayoutSpec spec = make_spec();
+  spec.num_slabs = 0;
+  spec.full_value_row_bytes = 128;
+  spec.linear_layer_ids.clear();
+  const StaticKVCacheLayout layout(spec);
+  EXPECT_EQ(layout.bytes_used(), 0u);
+  EXPECT_EQ(layout.max_slab_count(), (uint64_t{1} << 32) / 32);
+  EXPECT_EQ(layout.num_linear_groups(), 0u);
+  EXPECT_EQ(layout.objects_per_slab(KVCacheTensorRole::CONV), 0u);
+}
+
+TEST(StaticKVCacheTensorAllocatorTest,
+     RejectsUnequalHybridRolesAndFullOnlyCompanionBanks) {
+  StaticKVCacheLayoutSpec spec = make_spec();
+  spec.full_value_row_bytes = 4;
+  EXPECT_DEATH(StaticKVCacheLayout invalid(spec), "equal KEY and VALUE");
+  spec.linear_layer_ids.clear();
+  spec.draft_layer_count = 1;
+  EXPECT_DEATH(StaticKVCacheLayout invalid(spec), "companion draft banks");
 }
 
 TEST(StaticKVCacheTensorAllocatorTest, PlansGeometryWithoutAllocatingCapacity) {

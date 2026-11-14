@@ -223,10 +223,13 @@ KVCacheTensors create_kv_cache_tensors(
                                            kv_cache_shape.key_cache_shape(),
                                            create_options.dtype(),
                                            create_options);
-    tensors.value_cache = alloc_cache_tensor(KVCacheTensorRole::VALUE,
-                                             kv_cache_shape.value_cache_shape(),
-                                             create_options.dtype(),
-                                             create_options);
+    if (kv_cache_shape.has_value_cache_shape()) {
+      tensors.value_cache =
+          alloc_cache_tensor(KVCacheTensorRole::VALUE,
+                             kv_cache_shape.value_cache_shape(),
+                             create_options.dtype(),
+                             create_options);
+    }
     return tensors;
   }
   CHECK(!create_options.enable_vmm_kvcache() ||

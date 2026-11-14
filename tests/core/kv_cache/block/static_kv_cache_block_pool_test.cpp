@@ -65,6 +65,86 @@ size_t full_block_slab(const StaticKVCacheBlockPool& pool,
 }
 
 TEST(StaticKVCacheBlockPoolTest,
+     FullOnlyUnequalRolesAllocateNativePagesAndReclaimInactiveLeases) {
+  StaticKVCacheLayoutSpec spec = make_spec(/*num_slabs=*/6);
+  spec.full_value_row_bytes = 4;
+  spec.conv_row_bytes = 0;
+  spec.ssm_row_bytes = 0;
+  spec.linear_layer_ids.clear();
+  const StaticKVCacheLayout layout(spec);
+  StaticKVCacheBlockPool pool(/*logical_capacity=*/64, layout);
+  EXPECT_EQ(pool.slots_per_block(BlockType::KV), 40u);
+  EXPECT_EQ(pool.num_total_slots(), 160u);
+  EXPECT_EQ(pool.num_free_blocks(BlockType::KV), 4u);
+  EXPECT_EQ(pool.num_free_blocks(BlockType::LINEAR), 0u);
+  EXPECT_TRUE(pool.allocate(/*num_blocks=*/1, BlockType::LINEAR).empty());
+  EXPECT_TRUE(pool.allocate(/*num_blocks=*/5, BlockType::KV).empty());
+  EXPECT_EQ(pool.num_used_slots(), 0u);
+  EXPECT_EQ(pool.num_free_blocks(BlockType::KV), 4u);
+  const auto blocks = pool.allocate(/*num_blocks=*/4, BlockType::KV);
+  ASSERT_EQ(blocks.size(), 4u);
+  std::vector<int32_t> pages;
+  pages.reserve(blocks.size());
+  for (const int32_t id : blocks) {
+    std::vector<int32_t> rows;
+    pool.append_full_block_rows(id, &rows);
+    ASSERT_EQ(rows.size(), 2u);
+    EXPECT_EQ(rows[0], rows[1]);
+    EXPECT_EQ(rows.front(), pool.final_full_page(id));
+    pages.emplace_back(rows.front());
+  }
+  std::sort(pages.begin(), pages.end());
+  EXPECT_EQ(pages, (std::vector<int32_t>{2, 3, 4, 5}));
+  EXPECT_EQ(pool.num_free_slots(), 0u);
+  EXPECT_EQ(pool.reclaimable_slab_count(BlockType::KV, blocks), 0u);
+  pool.mark_inactive(blocks[0], BlockType::KV);
+  pool.mark_inactive(blocks[1], BlockType::KV);
+  EXPECT_EQ(pool.reclaimable_slab_count(BlockType::KV, blocks), 2u);
+  pool.mark_active(blocks[0], BlockType::KV);
+  EXPECT_EQ(pool.reclaimable_slab_count(BlockType::KV, blocks), 1u);
+
+  const int32_t released_page = pool.final_full_page(blocks[1]);
+  std::vector<int32_t> rows;
+  std::vector<uint64_t> epochs;
+  pool.append_full_block_rows(blocks[1], &rows, &epochs);
+  pool.release(blocks[1], BlockType::KV);
+  const auto renewed = pool.allocate(/*num_blocks=*/1, BlockType::KV);
+  ASSERT_EQ(renewed.size(), 1u);
+  EXPECT_EQ(renewed.front(), blocks[1]);
+  EXPECT_EQ(pool.final_full_page(renewed.front()), released_page);
+  pool.append_full_block_rows(renewed.front(), &rows, &epochs);
+  EXPECT_EQ(epochs, (std::vector<uint64_t>{1, 2}));
+  for (const int32_t id : blocks) {
+    pool.release(id, BlockType::KV);
+  }
+  EXPECT_EQ(pool.num_free_blocks(BlockType::KV), 4u);
+  EXPECT_EQ(pool.num_free_slots(), pool.num_total_slots());
+  EXPECT_EQ(pool.num_used_slots(), 0u);
+}
+
+TEST(StaticKVCacheBlockPoolTest,
+     FullOnlyKeyWithoutValueAccountsOnlyPresentRoles) {
+  StaticKVCacheLayoutSpec spec = make_spec(/*num_slabs=*/5);
+  spec.full_value_row_bytes = 0;
+  spec.conv_row_bytes = 0;
+  spec.ssm_row_bytes = 0;
+  spec.linear_layer_ids.clear();
+  const StaticKVCacheLayout layout(spec);
+  StaticKVCacheBlockPool pool(/*logical_capacity=*/64, layout);
+  EXPECT_EQ(pool.slots_per_block(BlockType::KV), 32u);
+  EXPECT_EQ(pool.num_total_slots(), 96u);
+  const auto blocks = pool.allocate(/*num_blocks=*/3, BlockType::KV);
+  ASSERT_EQ(blocks.size(), 3u);
+  EXPECT_EQ(pool.num_used_slots(), pool.num_total_slots());
+  EXPECT_EQ(pool.num_free_slots(), 0u);
+  for (const int32_t id : blocks) {
+    pool.release(id, BlockType::KV);
+  }
+  EXPECT_EQ(pool.num_used_slots(), 0u);
+  EXPECT_EQ(pool.num_free_slots(), pool.num_total_slots());
+}
+
+TEST(StaticKVCacheBlockPoolTest,
      CompanionBanksPackLinearStatesAndFullLeasesWithoutOverlappingBytes) {
   StaticKVCacheLayoutSpec spec = make_spec(/*num_slabs=*/7);
   spec.conv_row_bytes = 20;

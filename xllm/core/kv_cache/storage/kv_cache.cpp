@@ -314,6 +314,12 @@ int64_t KVCache::shared_full_read_padding_page() const {
              : static_cast<int64_t>(static_layout_->full_read_padding_page());
 }
 
+int64_t KVCache::shared_full_page_count() const {
+  return static_layout_ != nullptr && static_layout_->is_full_only()
+             ? static_cast<int64_t>(static_layout_->num_slabs())
+             : 0;
+}
+
 int64_t KVCache::cache_row_stride(KVCacheTensorRole /*role*/) const {
   return 1;
 }

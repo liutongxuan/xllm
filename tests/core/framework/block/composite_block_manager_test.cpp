@@ -2843,6 +2843,44 @@ class SharedKVCacheBlockTest : public ::testing::Test {
   int32_t original_chunk_size_ = 0;
 };
 
+TEST_F(SharedKVCacheBlockTest, FullOnlyPlanesRestoreAndEvictPrefixes) {
+  StaticKVCacheLayoutSpec spec;
+  spec.num_slots = 7;
+  spec.num_slabs = 8;
+  spec.full_row_bytes = 16;
+  spec.full_value_row_bytes = 8;
+  spec.dtype = torch::kFloat32;
+  spec.full_layer_ids = {0, 1};
+  BlockManager::Options options;
+  options.num_blocks(7)
+      .block_size(2)
+      .enable_shared_kv_cache(true)
+      .enable_prefix_cache(true)
+      .shared_layout(
+          std::make_shared<const StaticKVCacheLayout>(std::move(spec)));
+  CompositeBlockManager manager(build_composite_leaves(options), options);
+  EXPECT_EQ(manager.leaf_of(BlockType::LINEAR), nullptr);
+  Sequence producer = MakeTestSequence(0, {1, 2, 3, 4, 5, 6, 7, 8, 9});
+  ASSERT_TRUE(manager.allocate_sequence(&producer, 9));
+  producer.kv_state().set_kv_cache_tokens_num(9);
+  manager.deallocate_for_sequence(&producer);
+
+  Sequence restored = MakeTestSequence(1, {1, 2, 3, 4, 5, 6, 7, 8, 9});
+  manager.allocate_shared_for_sequence(&restored);
+  EXPECT_EQ(restored.kv_cache_tokens_num(), 8u);
+  EXPECT_EQ(restored.kv_state().shared_blocks_num(BlockType::KV), 4u);
+  ASSERT_TRUE(manager.allocate_sequence(&restored, 9));
+  restored.kv_state().set_kv_cache_tokens_num(9);
+  manager.deallocate_for_sequence(&restored);
+
+  Sequence different =
+      MakeTestSequence(2, {11, 12, 13, 14, 15, 16, 17, 18, 19});
+  // The six-page arena must evict inactive prefixes to serve five new pages.
+  ASSERT_TRUE(manager.allocate_sequence(&different, 9));
+  EXPECT_EQ(different.kv_state().num_blocks(BlockType::KV), 5u);
+  manager.deallocate_for_sequence(&different);
+}
+
 TEST_F(SharedKVCacheBlockTest, MultimodalPrefixIdentityKeepsBothGroupsAligned) {
   for (const MMType modality : {MMType::IMAGE, MMType::VIDEO}) {
     BlockManager::Options options =

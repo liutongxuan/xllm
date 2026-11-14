@@ -94,6 +94,7 @@ class KVCache final {
   int64_t shared_conv_scratch_row() const;
   int64_t shared_ssm_scratch_row() const;
   int64_t shared_full_read_padding_page() const;
+  int64_t shared_full_page_count() const;
   torch::Tensor physical_token_slots(const torch::Tensor& token_slots,
                                      int64_t block_size) const;
 

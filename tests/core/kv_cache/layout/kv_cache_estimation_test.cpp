@@ -27,6 +27,7 @@ limitations under the License.
 #include "core/kv_cache/layout/deepseek_v4_cache_policy.h"
 #include "core/kv_cache/layout/kv_cache_shape.h"
 #include "core/kv_cache/layout/static_kv_cache_layout.h"
+#include "core/kv_cache/storage/kv_cache_utils.h"
 #include "framework/model/model_args.h"
 #include "runtime/options.h"
 #include "tests/core/kv_cache/dcp_indexer_test_fixture.h"
@@ -466,6 +467,59 @@ TEST(KVCacheEstimationTest, SharedStaticCapacityUsesTheWholeArenaBudget) {
   EXPECT_EQ(capacity.num_linear_state_blocks(), 211);
   EXPECT_EQ(capacity.cache_size_in_bytes(), 25 * kSlabBytes);
   EXPECT_EQ(capacity.linear_cache_size_in_bytes(), 0);
+}
+
+TEST(KVCacheEstimationTest,
+     SharedFullOnlyCapacityReservesScratchAndReadPadding) {
+  const ModelArgs args = make_standard_args();
+  KVCacheEstimateOptions options = make_estimate_options();
+  options.enable_shared_kv_cache = true;
+  const KVCacheCapacity capacity = estimate_kv_cache_capacity(args, options);
+  // Four layers, two 1 KiB role rows per layer and page.
+  EXPECT_EQ(capacity.shared_slot_bytes(), 8192);
+  EXPECT_EQ(capacity.shared_slab_count(), 128);
+  EXPECT_EQ(capacity.shared_reserved_slab_count(), 2);
+  EXPECT_EQ(capacity.shared_min_slab_count(), 3);
+  EXPECT_EQ(capacity.n_blocks(), 127);
+  EXPECT_EQ(capacity.num_linear_state_blocks(), 0);
+  EXPECT_EQ(capacity.shared_linear_state_slots(), 0);
+  EXPECT_EQ(capacity.cache_size_in_bytes(), options.cache_size_in_bytes);
+}
+
+TEST(KVCacheEstimationTest, SharedMlaChargesUnequalOrAbsentRopeWithoutPadding) {
+  for (const int64_t rope_dim : {0, 8}) {
+    ModelArgs args = make_standard_args();
+    args.model_type("test_dense_mla")
+        .enable_mla(true)
+        .kv_lora_rank(32)
+        .qk_rope_head_dim(rope_dim);
+    KVCacheEstimateOptions options = make_estimate_options();
+    options.enable_shared_kv_cache = true;
+    const int64_t page_bytes = 4 * 16 * 2 * (32 + rope_dim);
+    options.cache_size_in_bytes = 10 * page_bytes + page_bytes - 1;
+    const KVCacheCapacity capacity = estimate_kv_cache_capacity(args, options);
+    EXPECT_EQ(capacity.shared_slot_bytes(), page_bytes);
+    EXPECT_EQ(capacity.shared_slab_count(), 10);
+    EXPECT_EQ(capacity.n_blocks(), 9);
+    EXPECT_EQ(capacity.cache_size_in_bytes(), 10 * page_bytes);
+    const KVCacheShape shape(capacity, args, /*world_size=*/1);
+    EXPECT_EQ(shape.has_value_cache_shape(), rope_dim != 0);
+    KVCacheCreateOptions create_options;
+    create_options.num_layers(args.n_layers()).dtype(options.dtype);
+    const StaticKVCacheLayout layout(shape, create_options);
+    EXPECT_EQ(layout.row_bytes(KVCacheTensorRole::KEY), 1024);
+    EXPECT_EQ(layout.row_bytes(KVCacheTensorRole::VALUE), 32 * rope_dim);
+    EXPECT_TRUE(layout.can_fit(/*full_blocks=*/8, /*linear_states=*/0));
+    EXPECT_FALSE(layout.can_fit(/*full_blocks=*/9, /*linear_states=*/0));
+  }
+}
+
+TEST(KVCacheEstimationTest, SharedFullOnlyRejectsBudgetConsumedByPadding) {
+  KVCacheEstimateOptions options = make_estimate_options();
+  options.enable_shared_kv_cache = true;
+  options.cache_size_in_bytes = 2 * 8192;
+  EXPECT_DEATH(estimate_kv_cache_capacity(make_standard_args(), options),
+               "cannot fit padding and one Full block");
 }
 
 TEST_F(SharedStaticRuntimeEstimationTest, VlmTp4UsesOnlyDecoderCacheGeometry) {

@@ -673,6 +673,199 @@ def _mla_metadata(*, prefill: bool = False, chunked: bool = False) -> SimpleName
     return metadata
 
 
+def _dense_mla_caches(device: torch.device, rope_dim: int) -> list[LayerCache]:
+    pages, page_size, latent_dim, layers = 8, 128, 512, 2
+    key_elements = pages * page_size * latent_dim
+    bank_elements = pages * page_size * (latent_dim + rope_dim)
+    arena = torch.zeros(layers * bank_elements, dtype=torch.bfloat16, device=device)
+    rows = torch.zeros(12, dtype=torch.int32, device=device)
+    return [
+        LayerCache(
+            key=arena.narrow(0, layer * bank_elements, key_elements).view(pages, page_size, 1, latent_dim),
+            value=(
+                arena.narrow(0, layer * bank_elements + key_elements, pages * page_size * rope_dim).view(
+                    pages, page_size, 1, rope_dim
+                )
+                if rope_dim
+                else None
+            ),
+            full_block_rows=rows,
+            shared_checkpoint_stride=1,
+            shared_bank_bytes=bank_elements * 2,
+            shared_slice_bytes=page_size * (latent_dim + rope_dim) * 2,
+            shared_full_read_padding_page=1,
+            shared_full_page_count=pages,
+        )
+        for layer in range(layers)
+    ]
+
+
+def test_shared_dense_full_graph_borrows_one_native_table_for_all_layers(monkeypatch: pytest.MonkeyPatch) -> None:
+    from xllm.python.model_executor.forward_context import AclGraphExecutionState
+
+    device = torch.device("cpu")
+    backend = NpuPagedAttentionBackend(4, 1, 512, 0.0625, 0, False, device, torch.bfloat16)
+    caches = _dense_mla_caches(device, 512)
+    backend.bind_kv_caches(caches)
+    monkeypatch.setattr(backend, "_allocate_graph_workspace", lambda *_args, **_kwargs: torch.empty(0))
+    metadata = _ordinary_metadata(paged=True)
+    metadata.shared_full_block_table = torch.tensor([[4], [5]], dtype=torch.int32)
+    metadata.shared_full_slot_mapping = torch.tensor([514, 641], dtype=torch.int32)
+    execution = AclGraphExecutionState({})
+    with (
+        forward_context(ForwardContext(backend, device, metadata, caches, execution_state=execution)),
+        patch.object(SharedKVCacheLayout, "full_block_table", side_effect=AssertionError("unexpected row remap")),
+        patch.object(SharedKVCacheLayout, "full_slot_mapping", side_effect=AssertionError("unexpected slot remap")),
+    ):
+        metadata.prepared_attention_state = backend.prepare_metadata(metadata)
+        backend.prepare(metadata, graph_mode=True)
+        graph_state = backend._paged_graph_state
+        metadata.shared_full_block_table[0, 0] = 6
+        metadata.shared_full_slot_mapping[0] = 770
+        backend.prepare_graph_replay(metadata)
+        assert backend._paged_graph_state is graph_state
+        assert graph_state.block_table is metadata.shared_full_block_table
+        assert graph_state.block_table.tolist() == [[6], [5]]
+        assert backend._full_slot_mapping(metadata) is metadata.shared_full_slot_mapping
+        assert len(execution.paged_attention) == 1
+
+
+@pytest.mark.parametrize("prepared", [False, True])
+@pytest.mark.parametrize("prefill,chunked", [(False, False), (True, False), (False, True)])
+@pytest.mark.parametrize("rope_dim", [0, 64])
+def test_shared_dense_mla_borrows_final_addresses_for_every_layer(
+    prepared: bool, prefill: bool, chunked: bool, rope_dim: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend = _mla_backend()
+    caches = _dense_mla_caches(torch.device("cpu"), rope_dim)
+    backend.bind_kv_caches(caches)
+    metadata = _mla_metadata(prefill=prefill, chunked=chunked)
+    metadata.shared_full_block_table = torch.tensor([[4], [5]], dtype=torch.int32)
+    metadata.shared_full_slot_mapping = metadata.slot_mapping + 512
+    writes: list[torch.Tensor] = []
+    tables: list[torch.Tensor] = []
+
+    def scatter(slots: torch.Tensor, *args: object) -> None:
+        writes.append(slots)
+
+    def attend(
+        query: torch.Tensor,
+        query_rope: torch.Tensor | None,
+        latent: torch.Tensor,
+        rope: torch.Tensor | None,
+        table: torch.Tensor,
+        layer_id: int,
+    ) -> torch.Tensor:
+        tables.append(table)
+        return query
+
+    monkeypatch.setattr(torch.ops.xllm_ops, "reshape_paged_cache", scatter)
+    monkeypatch.setattr(backend, "_mla_dense_fia_v2", attend)
+    query = torch.zeros(metadata.slot_mapping.numel(), 2, 512)
+    key = torch.zeros(query.shape[0], 1, 512)
+    rope = torch.zeros(query.shape[0], 1, rope_dim) if rope_dim else None
+    query_rope = None if rope is None else rope.expand(-1, 2, -1)
+    with (
+        forward_context(ForwardContext(backend, torch.device("cpu"), metadata, caches)),
+        patch.object(SharedKVCacheLayout, "full_block_table", side_effect=AssertionError("unexpected row remap")),
+        patch.object(SharedKVCacheLayout, "full_slot_mapping", side_effect=AssertionError("unexpected slot remap")),
+    ):
+        for physical_page in (4, 6):
+            metadata.shared_full_block_table[0, 0] = physical_page
+            metadata.shared_full_slot_mapping[0] = physical_page * 128 + 2
+            if prepared:
+                metadata.prepared_attention_state = backend.prepare_metadata(metadata)
+            backend.prepare(metadata)
+            for layer_id in range(len(caches)):
+                layer = SimpleNamespace(layer_id=layer_id, qk_rope_head_dim=rope_dim, causal=True)
+                backend.execute_mla(query, query_rope, key, rope, layer)
+                if rope_dim and not prefill and not chunked:
+                    assert backend.mla_preprocess_context(layer).slot_mapping is metadata.shared_full_slot_mapping
+            assert all(table is metadata.shared_full_block_table for table in tables)
+            assert all(slots is metadata.shared_full_slot_mapping for slots in writes)
+            assert backend._block_table_i32[0, 0] == physical_page
+            assert backend._direct_full_slot_mapping[0] == physical_page * 128 + 2
+            assert not backend._shared_full_block_tables and not backend._shared_full_slot_mappings
+
+
+def test_shared_dense_mla_rejects_graph_before_changing_active_state() -> None:
+    backend = _mla_backend()
+    backend.bind_kv_caches(_dense_mla_caches(torch.device("cpu"), 64))
+    active = object()
+    backend._metadata = active
+    metadata = _mla_metadata()
+    with pytest.raises(ValueError, match="eager execution only"):
+        backend.prepare(metadata, graph_mode=True)
+    assert backend._metadata is active
+
+
+@pytest.mark.parametrize("prepared,rope_dim", [(False, 64), (True, 64), (True, 0)])
+@torch.inference_mode()
+def test_shared_dense_mla_matches_cpu_attention_after_page_reuse(prepared: bool, rope_dim: int) -> None:
+    if not torch.npu.is_available():
+        pytest.skip("requires an NPU")
+    device = torch.device("npu:0")
+    heads, latent_dim, page_size, scale = 4, 512, 128, 256**-0.5
+    backend = NpuPagedAttentionBackend(heads, 1, latent_dim + rope_dim, scale, 0, True, device, torch.bfloat16)
+    if not backend._use_fia_v2:
+        pytest.skip("dense MLA requires FIA v2")
+    caches = _dense_mla_caches(device, rope_dim)
+    backend.bind_kv_caches(caches)
+    metadata = _mla_metadata()
+    for name, tensor in vars(metadata).items():
+        if isinstance(tensor, torch.Tensor):
+            setattr(metadata, name, tensor.to(device))
+    metadata.block_table = torch.tensor([[1], [2]], dtype=torch.int32, device=device)
+    metadata.slot_mapping = torch.tensor([page_size + 2, 2 * page_size + 1], dtype=torch.int32, device=device)
+    metadata.kv_seq_lens = torch.tensor([3, 2], dtype=torch.int32, device=device)
+    metadata.kv_seq_lens_host_values = [3, 2]
+    metadata.shared_full_block_table = torch.tensor([[4], [5]], dtype=torch.int32, device=device)
+    metadata.shared_full_slot_mapping = torch.tensor(
+        [4 * page_size + 2, 5 * page_size + 1], dtype=torch.int32, device=device
+    )
+    torch.manual_seed(271)
+    query = torch.randn(2, heads, latent_dim, dtype=torch.bfloat16, device=device) * 0.1
+    keys = torch.randn(2, 1, latent_dim, dtype=torch.bfloat16, device=device) * 0.1
+    query_rope = torch.randn(2, heads, rope_dim, dtype=torch.bfloat16, device=device) * 0.1 if rope_dim else None
+    key_rope = torch.randn(2, 1, rope_dim, dtype=torch.bfloat16, device=device) * 0.1 if rope_dim else None
+    with forward_context(ForwardContext(backend, device, metadata, caches)):
+        for physical_page in (4, 6):
+            metadata.shared_full_block_table[0, 0] = physical_page
+            metadata.shared_full_slot_mapping[0] = physical_page * page_size + 2
+            if prepared:
+                metadata.prepared_attention_state = backend.prepare_metadata(metadata)
+            backend.prepare(metadata)
+            for layer_id, cache in enumerate(caches):
+                assert cache.key is not None
+                cache.key[0].fill_(torch.nan)
+                cache.key[physical_page, :2].fill_(0.1 * (layer_id + 1))
+                cache.key[5, :1].fill_(-0.2)
+                if cache.value is not None:
+                    cache.value[0].fill_(torch.nan)
+                    cache.value[physical_page, :2].fill_(0.05)
+                    cache.value[5, :1].fill_(-0.1)
+                layer = SimpleNamespace(layer_id=layer_id, qk_rope_head_dim=rope_dim, causal=True)
+                output = backend.execute_mla(query, query_rope, keys, key_rope, layer)
+                torch.testing.assert_close(cache.key[physical_page, 2, 0], keys[0, 0])
+                torch.testing.assert_close(cache.key[5, 1, 0], keys[1, 0])
+                if cache.value is not None:
+                    torch.testing.assert_close(cache.value[physical_page, 2, 0], key_rope[0, 0])
+                    torch.testing.assert_close(cache.value[5, 1, 0], key_rope[1, 0])
+                query_cpu = query.cpu().float()
+                expected = []
+                for sequence, (page, length) in enumerate(((physical_page, 3), (5, 2))):
+                    latent = cache.key[page, :length, 0].cpu().float()
+                    scores = torch.einsum("hd,sd->hs", query_cpu[sequence], latent)
+                    if cache.value is not None:
+                        rope = cache.value[page, :length, 0].cpu().float()
+                        scores += torch.einsum("hd,sd->hs", query_rope[sequence].cpu().float(), rope)
+                    expected.append(torch.einsum("hs,sd->hd", (scores * scale).softmax(-1), latent))
+                torch.testing.assert_close(output.cpu().float(), torch.stack(expected), rtol=1e-2, atol=2e-3)
+                assert cache.key[1].eq(0).all()
+                if cache.value is not None:
+                    assert cache.value[1].eq(0).all()
+
+
 def test_mla_block_mask_tracks_device_lengths_and_keeps_noncausal_queries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
