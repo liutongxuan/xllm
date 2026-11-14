@@ -673,8 +673,8 @@ def _mla_metadata(*, prefill: bool = False, chunked: bool = False) -> SimpleName
     return metadata
 
 
-def _dense_mla_caches(device: torch.device, rope_dim: int) -> list[LayerCache]:
-    pages, page_size, latent_dim, layers = 8, 128, 512, 2
+def _dense_mla_caches(device: torch.device, rope_dim: int, *, latent_dim: int = 512) -> list[LayerCache]:
+    pages, page_size, layers = 8, 128, 2
     key_elements = pages * page_size * latent_dim
     bank_elements = pages * page_size * (latent_dim + rope_dim)
     arena = torch.zeros(layers * bank_elements, dtype=torch.bfloat16, device=device)
@@ -704,11 +704,12 @@ def test_shared_dense_full_graph_borrows_one_native_table_for_all_layers(monkeyp
     from xllm.python.model_executor.forward_context import AclGraphExecutionState
 
     device = torch.device("cpu")
-    backend = NpuPagedAttentionBackend(4, 1, 512, 0.0625, 0, False, device, torch.bfloat16)
-    caches = _dense_mla_caches(device, 512)
+    backend = NpuPagedAttentionBackend(4, 1, 128, 0.0625, 0, False, device, torch.bfloat16)
+    caches = _dense_mla_caches(device, 128, latent_dim=128)
     backend.bind_kv_caches(caches)
     monkeypatch.setattr(backend, "_allocate_graph_workspace", lambda *_args, **_kwargs: torch.empty(0))
     metadata = _ordinary_metadata(paged=True)
+    metadata.slot_mapping = torch.tensor([2, 129], dtype=torch.int32)
     metadata.shared_full_block_table = torch.tensor([[4], [5]], dtype=torch.int32)
     metadata.shared_full_slot_mapping = torch.tensor([514, 641], dtype=torch.int32)
     execution = AclGraphExecutionState({})
@@ -736,8 +737,12 @@ def test_shared_dense_full_graph_borrows_one_native_table_for_all_layers(monkeyp
 def test_shared_dense_mla_borrows_final_addresses_for_every_layer(
     prepared: bool, prefill: bool, chunked: bool, rope_dim: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    backend = _mla_backend()
-    caches = _dense_mla_caches(torch.device("cpu"), rope_dim)
+    device = torch.device("cpu")
+    latent_dim = 512 if rope_dim else 128
+    backend = NpuPagedAttentionBackend(
+        2, 1, latent_dim + rope_dim, 0.125, 0, is_mla=True, device=device, dtype=torch.bfloat16
+    )
+    caches = _dense_mla_caches(device, rope_dim, latent_dim=latent_dim)
     backend.bind_kv_caches(caches)
     metadata = _mla_metadata(prefill=prefill, chunked=chunked)
     metadata.shared_full_block_table = torch.tensor([[4], [5]], dtype=torch.int32)
@@ -761,8 +766,8 @@ def test_shared_dense_mla_borrows_final_addresses_for_every_layer(
 
     monkeypatch.setattr(torch.ops.xllm_ops, "reshape_paged_cache", scatter)
     monkeypatch.setattr(backend, "_mla_dense_fia_v2", attend)
-    query = torch.zeros(metadata.slot_mapping.numel(), 2, 512)
-    key = torch.zeros(query.shape[0], 1, 512)
+    query = torch.zeros(metadata.slot_mapping.numel(), 2, latent_dim)
+    key = torch.zeros(query.shape[0], 1, latent_dim)
     rope = torch.zeros(query.shape[0], 1, rope_dim) if rope_dim else None
     query_rope = None if rope is None else rope.expand(-1, 2, -1)
     with (
@@ -788,6 +793,24 @@ def test_shared_dense_mla_borrows_final_addresses_for_every_layer(
             assert not backend._shared_full_block_tables and not backend._shared_full_slot_mappings
 
 
+def test_shared_dense_nope_rejects_unsupported_width_before_changing_active_state() -> None:
+    backend = _ordinary_backend()
+    active_caches = backend._kv_caches
+    active = _ordinary_metadata(paged=True)
+    backend.prepare(active)
+    unsupported = _dense_mla_caches(torch.device("cpu"), 0, latent_dim=512)
+
+    for _ in range(2):
+        with pytest.raises(ValueError, match="FIA v2 TND head dimension 64, 128, or 192"):
+            backend.bind_kv_caches(unsupported)
+        assert backend._kv_caches is active_caches
+        assert backend._metadata is active
+        assert backend.shared_kv_layout is None
+        assert not backend.is_mla
+        assert backend.num_kv_blocks == 4
+        assert backend.page_size == 128
+
+
 def test_shared_dense_mla_rejects_graph_before_changing_active_state() -> None:
     backend = _mla_backend()
     backend.bind_kv_caches(_dense_mla_caches(torch.device("cpu"), 64))
@@ -805,11 +828,14 @@ def test_shared_dense_mla_matches_cpu_attention_after_page_reuse(prepared: bool,
     if not torch.npu.is_available():
         pytest.skip("requires an NPU")
     device = torch.device("npu:0")
-    heads, latent_dim, page_size, scale = 4, 512, 128, 256**-0.5
-    backend = NpuPagedAttentionBackend(heads, 1, latent_dim + rope_dim, scale, 0, True, device, torch.bfloat16)
+    heads, page_size, scale = 4, 128, 256**-0.5
+    latent_dim = 512 if rope_dim else 128
+    backend = NpuPagedAttentionBackend(
+        heads, 1, latent_dim + rope_dim, scale, 0, is_mla=True, device=device, dtype=torch.bfloat16
+    )
     if not backend._use_fia_v2:
         pytest.skip("dense MLA requires FIA v2")
-    caches = _dense_mla_caches(device, rope_dim)
+    caches = _dense_mla_caches(device, rope_dim, latent_dim=latent_dim)
     backend.bind_kv_caches(caches)
     metadata = _mla_metadata()
     for name, tensor in vars(metadata).items():
