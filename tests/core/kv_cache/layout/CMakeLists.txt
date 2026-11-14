@@ -44,6 +44,7 @@ cc_test(
     kv_cache_estimation_test.cpp
   DEPS
     :kv_cache_estimation
+    :static_kv_cache_tensor_allocator
     $<$<BOOL:${USE_NPU}>:models>
     GTest::gtest_main
 )
