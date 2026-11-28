@@ -28,6 +28,7 @@ limitations under the License.
 #include "core/kv_cache/layout/deepseek_v4_cache_policy.h"
 #include "core/kv_cache/layout/kv_cache_shape.h"
 #include "core/kv_cache/layout/static_kv_layout.h"
+#include "core/util/scope_guard.h"
 #include "framework/model/model_args.h"
 #include "runtime/options.h"
 #include "tests/core/kv_cache/dcp_indexer_test_fixture.h"
@@ -2094,6 +2095,42 @@ TEST(KVCacheEstimationTest, PhysicalHeadWidthControlsCacheBudget) {
   // Two local KV heads, with physical padding in both K and V.
   EXPECT_EQ(capacity.slot_size(), 2 * 2 * 128 * 2);
   EXPECT_EQ(model_args.head_dim(), 96);
+}
+
+TEST_P(DcpIndexerEstimationTest, RuntimeDtypeControlsCapacityAndScaleLayout) {
+  KVCacheConfig& config = KVCacheConfig::get_instance();
+  const std::string previous_dtype = config.indexer_cache_dtype();
+  ScopeGuard restore_config(
+      [&] { config.indexer_cache_dtype(previous_dtype); });
+
+  ModelArgs model_args = make_standard_args();
+  model_args.index_n_heads(1).index_head_dim(16);
+  runtime::Options ordinary_options;
+  ordinary_options.block_size(16).indexer_cache_dtype("auto");
+  runtime::Options quantized_options = ordinary_options;
+  quantized_options.indexer_cache_dtype("int8");
+  KVCacheEstimateContext context;
+  context.dtype = torch::kFloat16;
+  context.world_size = 1;
+  context.virtual_memory_cache_size = 1024 * 1024;
+
+  for (const bool global_quantized : {false, true}) {
+    SCOPED_TRACE(global_quantized);
+    config.indexer_cache_dtype(global_quantized ? "int8" : "auto");
+    const KVCacheCapacity ordinary =
+        KVCacheEstimator(model_args).estimate(ordinary_options, context);
+    const KVCacheCapacity quantized =
+        KVCacheEstimator(model_args).estimate(quantized_options, context);
+    EXPECT_EQ(ordinary.index_slot_size(), 32 * expected_factor());
+    EXPECT_EQ(quantized.index_slot_size(), 20 * expected_factor());
+    EXPECT_EQ(quantized.slot_size(), ordinary.slot_size());
+    EXPECT_GT(quantized.n_blocks(), ordinary.n_blocks());
+    const KVCacheShape ordinary_shape(ordinary, model_args, /*world_size=*/1);
+    const KVCacheShape quantized_shape(quantized, model_args, /*world_size=*/1);
+    EXPECT_FALSE(ordinary_shape.has_index_cache_scale_shape());
+    EXPECT_TRUE(quantized_shape.has_index_cache_scale_shape());
+    EXPECT_EQ(config.indexer_cache_dtype(), global_quantized ? "int8" : "auto");
+  }
 }
 
 TEST_P(DcpIndexerEstimationTest, IncludesAllIndexerBytes) {

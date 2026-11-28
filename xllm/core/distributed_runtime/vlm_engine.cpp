@@ -339,8 +339,7 @@ bool VLMEngine::allocate_kv_cache(
       .enable_kvcache_store = options_.enable_kvcache_store(),
       .instance_role = options_.instance_role(),
       .kv_cache_dtype = options_.kv_cache_dtype(),
-      .indexer_cache_dtype =
-          KVCacheConfig::get_instance().indexer_cache_dtype(),
+      .indexer_cache_dtype = options_.indexer_cache_dtype(),
       .model_type = args_.model_type(),
   };
 

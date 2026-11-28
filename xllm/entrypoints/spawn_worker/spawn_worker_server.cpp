@@ -124,6 +124,7 @@ SpawnWorkerServer::SpawnWorkerServer(
       prefill_config.enable_chunked_prefill,
       prefill_config.enable_dp_fair_token_budget);
   runner_options.block_size(block_size)
+      .indexer_cache_dtype(indexer_cache_dtype)
       .backend(backend)
       .model_impl(model_impl)
       .extension_impl(extension_impl)

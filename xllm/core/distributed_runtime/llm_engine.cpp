@@ -355,7 +355,7 @@ bool LLMEngine::allocate_kv_cache(
           is_deepseek_v4_family(args_.model_type()) &&
           args_.model_type() != "deepseek_v41",
       .kv_cache_dtype = options_.kv_cache_dtype(),
-      .indexer_cache_dtype = kv_cache_config.indexer_cache_dtype(),
+      .indexer_cache_dtype = options_.indexer_cache_dtype(),
       .model_type = args_.model_type(),
   };
   // initialize block manager

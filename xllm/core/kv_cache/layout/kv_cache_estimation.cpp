@@ -1007,8 +1007,7 @@ KVCacheCapacity KVCacheEstimator::estimate(
       KVCacheConfig::get_instance().enable_shared_kv_cache() &&
       !options.is_draft_engine();
   estimate_options.kv_cache_dtype = options.kv_cache_dtype();
-  estimate_options.indexer_cache_dtype =
-      ::xllm::KVCacheConfig::get_instance().indexer_cache_dtype();
+  estimate_options.indexer_cache_dtype = options.indexer_cache_dtype();
   estimate_options.cache_size_in_bytes =
       estimate_memory_budget(options, context);
   estimate_options.block_size = options.block_size();

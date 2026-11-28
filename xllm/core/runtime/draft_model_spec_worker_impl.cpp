@@ -108,7 +108,7 @@ DraftModelSpecWorkerImpl<TargetInput>::build_draft_kv_cache_layout(
     CHECK(kv_transfer_ == nullptr && !shape.has_grouped_cache_layout() &&
           !layout.enable_linear_attention() && args.index_n_heads() == 0 &&
           draft_impl_->options().kv_cache_dtype() != "int8" &&
-          KVCacheConfig::get_instance().indexer_cache_dtype() != "int8")
+          draft_impl_->options().indexer_cache_dtype() != "int8")
         << "Static shared draft storage requires ordinary Full-only layers";
     layout.static_layout(shared.static_layout())
         .shared_draft_cache(true)
@@ -180,8 +180,7 @@ KVCacheEstimateOptions make_kv_cache_estimate_options(
   KVCacheEstimateOptions estimate_options;
   estimate_options.dtype = dtype;
   estimate_options.kv_cache_dtype = options.kv_cache_dtype();
-  estimate_options.indexer_cache_dtype =
-      KVCacheConfig::get_instance().indexer_cache_dtype();
+  estimate_options.indexer_cache_dtype = options.indexer_cache_dtype();
   estimate_options.cache_size_in_bytes = cache_size_in_bytes;
   estimate_options.block_size = options.block_size();
   estimate_options.world_size = dp_local_tp_size;
@@ -340,7 +339,7 @@ KVCacheShape DraftModelSpecWorkerImpl<TargetInput>::draft_kv_cache_shape(
           : get_dp_local_tp_size(draft_impl_->context_.get_parallel_args());
   KVCacheCapacity draft_capacity;
   draft_capacity.enable_indexer_cache_quant(
-      KVCacheConfig::get_instance().indexer_cache_dtype() == "int8");
+      draft_impl_->options().indexer_cache_dtype() == "int8");
   return build_speculative_draft_kv_cache_shape(
       target_kv_cache_shape,
       draft_capacity,

@@ -288,6 +288,9 @@ struct Options {
   // "auto" (default): KV cache dtype aligns with model dtype (no quantization).
   // "int8": Enables INT8 quantization. Only supported on MLU backend.
   PROPERTY(std::string, kv_cache_dtype) = "auto";
+
+  // Indexer keys use the model dtype ("auto") or int8 with per-token scales.
+  PROPERTY(std::string, indexer_cache_dtype) = "auto";
 };
 
 }  // namespace runtime

@@ -383,7 +383,7 @@ void WorkerImpl::allocate_kv_cache_storage(const KVCacheShape& kv_cache_shape,
   const bool enable_kv_cache_quant = options_.kv_cache_dtype() == "int8";
 
   const bool enable_indexer_cache_quant =
-      ::xllm::KVCacheConfig::get_instance().indexer_cache_dtype() == "int8";
+      options_.indexer_cache_dtype() == "int8";
   if (enable_lighting_indexer) {
     CHECK_EQ(kv_cache_shape.has_index_cache_scale_shape(),
              enable_indexer_cache_quant)

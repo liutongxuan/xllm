@@ -39,7 +39,6 @@ limitations under the License.
 #include "core/framework/config/eplb_config.h"
 #include "core/framework/config/execution_config.h"
 #include "core/framework/config/kernel_config.h"
-#include "core/framework/config/kv_cache_config.h"
 #include "core/framework/config/model_config.h"
 #include "core/framework/config/parallel_config.h"
 #include "core/framework/config/service_config.h"
@@ -334,8 +333,7 @@ void WorkerServer::create_spawn_server(int32_t local_rank,
   std::string text_encoder_tp_size_str =
       std::to_string(options.text_encoder_tp_size());
   const char* text_encoder_tp_size_ptr = text_encoder_tp_size_str.c_str();
-  const std::string& indexer_cache_dtype =
-      KVCacheConfig::get_instance().indexer_cache_dtype();
+  const std::string& indexer_cache_dtype = options.indexer_cache_dtype();
   const char* indexer_cache_dtype_ptr = indexer_cache_dtype.c_str();
   std::string enable_mtp_draft_body_tp1_str =
       std::to_string(options.enable_mtp_draft_body_tp1());
