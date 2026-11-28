@@ -16,11 +16,14 @@ limitations under the License.
 #pragma once
 
 #include "core/kv_cache/block/block_manager_impl.h"
+#include "core/kv_cache/layout/sliding_window_retention.h"
 
 namespace xllm {
 
 // Sliding-window leaf of CompositeBlockManager. Reuses BlockManagerImpl's
-// physical pool and flat-append growth. SWA-specific behavior:
+// physical pool and flat-append growth. Rolling retention boundaries come from
+// SlidingWindowRetention; this leaf applies them to sequence-owned resources.
+// SWA-specific behavior:
 //   - release_out_of_window() drops leading slid-out blocks; released
 //     positions stay as invalid placeholders so DSA modulo indexing
 //     (`(pos/block_size) % semantic_cols`) remains stable.
@@ -55,13 +58,11 @@ class SlidingWindowBlockManager : public BlockManagerImpl {
   uint32_t swa_blocks_per_seq() const { return options_.swa_blocks_per_seq(); }
 
  private:
-  size_t num_out_of_window_blocks(const KVCacheState& kv_state,
-                                  size_t cached_tokens) const;
   size_t num_reclaimable_out_of_window_blocks(const KVCacheState& kv_state,
                                               size_t cached_tokens) const;
-  void release_out_of_window(Sequence* seq,
-                             KVCacheState& kv_state,
-                             size_t cached_tokens);
+  void release_out_of_window(KVCacheState& kv_state, size_t cached_tokens);
+
+  SlidingWindowRetention retention_;
 };
 
 }  // namespace xllm

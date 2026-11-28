@@ -2,6 +2,17 @@ include(cc_test)
 
 cc_test(
   NAME
+    sliding_window_retention_test
+  CPU_ONLY
+  SRCS
+    sliding_window_retention_test.cpp
+  DEPS
+    :sliding_window_retention
+    GTest::gtest_main
+)
+
+cc_test(
+  NAME
     history_growth_plan_test
   CPU_ONLY
   SRCS
