@@ -24,7 +24,10 @@ limitations under the License.
 namespace xllm {
 
 SlidingWindowBlockManager::SlidingWindowBlockManager(Options options)
-    : BlockManagerImpl(options.cache_retention(CacheRetention::WINDOW)) {
+    : BlockManagerImpl(options.cache_retention(CacheRetention::WINDOW)),
+      retention_(options.block_size(),
+                 options.sliding_window_size(),
+                 options.num_speculative_tokens()) {
   CHECK_GT(options_.swa_blocks_per_seq(), 0u)
       << "swa_blocks_per_seq must be positive";
   if (options_.enable_prefix_cache()) {
@@ -47,20 +50,15 @@ SlidingWindowBlockManager::allocate_for_sequence(Sequence* seq,
   const size_t restore_tokens = seq->kv_cache_tokens_num();
   if (restore_tokens > kv_state.kv_cache_tokens_num()) {
     CHECK_LE(restore_tokens, num_tokens);
-    const size_t block_size = options_.block_size();
     const size_t held = kv_state.num_blocks(partition_id());
-    const size_t logical_blocks = (num_tokens + block_size - 1) / block_size;
-    if (logical_blocks <= held) {
+    const HistoryGrowthPlan growth = plan_history_growth(kv_state, num_tokens);
+    if (growth.additional_blocks() == 0) {
       return std::vector<Block>{};
     }
 
-    const size_t sliding_window_tokens =
-        std::max<size_t>(options_.sliding_window_size(), 1);
-    const size_t restore_window_start =
-        restore_tokens - std::min(restore_tokens, sliding_window_tokens);
-    const size_t first_live_block = restore_window_start / block_size;
-    const size_t live_begin = std::max(held, first_live_block);
-    const size_t active_blocks = logical_blocks - live_begin;
+    const size_t live_begin =
+        std::max(held, retention_.restore_begin_block(restore_tokens));
+    const size_t active_blocks = growth.required_blocks() - live_begin;
     std::vector<Block> live_blocks = allocate(active_blocks);
     if (live_blocks.size() != active_blocks) {
       const size_t reclaimable =
@@ -68,7 +66,7 @@ SlidingWindowBlockManager::allocate_for_sequence(Sequence* seq,
       if (num_free_blocks() + reclaimable < active_blocks) {
         return std::nullopt;
       }
-      release_out_of_window(seq, kv_state, restore_tokens);
+      release_out_of_window(kv_state, restore_tokens);
       live_blocks = allocate(active_blocks);
       if (live_blocks.size() != active_blocks) {
         return std::nullopt;
@@ -103,18 +101,13 @@ SlidingWindowBlockManager::allocate_for_sequence(Sequence* seq,
     if (num_free_blocks() + reclaimable < num_additional) {
       return std::nullopt;
     }
-    release_out_of_window(seq, kv_state, restore_tokens);
+    release_out_of_window(kv_state, restore_tokens);
     return BlockManagerImpl::allocate_for_sequence(seq, kv_state, num_tokens);
   }
 
-  const size_t block_size = options_.block_size();
-  const size_t logical_blocks = (num_tokens + block_size - 1) / block_size;
-  const size_t sliding_window_tokens =
-      std::max<size_t>(options_.sliding_window_size(), 1);
-  const size_t window_start =
-      num_tokens - std::min(num_tokens, sliding_window_tokens);
-  const size_t inactive_blocks = window_start / block_size;
-  const size_t active_blocks = logical_blocks - inactive_blocks;
+  const HistoryGrowthPlan growth = plan_history_growth(kv_state, num_tokens);
+  const size_t inactive_blocks = retention_.restore_begin_block(num_tokens);
+  const size_t active_blocks = growth.required_blocks() - inactive_blocks;
   std::vector<Block> live_blocks = allocate(active_blocks);
   if (live_blocks.size() != active_blocks) {
     return std::nullopt;
@@ -223,42 +216,17 @@ void SlidingWindowBlockManager::release_out_of_window(Sequence* seq,
   if (seq == nullptr) {
     return;
   }
-  release_out_of_window(seq, kv_state, seq->kv_cache_tokens_num());
+  release_out_of_window(kv_state, seq->kv_cache_tokens_num());
 }
 
-void SlidingWindowBlockManager::release_out_of_window(Sequence* seq,
-                                                      KVCacheState& kv_state,
+void SlidingWindowBlockManager::release_out_of_window(KVCacheState& kv_state,
                                                       size_t cached_tokens) {
-  if (seq == nullptr) {
-    return;
-  }
-  const size_t release_blocks =
-      num_out_of_window_blocks(kv_state, cached_tokens);
+  const size_t release_blocks = retention_.release_end_block(
+      cached_tokens, kv_state.num_blocks(partition_id()));
   if (release_blocks == 0) {
     return;
   }
   kv_state.release_blocks_before(partition_id(), release_blocks);
-}
-
-size_t SlidingWindowBlockManager::num_out_of_window_blocks(
-    const KVCacheState& kv_state,
-    size_t cached_tokens) const {
-  const size_t block_size = options_.block_size();
-  const size_t held = kv_state.num_blocks(partition_id());
-  if (held == 0) {
-    return 0;
-  }
-  const size_t num_spec_tokens =
-      static_cast<size_t>(options_.num_speculative_tokens());
-  const size_t sliding_window_tokens =
-      std::max<size_t>(options_.sliding_window_size(), 1);
-  if (cached_tokens < sliding_window_tokens + num_spec_tokens) {
-    return 0;
-  }
-  const size_t skipped_tokens =
-      cached_tokens - sliding_window_tokens - num_spec_tokens + 1;
-  const size_t skipped_blocks = skipped_tokens / block_size;
-  return std::min(skipped_blocks, held);
 }
 
 size_t SlidingWindowBlockManager::num_reclaimable_out_of_window_blocks(
@@ -266,7 +234,7 @@ size_t SlidingWindowBlockManager::num_reclaimable_out_of_window_blocks(
     size_t cached_tokens) const {
   const Slice<Block> swa_blocks = kv_state.blocks(partition_id());
   const size_t release_blocks =
-      num_out_of_window_blocks(kv_state, cached_tokens);
+      retention_.release_end_block(cached_tokens, swa_blocks.size());
   const uint32_t max_reclaimable_ref_count =
       options_.enable_prefix_cache() ? 2u : 1u;
   size_t reclaimable = 0;

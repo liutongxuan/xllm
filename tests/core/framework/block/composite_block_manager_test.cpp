@@ -36,6 +36,7 @@ limitations under the License.
 #include "core/kv_cache/block/block_utils.h"
 #include "core/kv_cache/block/concurrent_block_manager_impl.h"
 #include "core/kv_cache/block/linear_state_block_manager.h"
+#include "core/kv_cache/block/sliding_window_block_manager.h"
 #include "core/kv_cache/block/static_kv_block_pool.h"
 #include "core/kv_cache/layout/static_kv_layout.h"
 #include "core/kv_cache/manager/block_manager_pool.h"
@@ -1048,6 +1049,121 @@ TEST(CompositeBlockManagerTest,
   EXPECT_EQ(swa_leaf->num_blocks_in_prefix_cache(), 0u);
 
   manager.deallocate_for_sequence(&seq);
+}
+
+TEST(CompositeBlockManagerTest, SlidingWindowPreservesSpeculativeHistory) {
+  BlockManager::Options options;
+  options.num_blocks(8)
+      .block_size(4)
+      .block_type(BlockType::SWA)
+      .sliding_window_size(8)
+      .swa_blocks_per_seq(2)
+      .num_speculative_tokens(2)
+      .enable_prefix_cache(false);
+  SlidingWindowBlockManager leaf(options);
+  Sequence sequence =
+      MakeTestSequence(/*index=*/0, std::vector<int32_t>(17, 7));
+  auto allocated = leaf.allocate_for_sequence(
+      &sequence, sequence.kv_state(), /*num_tokens=*/16);
+  ASSERT_TRUE(allocated.has_value());
+  ASSERT_EQ(allocated->size(), 4u);
+  sequence.add_blocks(BlockType::SWA, *allocated);
+  allocated->clear();
+  sequence.kv_state().set_kv_cache_tokens_num(/*num=*/12);
+  leaf.release_out_of_window(&sequence, sequence.kv_state());
+  EXPECT_EQ(leaf.num_used_blocks(), 4u);
+  EXPECT_TRUE(sequence.kv_state().blocks(BlockType::SWA)[0].is_valid());
+
+  sequence.kv_state().set_kv_cache_tokens_num(/*num=*/13);
+  leaf.release_out_of_window(&sequence, sequence.kv_state());
+  const Slice<Block> blocks = sequence.kv_state().blocks(BlockType::SWA);
+  ASSERT_EQ(blocks.size(), 4u);
+  EXPECT_FALSE(blocks[0].is_valid());
+  EXPECT_TRUE(blocks[1].is_valid());
+  EXPECT_EQ(leaf.num_used_blocks(), 3u);
+  EXPECT_EQ(sequence.kv_cache_tokens_num(), 13u);
+  sequence.reset();
+}
+
+TEST(CompositeBlockManagerTest, SlidingWindowShortagePreservesSharedHistory) {
+  BlockManager::Options options;
+  options.num_blocks(4)
+      .block_size(4)
+      .block_type(BlockType::SWA)
+      .sliding_window_size(8)
+      .swa_blocks_per_seq(2)
+      .enable_prefix_cache(false);
+  SlidingWindowBlockManager leaf(options);
+  Sequence sequence =
+      MakeTestSequence(/*index=*/0, std::vector<int32_t>(17, 7));
+  Sequence sharing = MakeTestSequence(/*index=*/1, std::vector<int32_t>(17, 7));
+  auto initial = leaf.allocate_for_sequence(
+      &sequence, sequence.kv_state(), /*num_tokens=*/12);
+  ASSERT_TRUE(initial.has_value());
+  ASSERT_EQ(initial->size(), 3u);
+  sequence.add_blocks(BlockType::SWA, *initial);
+  initial->clear();
+  sharing.add_blocks(BlockType::SWA,
+                     {sequence.kv_state().blocks(BlockType::SWA)[0]});
+  sequence.kv_state().set_kv_cache_tokens_num(/*num=*/12);
+
+  EXPECT_FALSE(leaf.allocate_for_sequence(
+                       &sequence, sequence.kv_state(), /*num_tokens=*/16)
+                   .has_value());
+  EXPECT_EQ(sequence.kv_state().num_blocks(BlockType::SWA), 3u);
+  EXPECT_TRUE(sequence.kv_state().blocks(BlockType::SWA)[0].is_valid());
+  EXPECT_EQ(leaf.num_free_blocks(), 0u);
+  EXPECT_EQ(sequence.kv_cache_tokens_num(), 12u);
+
+  sharing.reset();
+  auto appended = leaf.allocate_for_sequence(
+      &sequence, sequence.kv_state(), /*num_tokens=*/16);
+  ASSERT_TRUE(appended.has_value());
+  ASSERT_EQ(appended->size(), 1u);
+  EXPECT_FALSE(sequence.kv_state().blocks(BlockType::SWA)[0].is_valid());
+  sequence.add_blocks(BlockType::SWA, *appended);
+  appended->clear();
+  EXPECT_EQ(sequence.kv_state().num_blocks(BlockType::SWA), 4u);
+  EXPECT_TRUE(sequence.kv_state().blocks(BlockType::SWA)[3].is_valid());
+  EXPECT_EQ(leaf.num_used_blocks(), 3u);
+  sequence.reset();
+}
+
+TEST(CompositeBlockManagerTest, SlidingWindowRestoreAllocatesSparseHistory) {
+  BlockManager::Options options;
+  options.num_blocks(5)
+      .block_size(4)
+      .block_type(BlockType::SWA)
+      .sliding_window_size(8)
+      .swa_blocks_per_seq(2)
+      .enable_prefix_cache(false);
+  SlidingWindowBlockManager leaf(options);
+  Sequence sequence =
+      MakeTestSequence(/*index=*/0, std::vector<int32_t>(21, 7));
+  sequence.kv_state().set_kv_cache_tokens_num(/*num=*/14);
+  KVCacheState& host = sequence.host_kv_state();
+  host.bind_partition(
+      leaf.partition_id(), CacheRetention::WINDOW, BlockType::SWA);
+  auto restored =
+      leaf.allocate_for_sequence(&sequence, host, /*num_tokens=*/18);
+  ASSERT_TRUE(restored.has_value());
+  ASSERT_EQ(restored->size(), 5u);
+  EXPECT_FALSE((*restored)[0].is_valid());
+  for (size_t i = 1; i < restored->size(); ++i) {
+    EXPECT_TRUE((*restored)[i].is_valid());
+  }
+  EXPECT_EQ(leaf.num_used_blocks(), 4u);
+  EXPECT_EQ(host.num_blocks(BlockType::SWA), 0u);
+  host.add_blocks(leaf.partition_id(), *restored);
+  restored->clear();
+  auto unchanged =
+      leaf.allocate_for_sequence(&sequence, host, /*num_tokens=*/20);
+  ASSERT_TRUE(unchanged.has_value());
+  EXPECT_TRUE(unchanged->empty());
+  EXPECT_EQ(host.num_blocks(BlockType::SWA), 5u);
+  EXPECT_EQ(host.kv_cache_tokens_num(), 0u);
+  host.reset();
+  sequence.reset();
 }
 
 // The post-grow hook advances KVCacheState::num_cached_blocks incrementally.
