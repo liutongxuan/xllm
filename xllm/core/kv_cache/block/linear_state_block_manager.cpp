@@ -22,6 +22,7 @@ limitations under the License.
 #include <vector>
 
 #include "core/framework/request/sequence.h"
+#include "core/kv_cache/layout/recurrent_state_growth_plan.h"
 
 namespace xllm {
 
@@ -50,39 +51,46 @@ LinearStateBlockManager::allocate_for_sequence(Sequence* seq,
     blocks->erase(blocks->begin(), blocks->begin() + keep_begin);
     kv_state.set_shared_blocks_num(partition_id(), shared_source ? 1 : 0);
   }
-  const bool decode_step =
-      options_.instance_is_decode() || !seq->is_prefill_stage();
-  size_t checkpoint_index = 0;
+  RecurrentLiveSlot live_slot = RecurrentLiveSlot::ABSENT;
+  if (!blocks->empty()) {
+    live_slot = blocks->back().is_shared() ? RecurrentLiveSlot::SHARED
+                                           : RecurrentLiveSlot::PRIVATE;
+  }
+  const RecurrentStateGrowthPlan plan(
+      block_size(),
+      options_.enable_prefix_cache(),
+      RecurrentStateProgress{.live_slot = live_slot,
+                             .cached_tokens = kv_state.kv_cache_tokens_num(),
+                             .published_checkpoint_index =
+                                 kv_state.num_cached_blocks(partition_id()),
+                             .decode_step = options_.instance_is_decode() ||
+                                            !seq->is_prefill_stage(),
+                             .graph_warmup = seq->is_graph_warmup()});
+  const std::optional<size_t> checkpoint_index = plan.checkpoint_index();
   std::optional<XXH3Key> checkpoint_hash;
-  if (!decode_step && !seq->is_graph_warmup() &&
-      options_.enable_prefix_cache() && !blocks->empty()) {
-    const size_t chunk_stride = block_size();
-    const size_t cached_tokens = kv_state.kv_cache_tokens_num();
-    checkpoint_index = cached_tokens / chunk_stride;
-    if (cached_tokens % chunk_stride == 0 &&
-        checkpoint_index > kv_state.num_cached_blocks(partition_id())) {
-      seq->update_linear_state_hashes(static_cast<uint32_t>(chunk_stride));
-      const Slice<XXH3Key> hashes = seq->linear_state_hashes();
-      CHECK_GE(hashes.size(), checkpoint_index);
-      if (prefix_cache_->contains(hashes[checkpoint_index - 1])) {
-        kv_state.set_num_cached_blocks(partition_id(), checkpoint_index);
-      } else {
-        checkpoint_hash = hashes[checkpoint_index - 1];
-      }
+  bool checkpoint_cached = false;
+  if (checkpoint_index.has_value()) {
+    seq->update_linear_state_hashes(static_cast<uint32_t>(block_size()));
+    const Slice<XXH3Key> hashes = seq->linear_state_hashes();
+    CHECK_GE(hashes.size(), *checkpoint_index);
+    checkpoint_cached = prefix_cache_->contains(hashes[*checkpoint_index - 1]);
+    if (checkpoint_cached) {
+      kv_state.set_num_cached_blocks(partition_id(), *checkpoint_index);
+    } else {
+      checkpoint_hash = hashes[*checkpoint_index - 1];
     }
   }
-  if (!blocks->empty() &&
-      (decode_step || !options_.enable_prefix_cache() ||
-       (!checkpoint_hash.has_value() && !blocks->back().is_shared()))) {
+  const size_t additional_slots = plan.additional_slots(checkpoint_cached);
+  if (additional_slots == 0) {
     return std::vector<Block>{};
   }
   const auto& pool = options_.shared_block_pool();
-  std::vector<Block> allocated = pool && pool->uses_slabs()
-                                     ? allocate_with_placement(1, seq)
-                                     : BlockManagerImpl::allocate(1);
+  std::vector<Block> allocated =
+      pool && pool->uses_slabs()
+          ? allocate_with_placement(additional_slots, seq)
+          : BlockManagerImpl::allocate(additional_slots);
   if (allocated.empty()) {
-    // Checkpoint retention must not stall a private live slot.
-    if (!blocks->empty() && !blocks->back().is_shared()) {
+    if (plan.can_advance_with(allocated.size())) {
       return std::vector<Block>{};
     }
     return std::nullopt;
@@ -90,7 +98,7 @@ LinearStateBlockManager::allocate_for_sequence(Sequence* seq,
   if (checkpoint_hash.has_value()) {
     blocks->back().set_hash_value(checkpoint_hash->data);
     prefix_cache_->insert(Slice<Block>(*blocks));
-    kv_state.set_num_cached_blocks(partition_id(), checkpoint_index);
+    kv_state.set_num_cached_blocks(partition_id(), *checkpoint_index);
   }
   return allocated;
 }

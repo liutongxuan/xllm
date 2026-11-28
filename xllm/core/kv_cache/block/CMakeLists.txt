@@ -59,6 +59,7 @@ cc_library(
     :kv_cache_block_types
     :block_utils
     :history_growth_plan
+    :recurrent_state_growth_plan
     :sliding_window_retention
     :static_kv_layout
     $<$<BOOL:${USE_NPU}>:torch_npu>

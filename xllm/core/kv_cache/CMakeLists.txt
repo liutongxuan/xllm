@@ -2,6 +2,15 @@ include(cc_library)
 
 cc_library(
   NAME
+    recurrent_state_growth_plan
+  HDRS
+    layout/recurrent_state_growth_plan.h
+  DEPS
+    glog::glog
+)
+
+cc_library(
+  NAME
     sliding_window_retention
   HDRS
     layout/sliding_window_retention.h

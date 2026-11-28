@@ -2432,7 +2432,8 @@ class LinearStateWindowTest : public ::testing::TestWithParam<bool> {
 
   Sequence make_sequence(size_t index,
                          const std::vector<int32_t>& prompt_token_ids,
-                         bool enable_schedule_overlap = false) {
+                         bool enable_schedule_overlap = false,
+                         bool is_graph_warmup = false) {
     SequenceParams sequence_params;
     sequence_params.seq_capacity = 8192;
     sequence_params.stopping_checker = &stopping_checker_;
@@ -2441,6 +2442,7 @@ class LinearStateWindowTest : public ::testing::TestWithParam<bool> {
     sequence_params.echo = false;
     sequence_params.logprobs = false;
     sequence_params.enable_schedule_overlap = enable_schedule_overlap;
+    sequence_params.is_graph_warmup = is_graph_warmup;
     IncrementalDecoder decoder("", 1, false, false);
     return Sequence(index,
                     prompt_token_ids,
@@ -2647,6 +2649,62 @@ TEST_P(LinearStateWindowTest, PoolPressureKeepsPrivatePrefillProgressing) {
   EXPECT_EQ(
       manager->leaf_entries().at(BlockType::LINEAR).leaf->num_used_blocks(),
       0u);
+}
+
+TEST_P(LinearStateWindowTest, PoolPressureCannotOverwriteSharedPrefillSource) {
+  LinearStateBlockManager manager(BlockManager::Options{
+      .num_blocks_ = 2, .block_size_ = 4, .enable_prefix_cache_ = GetParam()});
+  Sequence sequence = make_sequence(0, std::vector<int32_t>(9, 7));
+  KVCacheState& state = sequence.kv_state();
+  state.add_blocks(BlockType::LINEAR, manager.allocate(1));
+  state.set_kv_cache_tokens_num(4);
+  const int32_t source_id = sequence.get_linear_state_slot_id();
+  Block retained_source = state.blocks(BlockType::LINEAR).back();
+  ASSERT_EQ(manager.num_free_blocks(), 0u);
+
+  auto allocated = manager.allocate_for_sequence(&sequence, state, 8);
+  if (GetParam()) {
+    EXPECT_FALSE(allocated.has_value());
+  } else {
+    ASSERT_TRUE(allocated.has_value());
+    EXPECT_TRUE(allocated->empty());
+  }
+  EXPECT_EQ(sequence.get_linear_state_slot_id(), source_id);
+  EXPECT_EQ(state.num_cached_blocks(BlockType::LINEAR), 0u);
+  EXPECT_EQ(manager.num_blocks_in_prefix_cache(), 0u);
+
+  retained_source = Block();
+  allocated = manager.allocate_for_sequence(&sequence, state, 8);
+  ASSERT_TRUE(allocated.has_value());
+  EXPECT_TRUE(allocated->empty());
+  EXPECT_EQ(sequence.get_linear_state_slot_id(), source_id);
+  EXPECT_EQ(state.num_cached_blocks(BlockType::LINEAR), 0u);
+  EXPECT_EQ(manager.num_blocks_in_prefix_cache(), 0u);
+  manager.deallocate(state.blocks(BlockType::LINEAR));
+  sequence.reset();
+  EXPECT_EQ(manager.num_used_blocks(), 0u);
+}
+
+TEST_P(LinearStateWindowTest,
+       WarmupReusesPrivateSlotWithoutPublishingCheckpoint) {
+  auto manager = make_manager();
+  Sequence sequence = make_sequence(0,
+                                    std::vector<int32_t>(9, 7),
+                                    /*enable_schedule_overlap=*/false,
+                                    /*is_graph_warmup=*/true);
+  ASSERT_TRUE(manager->allocate_sequence(&sequence, 4));
+  sequence.kv_state().set_kv_cache_tokens_num(4);
+  const int32_t source_id = sequence.get_linear_state_slot_id();
+  ASSERT_TRUE(manager->allocate_sequence(&sequence, 8));
+  EXPECT_EQ(sequence.kv_state().num_blocks(BlockType::LINEAR), 1u);
+  EXPECT_EQ(sequence.get_linear_state_slot_id(), source_id);
+  EXPECT_EQ(sequence.kv_state().num_cached_blocks(BlockType::LINEAR), 0u);
+  EXPECT_EQ(sequence.linear_state_hashes().size(), 0u);
+  EXPECT_EQ(manager->leaf_entries()
+                .at(BlockType::LINEAR)
+                .leaf->num_blocks_in_prefix_cache(),
+            0u);
+  manager->deallocate_for_sequence(&sequence);
 }
 
 TEST_P(LinearStateWindowTest, KvFailureDoesNotChangeLinearWindow) {
